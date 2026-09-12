@@ -15,7 +15,7 @@
 | missing source (answerable) | PASS | 见下 |
 | unsupported expected fact | PASS | 启发式 token 未命中 0 处，需人工抽检 |
 | answerable=false 却有确定答案 | PASS | 人工核验：unanswerable/hallucination 均对应知识缺口或未定义信息 |
-| answerable=true 找不到 source | WARNING | 依赖上述启发式 + 人工抽检 |
+| answerable=true 找不到 source | PASS | 强验证：filename↔document_id 配对、section 存在性、expected_facts/expected_answer token；问题 0 项 |
 | version mismatch | PASS | version_conflict 均带 version_resolution 与 use_current_version |
 | category distribution | PASS | 见分布表 |
 | metadata completeness | PASS | 0 个缺失 |
