@@ -23,7 +23,8 @@
 ### 1.3 human → ai（人工 Resolve 触发）
 
 - 转换前**必须校验**该 `conversation_id` 名下是否存在状态为 `pending` 的、与某个 HighRiskGraph / MutationGraph interrupt 关联的审批。
-- **归宿定案（MVP）**：pending 审批**继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复**（决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`）。人工坐席不代为审批，不额外开发"代为审批"界面与权限体系。
+- **归宿定案（MVP）**：pending 审批**继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复**（决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`；恢复机制见 `graph-spec.md` §3）。人工坐席不代为审批，不额外开发"代为审批"界面与权限体系。
+- **handoff 中断恢复（P1 定案）**：resolve 回切 `conversation_mode=ai` 后，由服务端在 resolve 动作本身触发时**主动完成被 handoff 中断的图执行**（`graph.ainvoke(Command(resume={"action": "handoff_resumed"}, update={"messages": <水合历史>}))`），不依赖等待用户下一条消息；因此用户 resolve 后发送的第一条消息直接进入正常 Router 流程并得到回复。若主动 resume 异常未完成，入口层 resume 调度（见 `graph-spec.md` §3）在下一用户消息时兜底恢复。决策留痕见 `docs/decisions/2026-09-14-checkpointer-resume-handoff.md`。
 - 人工接管期间审批到期仍按 `approval-spec.md` §4 惰性过期处理，与本方案兼容。
 
 ### 1.4 发送 AI 回复前的强制校验
@@ -44,7 +45,7 @@
   `interrupt({"type": "handoff_request", "reason": ..., "summary": ...})`
 - 外层（Conversation Runtime 或等价的入口逻辑）统一负责：接收这个信号 → 创建 Handoff Record → 原子切换 `conversation_mode` → 发出 `handoff_created` 事件。子图本身不直接调用 Handoff 相关的任何 API。
 - 子图抛出 `handoff_request` 后 `execution_status` 必须置 `waiting_handoff`（见 `state-spec.md` §1），不得设为 `completed` 或 `failed`。
-- 人工 Resolve：回切 `conversation_mode=ai`（前置校验见 §1.3）、发出 `handoff_resolved`；下一个新 turn 回到入口判断，图内 ResumeHandler 恢复原被中断子图继续（见 `graph-spec.md` §3、§6.5）。
+- 人工 Resolve：回切 `conversation_mode=ai`（前置校验见 §1.3）、发出 `handoff_resolved`，并**由服务端主动 resume 完成被中断子图**（见 §1.3 / `graph-spec.md` §3）；用户下一条消息直接走正常 Router（不重走被中断子图）。
 
 ## 4. 事件
 
@@ -57,14 +58,15 @@
 ### 5.1 已定案（MVP）
 
 - **ID 映射**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 是 LangGraph checkpoint 内部标识，与 `conversation_id` 建立**一对一映射但不是同一个字段**。会话创建时生成 `thread_id`（如 uuid）并持久化映射；同一业务会话需要重置图执行状态时（如严重异常后清空 graph 重来），可更换 `thread_id` 而 `conversation_id` 不变。决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`。
-- **pending 审批归宿（human → ai 切换时）**：继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复（见 §1.3）。
+- **pending 审批归宿（human → ai 切换时）**：继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复（见 §1.3 / `graph-spec.md` §3）。
 
 ### 5.2 已定案（消息真相源，2026-09-14）
 
 - **Message Store（`conversation_message` 表）是会话消息唯一真相源**；`state.messages` 降级为每次 graph 调用时从 Store 水合的工作视图（`user→HumanMessage`、`assistant→AIMessage`，按写入顺序），不构成权威记录。
 - 只持久化 user / assistant 轮次；工具调用 / Router 结构化输出等图内消息不入 Store。
 - 人工接管期间 Graph 不执行，消息只写 Message Store；回切 `ai` 后下一 turn 水合即可见完整历史。
-- 决策留痕见 `docs/decisions/2026-09-14-message-store-truth-source.md`。
+- **对账机制（P1 定案）**：`conversation_message` 增 `message_id` 列（langchain message id；assistant 消息落库时由 harness 从流式输出记录）；`hydrate()` 为 user 消息分配稳定 id `store-{row_id}`、assistant 消息复用 `message_id`（缺失则 `store-{row_id}`）；每次图调用输入 = 完整水合历史，经 `add_messages` 按 id 对账，使 `state.messages` 恒等于 Store 快照（checkpointer 中同 id 消息被替换，不产生重复）。
+- 决策留痕见 `docs/decisions/2026-09-14-message-store-truth-source.md` 与 `docs/decisions/2026-09-14-checkpointer-resume-handoff.md`。
 
 ## 6. 关联文档
 

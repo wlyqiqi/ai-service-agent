@@ -22,7 +22,7 @@
 
 ### 3.1 职责分工
 
-- **恢复执行后的状态转移决策必须在图内完成**：由 ResumeHandler 节点（或发起 `interrupt()` 的节点自身的续接逻辑）执行，不允许挪到 Conversation Runtime 或任何 harness 组件。
+- **恢复执行后的状态转移决策必须在图内完成**：由发起 `interrupt()` 的节点自身的续接逻辑执行（经入口层 resume 调度恢复，见 `graph-spec.md` §3），不允许挪到 Conversation Runtime 或任何 harness 组件。
 - **Approval Service = 轻量基础设施状态存储**（定位同 conversation_status）：只持久化 `pending / approved / rejected / expired` 状态与 `expires_at` 时间戳，供 UI 查询展示、供 HTTP 端点做前置有效性检查；不承担任何业务决策。
 - **FastAPI 端点只做「前置校验 + 转发」**：不判断"批准 / 拒绝意味着什么"，该判断由图内部完成。
 - **ApprovalRequest 落库**：HighRiskGraph 发起审批时通过 `interrupt()` 携带审批数据；harness 在观察到该 interrupt 时经 hook 写入 Approval Service（纯持久化，见 `architecture.md` §8.1）。
@@ -43,9 +43,10 @@
 
 ### 3.3 恢复入口（殊途同归）
 
-- 端点路径：FastAPI → 前置校验 → `graph.ainvoke(Command(resume=...), config={"thread_id": ...})`，resume schema 见 `graph-spec.md` §3。
-- 用户 turn 路径：`/chat` 新消息 → 图内入口条件边 → ResumeHandler 解析 → 同一 resume schema。
-- 两条入口的状态转移决策都在图内完成；harness 仅负责传输与前置校验。
+- **resume schema 唯一（`graph-spec.md` §3）**：`Command(resume= { "action": "approve" | "reject" | "confirm" | "cancel" | "handoff_resumed", "note"?: str } | { "result": "expired" })`。`handoff_resumed` 于 P1 加入（handoff 中断的主动恢复），与审批 / 用户确认 / 超时**共用同一 schema，不设游离分支**。
+- 端点路径：FastAPI → 前置校验 → `graph.ainvoke(Command(resume=...), config={"configurable": {"thread_id": ...}})`，resume schema 见 `graph-spec.md` §3。
+- 用户 turn 路径：`/chat` 新消息 → 入口层 resume 调度（`aget_state()` 检测挂起中断并构造同一 resume schema；见 `graph-spec.md` §3）→ 图内被中断节点续接。
+- 两条入口的状态转移决策都在图内完成；harness 仅负责传输、前置校验与 resume 调度。
 
 ## 4. 超时策略
 

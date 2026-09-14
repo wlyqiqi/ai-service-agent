@@ -8,6 +8,7 @@
 - 由 `harness/streaming.py` 将 `graph.astream(stream_mode=["messages","updates","custom"])` 转成事件。
 - `tool_call` / `tool_result` 等工具事件由 harness hook 在工具执行前后挂接发出，源头不在子图 / 工具内部（见 `architecture.md` §8.1）。
 - `handoff_created` / `handoff_resolved` 由**外层（Conversation Runtime）**在接管 / Resolve 时发出（见 `handoff-spec.md` §3），子图自身不直接发出 `handoff_created`。
+- resolve 动作触发的**服务端主动 resume** 不产生 SSE 事件流（无长连接上下文），仅更新图状态；用户下一条消息仍按正常 turn 输出事件。
 
 ## 2. 事件类型
 
@@ -23,7 +24,7 @@
 | `confirmation_updated` | `{action}` | 用户确认结果（confirm / cancel） |
 | `handoff_created` | `{handoff_id?, reason, summary?, ticket_id?}` | 转人工接管完成（Conversation Runtime 外层发出，见 handoff-spec.md §3） |
 | `handoff_resolved` | `{handoff_id?, conversation_id?}` | 人工 Resolve 完成、mode 回切 ai（Conversation Runtime 发出） |
-| `done` | `{final}` | 本 turn 结束 |
+| `done` | `{final, message_id?}` | 本 turn 结束（`message_id` = 最后一条 assistant 消息的 langchain id，供 Message Store 对账持久化，见 `handoff-spec.md` §5.2） |
 | `error` | `{code, message}` | 归一化错误 |
 
 统一结构：`{ "type": str, "data": object }`。

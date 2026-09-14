@@ -28,9 +28,10 @@ Conversation Runtime（入口层，轻量 conversation_status）
    v
 CustomerServiceGraph (LangGraph 总图, SQLite Checkpointer)
    |
-   +- 入口条件边: Active Interrupt?
-   |    +- YES -> ResumeHandler  (Command(resume=...) 从断点恢复子图)
-   |    +- NO  -> Router
+   +- 入口 resume 调度（每次图调用前 aget_state 检测挂起中断；P1 定案，
+   |     实测依据见 docs/decisions/2026-09-14-checkpointer-resume-handoff.md）
+   |    +- 有挂起中断 -> Command(resume=<唯一 schema>, update={messages}) 从断点恢复子图（不重走 Router）
+   |    +- 无挂起中断 -> 新 run: Router
    |
    +- Router 节点 (LLM 结构化输出: capability + risk_level + confidence)
    |         |
@@ -69,6 +70,7 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 
 - **会话标识定案**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 为 LangGraph checkpoint 内部标识，与 `conversation_id` 一对一映射但**不是同一字段**（见 `handoff-spec.md` §5.1）。SQLite checkpoint（异步 `AsyncSqliteSaver`）按 `thread_id` 持久化每次运行的完整状态。
 - `thread_id` 在会话创建时生成（如 uuid）并持久化 `conversation_id ↔ thread_id` 映射；同一业务会话需重置图执行状态时可更换 `thread_id` 而保留 `conversation_id`。
+- **resume 调度（P1 定案）**：有挂起中断时由入口层（harness）经 `aget_state()` 检测并以 `Command(resume=...)` 恢复（LangGraph 1.2.11 实测：图内节点读不到 `__interrupt__`，见 `graph-spec.md` §3 / 决策记录）；`state.messages` 每次图调用以 Store 水合历史（稳定 id）经 `add_messages` 对账（见 `handoff-spec.md` §5.2）。
 - **轻量 `conversation_status` 存储（新增）**：独立于完整 checkpointer 状态（独立表或 Redis key），只存 `conversation_id → conversation_mode`（`ai` / `human` 两态）。`conversation_mode` 判断**禁止**走 `checkpointer.aget()` 读完整 State，必须读该轻量存储。
 - `POST /sessions` 创建会话时**显式写入 `conversation_mode = "ai"`**，不依赖存储层隐式默认值；入口判断为两态：`mode == "human" ? 进入人工车道 : 进入 AI 路径`。
 - 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在连接级内存，仅在 `handoff_created` / `handoff_resolved` 事件发生时主动更新，不要求每条用户消息重新查库（见 `handoff-spec.md` §2）。
