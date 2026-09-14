@@ -1,19 +1,23 @@
 [project]
 name = "ai-service-agent"
 version = "0.1.0"
-description = "LangGraph agent project (reuses D:\常用软件\LangGragh\.venv)"
+description = "LangGraph agent project (reuses D:\\常用软件\\LangGragh\\.venv)"
 readme = "README.md"
 authors = [
     { name = "Wang Qi", email = "hyoon0415@163.com" }
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.141.1",
     "langchain-core>=1.5.3,<2",
     "langchain-openai>=1.4.1,<2",
     "langgraph>=1.2.10,<2",
     "langgraph-checkpoint>=4.1.1,<5",
     "langgraph-checkpoint-sqlite>=3.1.1,<4",
     "langsmith>=0.10.14,<1",
+    "pydantic-settings>=2.15.0",
+    "sse-starlette>=3.4.11",
+    "uvicorn>=0.52.4",
 ]
 
 [project.scripts]
@@ -22,3 +26,9 @@ ai-service-agent = "ai_service_agent:main"
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
