@@ -1,0 +1,24 @@
+from dataclasses import dataclass, field
+
+from langchain_core.tools import BaseTool
+
+
+@dataclass
+class ToolMeta:
+    name: str
+    description: str
+    min_risk_level: str
+    idempotent: bool = False
+
+
+@dataclass
+class ToolRegistry:
+    _tools: dict[str, tuple[ToolMeta, BaseTool]] = field(default_factory=dict)
+
+    def register(self, meta: ToolMeta, fn: BaseTool) -> None:
+        self._tools[meta.name] = (meta, fn)
+
+    def for_risk_level(self, level: str) -> list[BaseTool]:
+        """构建期注入：只给该风险等级及以下可用的工具（tool-spec.md §1）。"""
+        order = {"read": 0, "mutation": 1, "high_risk": 2}
+        return [fn for meta, fn in self._tools.values() if order[meta.min_risk_level] <= order[level]]
