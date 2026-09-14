@@ -83,7 +83,7 @@ sequenceDiagram
     C-->>H: 通知坐席（写 Message Store）
     H->>H: 人工与用户对话
     H->>C: Resolve
-    C->>C: 校验 pending 审批归宿（待决策）→ mode=ai
+    C->>C: 校验 pending 审批（继续挂起）→ mode=ai
     C-->>U: 事件: handoff_resolved
     U->>C: 下一条消息
     C->>C: mode==ai → 进入图
@@ -94,4 +94,4 @@ sequenceDiagram
 
 - 子图不自行创建 Handoff Record / 不自行切 `conversation_mode`，统一 `interrupt(handoff_request)`，由外层接管（`handoff-spec.md` §3）。
 - 发送 AI 回复前实时校验 `conversation_mode==ai`，否则丢弃（`handoff-spec.md` §1.4）。
-- human → ai 切换前必须校验该会话是否存在 pending 审批，归宿待决策（`handoff-spec.md` §1.3、§5）。
+- human → ai 切换前必须校验该会话是否存在 pending 审批；归宿定案为继续挂起，AI 重新接管后自然恢复（`handoff-spec.md` §1.3）。

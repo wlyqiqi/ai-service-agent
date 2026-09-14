@@ -67,7 +67,8 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 
 ## 4. 会话与持久化（横切）
 
-- `thread_id = session_id`（**沿用旧定义**；`conversation_id` 与 `thread_id` / `session_id` 的映射关系仍未裁决，见 `handoff-spec.md` §5 未决问题），SQLite checkpoint（异步 `AsyncSqliteSaver`）持久化每次运行的完整状态。
+- **会话标识定案**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 为 LangGraph checkpoint 内部标识，与 `conversation_id` 一对一映射但**不是同一字段**（见 `handoff-spec.md` §5.1）。SQLite checkpoint（异步 `AsyncSqliteSaver`）按 `thread_id` 持久化每次运行的完整状态。
+- `thread_id` 在会话创建时生成（如 uuid）并持久化 `conversation_id ↔ thread_id` 映射；同一业务会话需重置图执行状态时可更换 `thread_id` 而保留 `conversation_id`。
 - **轻量 `conversation_status` 存储（新增）**：独立于完整 checkpointer 状态（独立表或 Redis key），只存 `conversation_id → conversation_mode`（`ai` / `human` 两态）。`conversation_mode` 判断**禁止**走 `checkpointer.aget()` 读完整 State，必须读该轻量存储。
 - `POST /sessions` 创建会话时**显式写入 `conversation_mode = "ai"`**，不依赖存储层隐式默认值；入口判断为两态：`mode == "human" ? 进入人工车道 : 进入 AI 路径`。
 - 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在连接级内存，仅在 `handoff_created` / `handoff_resolved` 事件发生时主动更新，不要求每条用户消息重新查库（见 `handoff-spec.md` §2）。
@@ -75,7 +76,7 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 - Store（用户记忆）：`InMemoryStore` 起步，命名空间 `("users", user_id)`，接口按 `BaseStore` 抽象。
 - **传输契约（输入侧）**：`POST /chat { user_id, session_id?, message, meta? }` → 事件流；`POST /sessions { user_id }` → `{ session_id }`。FastAPI 仅做传输与会话映射，不含业务编排（输出侧契约见 `event-spec.md`）。
 
-> 未决标注：顶层图中人工车道"写入 Message Store"与图内 `state.messages` 谁是唯一真相源仍未裁决（见 `handoff-spec.md` §5 未决问题），本节不给出结论。
+> 未决标注：顶层图中人工车道"写入 Message Store"与图内 `state.messages` 谁是唯一真相源仍未裁决（见 `handoff-spec.md` §5.2 未决问题），本节不给出结论。
 
 ## 5. 错误处理 / 重试 / 超时（横切）
 

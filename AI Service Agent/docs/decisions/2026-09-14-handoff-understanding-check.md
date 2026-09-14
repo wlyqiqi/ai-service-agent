@@ -11,7 +11,7 @@
 stateDiagram-v2
     [*] --> ai : POST /sessions 显式写入 "ai"
     ai --> human : interrupt(handoff_request) 外层接管\n（同一事务：建 Handoff Record + 原子切换）
-    human --> ai : 人工 Resolve\n（前置校验 pending 审批，归宿待决策）
+    human --> ai : 人工 Resolve\n（校验 pending 审批：继续挂起，AI 接管后恢复）
     note right of ai : 发送 AI 回复前必须实时校验 mode==ai，\n否则丢弃（禁止用生成时刻值代替）
     note right of human : 人工车道：写 Message Store + 通知坐席，\nAI 暂停，不触发 Graph / Guard / Router
 ```
@@ -20,7 +20,7 @@ stateDiagram-v2
 
 - **初始化**：新会话 `POST /sessions` 时显式写入 `"ai"`，不依赖存储层隐式默认值；判断为两态（`mode == "human" ? 人工车道 : AI 路径`）。
 - **ai → human**：必须与"创建 Handoff Record"处于**同一数据库事务**，原子完成；不允许先建 Record 后切 mode 或反之。触发来源是子图 / `check_handoff` 抛出的 `interrupt(handoff_request)`，由外层执行。
-- **human → ai**：由人工 Resolve 触发。切换前**必须校验**该会话是否存在 pending 且与 HighRiskGraph / MutationGraph interrupt 关联的审批；存在则必须先决定归宿才允许切换。归宿本轮不决定（见 §7 未决问题 3），当前"继续挂起"仅为占位。
+- **human → ai**：由人工 Resolve 触发。切换前**必须校验**该会话是否存在 pending 且与 HighRiskGraph / MutationGraph interrupt 关联的审批；归宿已定案：**继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 自然恢复**（见 `docs/decisions/2026-09-14-handoff-decisions.md`）。
 - **发送前校验**：任何 AI 回复发送前重新读取实时 `conversation_mode`，仍为 `"ai"` 才发送；已切 `"human"` 则丢弃；不允许用生成时刻的 mode 代替发送前的实时值。
 
 ## 2. conversation_mode 判断为什么必须轻量
@@ -53,14 +53,13 @@ stateDiagram-v2
 ## 6. 本轮文档修订记录（按顶层图审计落地）
 
 - 顶层图：`docs/diagrams/handoff-overview.svg`（附件入库，作为会话流程 / 状态机顶层图）。
+- **本轮定案（两条，决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`）**：① `conversation_id == session_id`，`thread_id` 为 LangGraph checkpoint 标识、一对一映射但独立字段；② human → ai 切换时 pending 审批归宿 = 继续挂起，AI 重新接管后自然恢复。
 - 修订：`docs/specs/architecture.md`（§2 入口层 / §4 轻量存储与 Open Decision 标注 / §8.1 handoff 事件）、`docs/specs/graph-spec.md`（§1 退出路径 / §3 ResumeHandler / §6.5 统一机制 / §9 字段表）、`docs/specs/state-spec.md`（新增 `execution_status` 9 值）、`docs/specs/event-spec.md`（`handoff_created` / `handoff_resolved`、§2.1 子图事件集合）、`docs/specs/safety-spec.md`（§2 流程改为 interrupt + 外层接管）、`docs/specs/tool-spec.md`（§4）、`AGENTS.md`（§4 入口层例外 / §14 占位标注 / §18c 执行机制 / §22 两态规则）。
 - 新建：`docs/specs/handoff-spec.md`（权威定义）、`docs/diagrams/graph-overview.md`（下层细节图 Mermaid 版，原引用缺失已补齐）。
 - **本轮修订决定**：删除 `conversation_mode` 的 invalid 分支，收敛为 `ai` / `human` 两态；读取到缺失 / 意外值时按 `ai` 兜底放行（fail-open），为接受的设计选择。
 
 ## 7. 未决问题（禁止擅自决定）
 
-1. `conversation_id` 与 `thread_id` 的映射关系，以及现有 `session_id` 字段该对应哪一个（当前占位：`thread_id = session_id` 沿用旧定义）。
-2. LangGraph `state.messages` 与 canonical Message Store 之间谁是唯一真相源。
-3. human → ai 切换时若存在 pending 审批，具体"转交人工代为决定 / 继续挂起等 AI 重新接管 / 自动视为过期"哪一种（本轮只确定"必须先校验"，未确定归宿）。
+1. LangGraph `state.messages` 与 canonical Message Store 之间谁是唯一真相源。
 
 > 备注：用户曾引用 `docs/decisions/2026-09-xx-handoff-spec-audit.md`，该文件在仓库中不存在；本轮未伪造历史审计文件，首轮审计悬而未决项以上述 §7 为准。

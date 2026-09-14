@@ -29,5 +29,5 @@ flowchart TD
 ## 关键注记
 
 - Guard 节点 MVP 阶段推迟生效，不阻断任何请求，但保留占位不删除。
-- `conversation_id` / `thread_id` 映射、human→ai 切换时 pending 审批归宿仍为 Open Decision（见 `docs/specs/handoff-spec.md` §5）。
+- `conversation_id=session_id`、`thread_id` 独立一对一映射与 pending 审批归宿（继续挂起）均已定案（见 `docs/specs/handoff-spec.md` §5.1）；`state.messages` 唯一真相源仍待裁决。
 - 发送前重校验读取实时 mode 值，非生成时刻值。

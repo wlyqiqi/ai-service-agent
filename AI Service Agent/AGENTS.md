@@ -45,7 +45,7 @@
 - 对外输出一律走 `docs/specs/event-spec.md` 定义的事件协议（该文件为唯一权威，不在本文件重复枚举）；新增事件类型须同步更新该文件。
 
 ## 14. Checkpointer 规则（边界摘要）
-- 生产用 SQLite checkpointer（`AsyncSqliteSaver`），`thread_id = session_id`（**沿用旧定义**；`conversation_id` 与 `thread_id` / `session_id` 的映射关系仍未裁决，见 `docs/specs/handoff-spec.md` §5 未决问题）；`MemorySaver` 仅测试用。详见 `docs/specs/architecture.md` §4。
+- 生产用 SQLite checkpointer（`AsyncSqliteSaver`），按 `thread_id` 持久化；`conversation_id == session_id`（业务会话标识），`thread_id` 为 LangGraph checkpoint 标识，一对一映射但非同一字段（定案见 `docs/specs/handoff-spec.md` §5.1）；`MemorySaver` 仅测试用。详见 `docs/specs/architecture.md` §4。
 
 ## 15. 测试规则（边界摘要）
 - pytest（未安装，先登记 pyproject）；离线 fake model + stub 工具优先；interrupt 的 approve / reject / expired 三态恢复路径必测。详见 `docs/specs/architecture.md` §7。
@@ -76,5 +76,5 @@
 
 ## 22. conversation_mode 规则（边界摘要）
 - 两态：`ai` / `human`。`POST /sessions` 时**显式写入 `ai`**，不依赖存储层隐式默认值；判断不设第三态兜底。
-- `ai → human` 必须与创建 Handoff Record 处于**同一数据库事务**（原子操作）；`human → ai` 由人工 Resolve 触发，切换前必须校验该会话是否存在 pending 审批（审批归宿待决策，见 `docs/specs/handoff-spec.md` §5 未决问题）。
+- `ai → human` 必须与创建 Handoff Record 处于**同一数据库事务**（原子操作）；`human → ai` 由人工 Resolve 触发，切换前必须校验该会话是否存在 pending 审批；pending 审批归宿定案为**继续挂起**，AI 重新接管后自然恢复（见 `docs/specs/handoff-spec.md` §1.3）。
 - 判断必须轻量：读独立 `conversation_status`（`conversation_id → conversation_mode`），禁止用完整 `checkpointer.aget()` 判断 mode；判断在入口层完成，进入任何 LangGraph 逻辑之前。详见 `docs/specs/handoff-spec.md`。

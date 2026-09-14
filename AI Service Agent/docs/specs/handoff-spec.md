@@ -23,8 +23,8 @@
 ### 1.3 human → ai（人工 Resolve 触发）
 
 - 转换前**必须校验**该 `conversation_id` 名下是否存在状态为 `pending` 的、与某个 HighRiskGraph / MutationGraph interrupt 关联的审批。
-- 如果存在，**必须先决定这个审批的归宿**（继续挂起等 AI 重新接管 / 视为过期 / 由人工代为处理），才允许真正完成 human → ai 的切换。
-- 具体选哪种**本轮不决定，标记为待决策**（见 §5 未决问题）。当前默认 / 占位行为：pending 审批继续挂起，AI 重新接管时经图内 ResumeHandler / ACTIVE 判断自然恢复；此占位**尚未正式确认**，不视为既定设计。
+- **归宿定案（MVP）**：pending 审批**继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复**（决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`）。人工坐席不代为审批，不额外开发"代为审批"界面与权限体系。
+- 人工接管期间审批到期仍按 `approval-spec.md` §4 惰性过期处理，与本方案兼容。
 
 ### 1.4 发送 AI 回复前的强制校验
 
@@ -52,13 +52,16 @@
 - `handoff_resolved`：人工 Resolve 回切 mode=ai 后发出。
 - 子图自身不直接发出 `handoff_created`；三子图事件集合见 `event-spec.md` §2.1。
 
-## 5. 未决问题（禁止擅自决定）
+## 5. 决策状态
 
-以下为首轮审计遗留的待决策项，本轮未覆盖，**不给出结论**：
+### 5.1 已定案（MVP）
 
-1. `conversation_id` 与 `thread_id` 的映射关系，以及现有 `session_id` 字段该对应哪一个（当前占位：`thread_id = session_id` 沿用旧定义）。
-2. LangGraph `state.messages` 与 canonical Message Store 之间谁是唯一真相源（顶层图人工车道"写入 Message Store"与此直接相关）。
-3. human → ai 切换时，若存在 pending 审批，具体应该"转交人工代为决定 / 继续挂起等 AI 重新接管 / 自动视为过期"三者中的哪一种（本轮只确定"必须先做校验"，未确定归宿；§1.3 的"继续挂起"仅为占位）。
+- **ID 映射**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 是 LangGraph checkpoint 内部标识，与 `conversation_id` 建立**一对一映射但不是同一个字段**。会话创建时生成 `thread_id`（如 uuid）并持久化映射；同一业务会话需要重置图执行状态时（如严重异常后清空 graph 重来），可更换 `thread_id` 而 `conversation_id` 不变。决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`。
+- **pending 审批归宿（human → ai 切换时）**：继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复（见 §1.3）。
+
+### 5.2 未决（禁止擅自决定）
+
+1. LangGraph `state.messages` 与 canonical Message Store 之间谁是唯一真相源（顶层图人工车道"写入 Message Store"与此直接相关）。
 
 ## 6. 关联文档
 
