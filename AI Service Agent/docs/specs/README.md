@@ -14,6 +14,7 @@
 | `event-spec.md` | 归一化事件协议（SSE/WS） | 前后端对接的人 |
 | `safety-spec.md` | 安全预检 + handoff 触发规则 | 安全相关改动 |
 | `handoff-spec.md` | conversation_mode 状态机 + Handoff 生命周期 + 轻量判断 | 做会话入口 / handoff 的人 |
+| `mvp-first-mile.md` | MVP 第一公里实现范围与里程碑（brainstorming 定稿） | 做 MVP 实现 / 执行计划的人 |
 
 ## 任务 → 阅读组合
 
