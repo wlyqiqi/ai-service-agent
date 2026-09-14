@@ -60,7 +60,7 @@ tests/                    # pytest
 `POST /chat` → 入口读 `conversation_status`：`human` → 人工车道（§4.3）；`ai` → `graph.ainvoke(config={"thread_id": ...})` → 无中断走 Router → Policy → ReadGraph → Final Response → SSE 事件（`tool_call / token / done`）；发送前实时复检 `mode==ai`，否则丢弃。
 
 ### 4.3 人工车道（mode=human）
-入口直接写 `conversation_message` 记录（**仅展示用途**）并返回人工占位响应，**不触发 checkpointer / Graph / Guard / Router**；该表与 `state.messages` 谁是唯一真相源**仍未决**（`handoff-spec.md` §5.2），不宣称 canonical。
+入口直接写 Message Store（`conversation_message` 表，**唯一真相源**，见 `handoff-spec.md` §5.2）并返回人工占位响应，**不触发 checkpointer / Graph / Guard / Router**；AI 车道每个 turn 从 Store 水合 `state.messages` 工作视图。
 
 ### 4.4 handoff 最小闭环
 Fallback 内 `check_handoff` 命中显式"转人工"规则 → 置 `execution_status=waiting_handoff` + `interrupt({"type": "handoff_request", "reason", "summary"})` → 外层（streaming 层观察 interrupt）建 `handoff_record` + **同一事务**切 `mode=human` → 发 `handoff_created`。`POST /handoffs/{id}/resolve` → 校验 pending 审批（MVP 无审批，跳过占位）→ `mode=ai` → 发 `handoff_resolved` → 下一条消息经入口进图，ResumeHandler 恢复被中断子图。
@@ -85,4 +85,4 @@ Fallback 内 `check_handoff` 命中显式"转人工"规则 → 置 `execution_st
 
 ## 7. 未决标注
 
-- `conversation_message`（人工车道展示用途）与 `state.messages` 唯一真相源：**未决**（`handoff-spec.md` §5.2），本里程碑不裁决。
+- ~~`conversation_message` 与 `state.messages` 唯一真相源~~：**已定案（2026-09-14）**——Message Store 为唯一权威，`state.messages` 为每次图调用的水合工作视图（见 `handoff-spec.md` §5.2 与 `docs/decisions/2026-09-14-message-store-truth-source.md`）。

@@ -3,25 +3,14 @@ import sqlite3
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.handoff import HandoffService
+from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import make_fake_model
-
-
-MESSAGE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS conversation_message (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-"""
 
 
 class CreateSessionBody(BaseModel):
@@ -40,12 +29,15 @@ def _resolve_model(model):
 
 
 def create_app(db_path: str, model=None):
-    """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。"""
+    """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
+
+    入口层例外：conversation_mode 轻量判断（handoff-spec.md §2）与 Message Store
+    持久化 / 水合（state.messages 工作视图，handoff-spec.md §5.2）。
+    """
     conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute(MESSAGE_SCHEMA)
-    conn.commit()
     status = ConversationStatusStore(conn)
     handoff = HandoffService(conn, status)
+    messages_store = MessageStore(conn)
     graph = build_graph(_resolve_model(model), tools=[])
 
     app = FastAPI()
@@ -68,16 +60,9 @@ def create_app(db_path: str, model=None):
             return _sse_response(unknown_stream())
 
         if status.get_mode(conv_id) == "human":
-            # 人工车道：写展示记录，不触图（handoff-spec.md §1.1；真相源未决，仅展示用途）
-            with conn:
-                conn.execute(
-                    "INSERT INTO conversation_message (conversation_id, role, content) VALUES (?, 'user', ?)",
-                    (conv_id, body.message),
-                )
-                conn.execute(
-                    "INSERT INTO conversation_message (conversation_id, role, content) VALUES (?, 'assistant', ?)",
-                    (conv_id, "已转人工，坐席将尽快回复。"),
-                )
+            # 人工车道：只写 Message Store（唯一真相源），不触图（handoff-spec.md §1.1）
+            messages_store.append(conv_id, "user", body.message)
+            messages_store.append(conv_id, "assistant", "已转人工，坐席将尽快回复。")
 
             def human_stream():
                 yield {"type": "done", "data": {"final": "已转人工，坐席将尽快回复。"}}
@@ -85,14 +70,22 @@ def create_app(db_path: str, model=None):
             return _sse_response(human_stream())
 
         async def ai_stream():
+            # 先持久化用户消息（即便本 turn 失败也留痕），再水合历史作为 state.messages 输入
+            messages_store.append(conv_id, "user", body.message)
+            history = messages_store.hydrate(conv_id)
             cb = handoff.make_interrupt_callback(conv_id)
-            async for ev in event_stream(
-                graph, {"thread_id": thread_id}, HumanMessage(content=body.message), on_interrupt=cb
-            ):
-                if ev["type"] == "done" and status.get_mode(conv_id) != "ai":
-                    # 发送前实时复检：已被切走则丢弃（handoff-spec.md §1.4）
-                    yield {"type": "error", "data": {"code": "ModeChanged", "message": "AI 回复已丢弃（会话已转人工）"}}
-                    yield {"type": "done", "data": {"final": None}}
+            async for ev in event_stream(graph, {"thread_id": thread_id}, history, on_interrupt=cb):
+                if ev["type"] == "done":
+                    mode_now = status.get_mode(conv_id)
+                    if mode_now != "ai":
+                        # 发送前实时复检：已被切走则丢弃且不持久化（handoff-spec.md §1.4）
+                        yield {"type": "error", "data": {"code": "ModeChanged", "message": "AI 回复已丢弃（会话已转人工）"}}
+                        yield {"type": "done", "data": {"final": None}}
+                        return
+                    final = ev["data"].get("final")
+                    if final is not None:
+                        messages_store.append(conv_id, "assistant", final)
+                    yield ev
                     return
                 yield ev
 

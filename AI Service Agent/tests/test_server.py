@@ -3,6 +3,7 @@ import sqlite3
 from fastapi.testclient import TestClient
 
 from ai_service_agent.harness.handoff import HandoffService
+from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 
@@ -35,6 +36,29 @@ def test_human_lane_after_handoff(tmp_path):
     with client.stream("POST", "/chat", json={"session_id": info["conversation_id"], "message": "在吗"}) as r:
         text = "".join(r.iter_text())
     assert "人工" in text  # 不触图，返回人工车道占位
+
+    # 人工车道消息落 Message Store（唯一真相源）
+    conn2 = sqlite3.connect(tmp_path / "s.db")
+    rows = MessageStore(conn2).list(info["conversation_id"])
+    conn2.close()
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+
+
+def test_ai_chat_persists_user_and_assistant(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
+    r = client.post("/sessions", json={"user_id": "u1"})
+    session_id = r.json()["session_id"]
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "hi"}) as resp:
+        text = "".join(resp.iter_text())
+    assert '"done"' in text
+
+    conn = sqlite3.connect(str(tmp_path / "s.db"))
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert rows[0]["content"] == "hi"
+    assert rows[1]["content"]  # assistant 回复已持久化
 
 
 def test_handoff_resolve_endpoint(tmp_path):

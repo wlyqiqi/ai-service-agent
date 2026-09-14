@@ -6,7 +6,7 @@
 
 ```python
 class CustomerServiceState(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]   # 对话历史（唯一跨子图累积字段）
+    messages: Annotated[list[AnyMessage], add_messages]   # 对话历史（唯一跨子图累积字段；真相源=Message Store，每次图调用水合的工作视图，见 handoff-spec.md §5.2）
     user_id: str
     session_id: str
     capability: str                # Router 输出的能力标签
@@ -24,6 +24,7 @@ class CustomerServiceState(TypedDict):
 规则：
 
 - `messages` 用 `add_messages` reducer，全图唯一累积通道；其余字段按需覆盖。
+- `messages` 为入口层从 Message Store 水合的工作视图（`handoff-spec.md` §5.2）；图内只累积 / 工作，持久化由入口层完成，工具 / Router 内部消息不入 Store。
 - `__interrupt__` 由 LangGraph 自动维护，不放进业务字段；它是恢复判断的**权威依据**，`pending_approval` 为派生业务字段（供审批服务查询），两者保持一致。
 - `execution_status` 为每个 turn 的执行阶段状态：`idle`（会话创建 / 无活动 turn）→ `routing`（Router 分类中）→ `running`（子图执行中）；`waiting_confirmation`（Mutation 等待用户确认）、`waiting_approval`（HighRisk 等待人工审批）、`waiting_handoff`（**新增**：因中途触发 Handoff 而暂停，既非正常完成也非失败）、`completed`（正常完成）、`failed`（失败）。
 - 子图抛出 `handoff_request` 后 `execution_status` **必须**置 `waiting_handoff`，**不得**置 `completed` 或 `failed`；人工 Resolve 回切 `conversation_mode=ai` 后，ResumeHandler 恢复原被中断子图时转回 `running`（见 `graph-spec.md` §3、§6.5）。

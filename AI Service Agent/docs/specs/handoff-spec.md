@@ -59,9 +59,12 @@
 - **ID 映射**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 是 LangGraph checkpoint 内部标识，与 `conversation_id` 建立**一对一映射但不是同一个字段**。会话创建时生成 `thread_id`（如 uuid）并持久化映射；同一业务会话需要重置图执行状态时（如严重异常后清空 graph 重来），可更换 `thread_id` 而 `conversation_id` 不变。决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`。
 - **pending 审批归宿（human → ai 切换时）**：继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复（见 §1.3）。
 
-### 5.2 未决（禁止擅自决定）
+### 5.2 已定案（消息真相源，2026-09-14）
 
-1. LangGraph `state.messages` 与 canonical Message Store 之间谁是唯一真相源（顶层图人工车道"写入 Message Store"与此直接相关）。
+- **Message Store（`conversation_message` 表）是会话消息唯一真相源**；`state.messages` 降级为每次 graph 调用时从 Store 水合的工作视图（`user→HumanMessage`、`assistant→AIMessage`，按写入顺序），不构成权威记录。
+- 只持久化 user / assistant 轮次；工具调用 / Router 结构化输出等图内消息不入 Store。
+- 人工接管期间 Graph 不执行，消息只写 Message Store；回切 `ai` 后下一 turn 水合即可见完整历史。
+- 决策留痕见 `docs/decisions/2026-09-14-message-store-truth-source.md`。
 
 ## 6. 关联文档
 

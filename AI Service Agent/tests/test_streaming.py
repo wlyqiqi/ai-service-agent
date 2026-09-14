@@ -24,10 +24,11 @@ def test_stream_emits_token_and_done():
         ]
     )
     graph = build_graph(model, tools=[kb_search])
-    events = _collect(event_stream(graph, config={"thread_id": "t1"}, message=HumanMessage(content="hi")))
+    events = _collect(event_stream(graph, config={"thread_id": "t1"}, messages=[HumanMessage(content="hi")]))
     types = [e["type"] for e in events]
     assert types[-1] == "done"
     assert "token" in types
+    assert events[-1]["data"]["final"] == "FAQ 回答。"
 
 
 def test_stream_emits_error_then_done():
@@ -38,7 +39,8 @@ def test_stream_emits_error_then_done():
         raise Boom("boom")
 
     graph = bad_model
-    events = _collect(event_stream(graph, config={"thread_id": "t1"}, message=HumanMessage(content="hi")))
+    events = _collect(event_stream(graph, config={"thread_id": "t1"}, messages=[HumanMessage(content="hi")]))
     types = [e["type"] for e in events]
     assert types[-1] == "done"
     assert "error" in types
+    assert events[-1]["data"]["final"] is None

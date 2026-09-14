@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from ai_service_agent.harness.handoff import HandoffService
+from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ToolCallingFakeModel
@@ -23,6 +24,19 @@ class KeywordHandoffFakeModel(ToolCallingFakeModel):
             payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
         else:
             payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
+
+
+class HistoryEchoFakeModel(ToolCallingFakeModel):
+    """离线：read agent 回复中回显收到的 user 消息条数，用于验证跨 turn 水合。"""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
+        users = [m for m in messages if getattr(m, "type", "") == "human"]
+        if "路由器" in system:
+            payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        else:
+            payload = f"收到{len(users)}条用户消息"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 
@@ -74,3 +88,22 @@ def test_handoff_interrupt_roundtrip(tmp_path):
     mode = ConversationStatusStore(conn).get_mode(session_id)
     conn.close()
     assert mode == "human"
+
+
+def test_ai_chat_hydrates_history_across_turns(tmp_path):
+    """Message Store 唯一真相源：每 turn 从 Store 水合 state.messages，跨 turn 历史可见。"""
+    client = TestClient(create_app(str(tmp_path / "h2.db"), model=HistoryEchoFakeModel(responses=[])))
+    r = client.post("/sessions", json={"user_id": "u1"})
+    session_id = r.json()["session_id"]
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "第一轮"}) as resp:
+        "".join(resp.iter_text())
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "第二轮"}) as resp:
+        text2 = "".join(resp.iter_text())
+    assert "收到2条用户消息" in text2
+
+    conn = sqlite3.connect(str(tmp_path / "h2.db"))
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert len(rows) == 4
+    assert [r["role"] for r in rows] == ["user", "assistant", "user", "assistant"]
