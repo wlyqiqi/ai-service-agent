@@ -1,7 +1,7 @@
 # 安全规格（safety-spec.md）
 
 - 状态：**新增**（补原设计两个缺口：安全预检、handoff 触发规则）
-- 关联：`tool-spec.md`（工具元数据）· `graph-spec.md`（预检节点位置）· `approval-spec.md`（审批 gate）· `event-spec.md`（safety_rejected / handoff 事件）· `architecture.md`（错误处理）
+- 关联：`tool-spec.md`（工具元数据）· `graph-spec.md`（预检节点位置）· `approval-spec.md`（审批 gate）· `event-spec.md`（safety_rejected / handoff_created / handoff_resolved）· `architecture.md`（错误处理）
 
 ## 1. 安全预检（Safety Pre-check）
 
@@ -60,18 +60,20 @@
 ### 2.2 流程
 
 ```text
-规则命中 -> handoff=True -> 创建工单(ticket) -> 通知用户（含工单号/排队说明）
-       -> 会话状态标记 handoff -> Final Response 结束本 turn
+规则命中 -> check_handoff 置位 handoff、execution_status=waiting_handoff
+       -> 抛出 interrupt(handoff_request)（reason / summary，见 graph-spec.md §6.5）
+       -> 外层接管：创建 Handoff Record + 原子切换 conversation_mode=human + 发 handoff_created
+       -> 通知用户（含工单号/排队说明）-> 本 turn 结束
 ```
 
-- 触发判定节点：`check_handoff`（确定性规则）+ Concierge/审批拒绝分支可置位 `handoff`；工具级失败计数在 `context` 中维护。
-- 转人工后，后续 turn 走轻量模式（仅转达/等待），不再重复路由到业务子图。
+- 触发判定节点：`check_handoff`（确定性规则）检测信号并置位 `handoff` / `execution_status=waiting_handoff`，随后抛出 `interrupt(handoff_request)`；工具级失败计数在 `context` 中维护。Concierge / 审批拒绝分支可复用同一机制置位转人工信号。
+- 转人工后 `conversation_mode=human`，后续用户消息在入口直接进入**人工车道**（写 Message Store + 通知坐席，见 `handoff-spec.md` §1），不触发 checkpointer / Graph / Guard / Router；人工 Resolve 回切 mode=ai 后恢复 AI 路径。
 
 ### 2.3 边界
 
 - **审批拒绝 ≠ 自动转人工**：拒绝后按 2.1 规则判定（默认用户坚持才转）。
 - 预检失败不直接转人工，按 1.3 收尾；用户再次追问同一操作时才累计计数。
-- 转人工由图内确定性节点 `check_handoff` 直接执行，**不作为工具注册**、不进入任何 agent 工具集，LLM 无权选择转人工。
+- 转人工信号由确定性节点 `check_handoff` 检测并经 `interrupt(handoff_request)` 抛出，**不作为工具注册**、不进入任何 agent 工具集，LLM 无权选择转人工；Handoff Record 创建与 `conversation_mode` 切换由外层（Conversation Runtime）统一完成，子图不直接调用任何 Handoff API（见 `graph-spec.md` §6.5、`handoff-spec.md` §3）。
 
 ## 3. 变更纪律
 

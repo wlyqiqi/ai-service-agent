@@ -6,6 +6,8 @@
 
 - SSE（REST 长连接）与 WebSocket 双通道，同一归一化事件格式。
 - 由 `harness/streaming.py` 将 `graph.astream(stream_mode=["messages","updates","custom"])` 转成事件。
+- `tool_call` / `tool_result` 等工具事件由 harness hook 在工具执行前后挂接发出，源头不在子图 / 工具内部（见 `architecture.md` §8.1）。
+- `handoff_created` / `handoff_resolved` 由**外层（Conversation Runtime）**在接管 / Resolve 时发出（见 `handoff-spec.md` §3），子图自身不直接发出 `handoff_created`。
 
 ## 2. 事件类型
 
@@ -19,11 +21,23 @@
 | `approval_updated` | `{approval_id, status}` | 审批状态变更 |
 | `confirmation_required` | `{summary}` | Mutation interrupt（等待用户确认，见 graph-spec.md §6.2） |
 | `confirmation_updated` | `{action}` | 用户确认结果（confirm / cancel） |
-| `handoff` | `{reason, ticket_id?}` | 触发转人工（见 safety-spec.md） |
+| `handoff_created` | `{handoff_id?, reason, summary?, ticket_id?}` | 转人工接管完成（Conversation Runtime 外层发出，见 handoff-spec.md §3） |
+| `handoff_resolved` | `{handoff_id?, conversation_id?}` | 人工 Resolve 完成、mode 回切 ai（Conversation Runtime 发出） |
 | `done` | `{final}` | 本 turn 结束 |
 | `error` | `{code, message}` | 归一化错误 |
 
 统一结构：`{ "type": str, "data": object }`。
+
+## 2.1 子图事件集合
+
+| 子图 | 允许发出的事件 |
+|---|---|
+| ReadGraph | `tool_call` / `tool_result` / `token` / `error` / `done` |
+| MutationGraph | `tool_call` / `tool_result` / `confirmation_required` / `confirmation_updated` / `token` / `error` / `done` |
+| HighRiskGraph | `tool_call` / `tool_result` / `approval_required` / `approval_updated` / `token` / `error` / `done` |
+
+- 任意子图触发 Handoff 时额外可能发出 `handoff_created`：**由外层统一发出**，子图自身不直接发出这个事件。
+- 安全预检失败时由预检节点发出 `safety_rejected`（见 `safety-spec.md` §1.3），不改变上述子图事件集合。
 
 ## 3. 事件流时序（示例：HighRisk turn）
 

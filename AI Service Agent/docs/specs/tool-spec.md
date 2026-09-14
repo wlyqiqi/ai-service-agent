@@ -26,6 +26,7 @@ class ToolMeta:
 - 工具函数签名：参数带类型注解与描述；通过 `InjectedState` / `InjectedStore` / `ToolRuntime` 访问会话/记忆/运行时。
 - 返回值必须是 JSON 可序列化结构；工具内部异常由 `handle_tool_errors` 归一化，不得裸抛到图外。
 - 写工具必须支持幂等键（`idempotent=True` + 参数带 `request_id`），防重放。
+- 工具自身不承载横切逻辑（事件、观测、审计、限流等）：由 harness hook 在工具执行前后统一挂接（见 `architecture.md` §8.1）。
 
 ## 3. 与安全预检的衔接
 
@@ -42,7 +43,7 @@ class ToolMeta:
 | `order_cancel` | 订单取消 | high_risk | 需人工审批 |
 | `refund_apply` | 退款申请 | high_risk | 需人工审批 |
 
-- 转人工**不是工具**：由 `check_handoff` 确定性节点直接执行（见 `safety-spec.md` §2），不作为工具注册、不进入任何 agent 工具集。
+- 转人工**不是工具**：由 `check_handoff` 确定性节点检测信号并经 `interrupt(handoff_request)` 抛出（见 `safety-spec.md` §2、`graph-spec.md` §6.5），不作为工具注册、不进入任何 agent 工具集；Handoff Record 创建与 `conversation_mode` 切换由外层（Conversation Runtime）完成，子图不直接调用任何 Handoff API。
 
 ## 5. 变更纪律
 

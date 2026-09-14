@@ -19,6 +19,13 @@
 FastAPI (REST + SSE/WS, 仅传输层)
    |
    v
+Conversation Runtime（入口层，轻量 conversation_status）
+   |  conversation_mode == human ? -> 人工车道（写 Message Store + 通知坐席，不触图）
+   |  conversation_mode == ai      -> 进入 CustomerServiceGraph
+   |  接收子图 interrupt(handoff_request) -> 建 Handoff Record + 原子切 mode=human + 发 handoff_created
+   |  人工 Resolve -> mode=ai + 发 handoff_resolved
+   |  发送 AI 回复前最终校验 mode == ai（实时值，非生成时刻值）
+   v
 CustomerServiceGraph (LangGraph 总图, SQLite Checkpointer)
    |
    +- 入口条件边: Active Interrupt?
@@ -29,16 +36,20 @@ CustomerServiceGraph (LangGraph 总图, SQLite Checkpointer)
    |         |
    |         v  Policy 纯确定性映射 (capability x risk_level -> 子图)
    |
-   +- read      -> ReadGraph      (ReAct agent + 只读工具, 无 interrupt)
+   +- read      -> ReadGraph      (ReAct agent + 只读工具, 无业务 interrupt)
    +- mutation  -> MutationGraph  (安全预检 -> interrupt 用户确认 -> 执行)
    +- high_risk -> HighRiskGraph  (安全预检 -> interrupt 人工审批 -> 执行/拒绝)
    +- fallback  -> Concierge 兜底 agent
+   |
+   +- 任意子图检测到转人工信号 -> interrupt(handoff_request) -> 外层接管（见上）
    |
    v
 Final Response (写回 messages, 统一出口 + 归一化事件)
 ```
 
 业务工具为共享层（ERP/CRM/API 客户端），按 `risk_level` 绑定可调用集合。详见 `graph-spec.md`、`tool-spec.md`、`safety-spec.md`。
+
+顶层会话流程（`conversation_mode` 判断 → AI / 人工双车道 → 循环回入口）见 `docs/diagrams/handoff-overview.svg`；AI 路径内部结构见 `graph-spec.md`。入口层职责与 `conversation_mode` 状态机见 `handoff-spec.md`。
 
 ## 3. 技术选型（含实测依据）
 
@@ -56,10 +67,15 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 
 ## 4. 会话与持久化（横切）
 
-- `thread_id = session_id`，SQLite checkpoint（异步 `AsyncSqliteSaver`）持久化每次运行的完整状态。
+- `thread_id = session_id`（**沿用旧定义**；`conversation_id` 与 `thread_id` / `session_id` 的映射关系仍未裁决，见 `handoff-spec.md` §5 未决问题），SQLite checkpoint（异步 `AsyncSqliteSaver`）持久化每次运行的完整状态。
+- **轻量 `conversation_status` 存储（新增）**：独立于完整 checkpointer 状态（独立表或 Redis key），只存 `conversation_id → conversation_mode`（`ai` / `human` 两态）。`conversation_mode` 判断**禁止**走 `checkpointer.aget()` 读完整 State，必须读该轻量存储。
+- `POST /sessions` 创建会话时**显式写入 `conversation_mode = "ai"`**，不依赖存储层隐式默认值；入口判断为两态：`mode == "human" ? 进入人工车道 : 进入 AI 路径`。
+- 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在连接级内存，仅在 `handoff_created` / `handoff_resolved` 事件发生时主动更新，不要求每条用户消息重新查库（见 `handoff-spec.md` §2）。
 - 会话管理：创建 / 续期 / 历史查询（`get_state` / `aget_state`）。
 - Store（用户记忆）：`InMemoryStore` 起步，命名空间 `("users", user_id)`，接口按 `BaseStore` 抽象。
 - **传输契约（输入侧）**：`POST /chat { user_id, session_id?, message, meta? }` → 事件流；`POST /sessions { user_id }` → `{ session_id }`。FastAPI 仅做传输与会话映射，不含业务编排（输出侧契约见 `event-spec.md`）。
+
+> 未决标注：顶层图中人工车道"写入 Message Store"与图内 `state.messages` 谁是唯一真相源仍未裁决（见 `handoff-spec.md` §5 未决问题），本节不给出结论。
 
 ## 5. 错误处理 / 重试 / 超时（横切）
 
@@ -96,6 +112,17 @@ docs/                     # project-audit.md + specs/
 ```
 
 完整结构见 `docs/project-audit.md` E 节。
+
+## 8.1 Harness 层职责与 hook 扩展点（横切）
+
+- 原则（不可违反）：**挂在循环上，不写进循环里** — 扩展逻辑一律通过 harness hook 注入，不侵入 LangGraph 主循环（agent / 工具执行循环）。
+- hook 挂载点：工具执行**前 / 后**（pre/post tool hook）；harness 层提供 hook 作为扩展点，承载横切逻辑：归一化事件（`tool_call` / `tool_result` 等，见 `event-spec.md`）、观测（§6）、审计、限流等。
+- 子图与工具自身不得内联这些横切逻辑；工具只做业务动作。实现落点在 `harness/`（server / events / session / approvals / streaming / errors / tracing）。
+- hook 职责边界：
+  - **State 只读**：hook 可读 LangGraph State / 事件载荷用于观测与审计，**不得修改 State 与业务字段**；任何状态变更必须由图内节点显式完成。
+  - **允许阻断**：pre-hook 可阻断工具执行（限流、策略拦截等）；阻断时工具不执行，必须产出归一化事件（`error` 或对应类型），不得静默吞掉。
+  - **观测数据去向**：结构化日志（structlog）→ 日志后端；tracing → LangSmith；指标 → prometheus；对外事件 → `event-spec.md` 归一化协议。观测数据不写入 LangGraph State / 会话消息。
+- handoff 生命周期事件（`handoff_created` / `handoff_resolved`）由 Conversation Runtime 在接管 / Resolve 时经 harness 事件通道发出（事件契约见 `event-spec.md`；接管机制见 `handoff-spec.md`）。
 
 ## 9. 假设与范围外（横切）
 

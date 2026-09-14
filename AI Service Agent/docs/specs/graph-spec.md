@@ -16,11 +16,17 @@ START
   |                                                     |
   |                                                     v
   |                                         Read / Mutation / HighRisk / Fallback
+  |                                                      |
+  |                    +---------------------------------+  任意子图检测到转人工信号
+  |                    v
+  |        interrupt(handoff_request) -> 外层接管（建 Record + 原子切 mode + 发 handoff_created）
   |
-  END（Final Response 统一出口）
+  +- 正常完成 -> END（Final Response 统一出口）
 ```
 
 - 每个新 turn 先检查 `__interrupt__`；有挂起中断时语义是"回应上一个问题"，不重新走 Router。
+- 子图检测到需要转人工的信号时，**不自行创建 Handoff Record、不自行切换 `conversation_mode`**，统一抛出 `interrupt({"type": "handoff_request", "reason": ..., "summary": ...})`；外层（Conversation Runtime）负责接收信号 → 创建 Handoff Record → 原子切换 `conversation_mode` → 发出 `handoff_created` 事件。子图不直接调用任何 Handoff API（机制与事件见 `handoff-spec.md` §3 / `event-spec.md`）。
+- 抛出 `handoff_request` 后 `execution_status` 置 `waiting_handoff`（见 `state-spec.md` §1），不得置 `completed` / `failed`。
 - Final Response：子图结果写回 `messages`，由 harness 统一推送事件（见 `event-spec.md`）。
 
 ## 2. Guard 节点（并行检测）
@@ -36,6 +42,7 @@ START
 - resume payload 唯一 schema（审批 / 用户确认 / 超时共用，harness 直调与用户 turn 两条恢复入口均须遵守）：
   `Command(resume= { "action": "approve" | "reject" | "confirm" | "cancel", "note"?: str } | { "result": "expired" })`
 - 中断过期：`Command(resume={"result": "expired"})`，子图按过期分支收尾。
+- `handoff_request` 中断的恢复：人工 Resolve 将 `conversation_mode` 回切为 `ai` 后，下一个新 turn 经入口进入图，ResumeHandler 检测到 `__interrupt__` 类型为 `handoff_request` → 恢复至**原被中断的子图**（ReadGraph / MutationGraph / HighRiskGraph，取决于中断来源），继续该子图内部流程直到完成，才汇入 Final Response；不重新走 Router。恢复执行后的状态转移决策必须在图内完成（同 §3 原则，见 `approval-spec.md` §3.1）。
 
 ## 4. Router 节点
 
@@ -56,7 +63,8 @@ START
 ### 6.1 ReadGraph
 
 - `create_agent` + 只读工具集（知识库检索、订单查询等）+ ToolNode + `tools_condition`。
-- 无 interrupt；工具结果直接汇入回答。
+- 无**业务** interrupt（不发起确认 / 审批）；检测到需要转人工的信号时同样经 `interrupt(handoff_request)` 退出（见 §6.5）。
+- 工具结果直接汇入回答。
 
 ### 6.2 MutationGraph（workflow）
 
@@ -71,7 +79,15 @@ START
 
 ### 6.4 Fallback / Concierge
 
-- 兜底 agent：解释边界、收集更多信息、按 `safety-spec.md` 的 handoff 规则触发转人工（由 `check_handoff` 确定性节点执行，`handoff=True`）。
+- 兜底 agent：解释边界、收集更多信息；`check_handoff` 确定性节点按 `safety-spec.md` §2 规则检测转人工信号，命中后经 `interrupt(handoff_request)` 抛出（见 §6.5），由外层接管；Fallback 自身不直接创建 Handoff / 切换 mode。
+
+### 6.5 子图中途触发 Handoff（统一机制）
+
+- ReadGraph / MutationGraph / HighRiskGraph 检测到需要转人工的信号时，不自行创建 Handoff Record，也不自行决定 `conversation_mode` 切换；统一抛出一次 interrupt，resume / 退出信号类型为：
+  `interrupt({"type": "handoff_request", "reason": ..., "summary": ...})`
+- 外层（Conversation Runtime 或等价的入口逻辑）统一负责：接收该信号 → 创建 Handoff Record → 原子切换 `conversation_mode` → 发出 `handoff_created` 事件。子图自身不直接调用 Handoff 相关的任何 API。
+- 抛出后 `execution_status` 置 `waiting_handoff`（见 `state-spec.md` §1），不得置 `completed` / `failed`。
+- 触发信号来源为 `check_handoff` 等确定性规则（见 `safety-spec.md` §2）；LLM 无权临时决定转人工。
 
 ## 7. 节点级工程参数（横切，见 architecture.md §5）
 
@@ -92,5 +108,7 @@ START
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
-| Fallback / Concierge | `messages`、`context` | `messages`、`handoff` |
-| check_handoff | `context`（工具失败计数）、`messages` | `handoff` |
+| Fallback / Concierge | `messages`、`context` | `messages` |
+| check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |
+
+- `execution_status` 由入口与图内节点按 turn 阶段维护（取值见 `state-spec.md` §1）；子图抛出 `handoff_request` 时置 `waiting_handoff`，不得置 `completed` / `failed`。

@@ -15,13 +15,19 @@ class CustomerServiceState(TypedDict):
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（每轮覆盖，见 graph-spec.md §2）
     context: dict                  # 业务上下文：订单、账户、工单等
     pending_approval: ApprovalRequest | None
-    handoff: bool                  # 是否转人工
+    handoff: bool                  # 转人工信号标记（check_handoff 置位，见 graph-spec.md §6.5）
+    execution_status: Literal["idle", "routing", "clarifying", "running",
+                              "waiting_confirmation", "waiting_approval",
+                              "waiting_handoff", "completed", "failed"]
 ```
 
 规则：
 
 - `messages` 用 `add_messages` reducer，全图唯一累积通道；其余字段按需覆盖。
 - `__interrupt__` 由 LangGraph 自动维护，不放进业务字段；它是恢复判断的**权威依据**，`pending_approval` 为派生业务字段（供审批服务查询），两者保持一致。
+- `execution_status` 为每个 turn 的执行阶段状态：`idle`（会话创建 / 无活动 turn）→ `routing`（Router 分类中）→ `running`（子图执行中）；`waiting_confirmation`（Mutation 等待用户确认）、`waiting_approval`（HighRisk 等待人工审批）、`waiting_handoff`（**新增**：因中途触发 Handoff 而暂停，既非正常完成也非失败）、`completed`（正常完成）、`failed`（失败）。
+- 子图抛出 `handoff_request` 后 `execution_status` **必须**置 `waiting_handoff`，**不得**置 `completed` 或 `failed`；人工 Resolve 回切 `conversation_mode=ai` 后，ResumeHandler 恢复原被中断子图时转回 `running`（见 `graph-spec.md` §3、§6.5）。
+- `conversation_mode` **不在此 State 中**：它属于入口层轻量 `conversation_status` 存储（`handoff-spec.md` §2），图内不维护；`handoff` 字段是图内转人工信号标记，与 `conversation_mode` 分层。
 
 ## 2. 子图局部状态
 
