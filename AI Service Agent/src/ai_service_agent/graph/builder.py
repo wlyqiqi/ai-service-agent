@@ -1,5 +1,6 @@
 from langgraph.graph import END, START, StateGraph
 
+from ai_service_agent.config import make_model
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.router import make_router
 from ai_service_agent.graph.state import CustomerServiceState
@@ -44,3 +45,7 @@ def build_graph(model, tools: list, checkpointer=None):
     builder.add_edge("fallback", "final")
     builder.add_edge("final", END)
     return builder.compile(checkpointer=checkpointer)
+
+
+# langgraph platform / CLI 入口（langgraph.json -> builder.py:app）
+app = build_graph(make_model(), tools=[])
