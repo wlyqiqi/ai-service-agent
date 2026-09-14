@@ -142,3 +142,20 @@ docs/                     # project-audit.md + specs/
 - FastAPI / pytest 未装 → 开发第一步安装并加入 pyproject。
 - CLI 全局/venv 分离 → 文档与 CI 显式调用全局 `langgraph`。
 - ARK Coding 端点特性 → 生产前复核端点/模型额度与审核策略。
+
+## 11. 状态机管理全景（横切）
+
+整个方案由多个**独立、分层管理**的状态机构成，遵循「谁存储、谁决策、谁转移」分层原则：
+
+| 状态机 | 取值 | 存储位置 | 管理位置 | 转移触发 |
+|---|---|---|---|---|
+| `conversation_mode` | `ai` / `human` | 轻量 `conversation_status`（独立表/Redis key，`conversation_id → mode`） | **入口层**（Conversation Runtime），不进 LangGraph | `ai→human`：收 `interrupt(handoff_request)` 后与建 Handoff Record **同一事务**原子切换；`human→ai`：人工 Resolve（前置校验 pending 审批，归宿=继续挂起，见 `handoff-spec.md` §1.3） |
+| `execution_status` | 9 值（`idle…waiting_handoff…failed`） | LangGraph **State 内字段**，随 checkpoint 持久化 | **图内**（Router / 子图 / ResumeHandler 按 turn 阶段置位） | `check_handoff` 抛 `handoff_request` 前置 `waiting_handoff`；Resolve 后 ResumeHandler 恢复转 `running` |
+| 审批状态 | `pending / approved / rejected / expired` | Approval Service（轻量状态存储，同 `conversation_status` 定位） | 状态存储在外置服务（惰性过期）；**业务决策在图内** | 图发起 interrupt；HTTP 端点前置校验后 `Command(resume=...)` 恢复（见 `approval-spec.md` §3） |
+| Handoff 生命周期 | `created → 接管中 → resolved` | `handoff_record` 表 | **外层**创建 / resolve，与 mode 切换同事务 | 子图 `interrupt(handoff_request)` → 外层建 Record + 切 mode + `handoff_created`；`POST /handoffs/{id}/resolve` → `handoff_resolved` |
+
+- **入口闸门**（`conversation_mode`）只回答"这条消息 AI 能不能碰"，不关心图内进度；判断必须轻量（见 `handoff-spec.md` §2）。
+- **图内进度**（`execution_status`）回答"本 turn 走到哪一步"，随 checkpoint 落库；转人工时置 `waiting_handoff`，与 `mode` **分层但语义一致**（分属 checkpoint 与外层表，非同一事务）。
+- **审批状态**只由服务持久化，业务决策全在图内；MVP 第一公里未纳入（见 `mvp-first-mile.md` §2）。
+- **Handoff Record** 创建与 `mode` 切换为**同一事务**（`handoff-spec.md` §1.2 的原子性）。
+- 全景观图：`docs/diagrams/state-machines.html`。

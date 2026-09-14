@@ -11,6 +11,7 @@
 | `handoff-overview.svg` | 顶层图 | conversation_mode 入口判断 → AI / 人工双车道 → 循环回入口（高层会话流程 / 状态机视图） |
 | `graph-overview.md` | flowchart | AI 路径内部总图：入口条件边 / Guard∥Router / Policy / 四个子图 / handoff 退出 / 发送前重校验（下层细节图） |
 | `customer_service_final_architecture.svg` | SVG | 与 `graph-overview.md` 等价的下层细节图渲染版 |
+| `state-machines.html` | 层叠 + 状态机 | 状态机管理全景：4 个状态机的存储 / 管理位置 / 转移触发（对应 `architecture.md` §11） |
 | `interrupt-resume-sequence.md` | sequenceDiagram | 多轮对话中 interrupt → 审批/确认 → Command(resume) 恢复的时序 + Handoff 接管时序 |
 
 ## 维护规则
