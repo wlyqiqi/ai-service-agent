@@ -8,6 +8,7 @@ from ai_service_agent.graph.router import make_router
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
+from ai_service_agent.graph.workflows.high_risk_agent import make_high_risk_graph
 from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
@@ -23,7 +24,8 @@ POLICY = {
     ("order", "mutation"): "mutation_graph",
     ("account", "mutation"): "mutation_graph",
     ("faq", "mutation"): "mutation_graph",     # CTRL-0094（deny，需进 MutationGraph 由预检拦截）
-    ("order", "high_risk"): "fallback",  # Task 5 纳入 HighRiskGraph
+    ("order", "high_risk"): "high_risk_graph",
+    ("account", "high_risk"): "high_risk_graph",
 }
 
 
@@ -51,8 +53,7 @@ def _safety_final(state: dict) -> dict:
 def build_graph(model, tools: list, checkpointer=None, registry=None):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
-    registry 参数供 P3 Task 4/5 的 Mutation/HighRisk 子图按档注入工具（tool-spec §1 分层注入），
-    本任务暂不消费（guard 无工具需求），签名先与后续任务对齐（pre-flight 裁定）。
+    registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
     """
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
     router = make_router(model)
@@ -60,6 +61,7 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
     read_graph = make_read_graph(model, tools)
     fallback = make_fallback_graph(model)
     mutation_graph = make_mutation_graph(model, reg.for_risk_level("mutation"), reg)
+    high_risk_graph = make_high_risk_graph(model, reg.for_risk_level("high_risk"), reg)
 
     def finalize(state: dict) -> dict:
         return {"execution_status": "completed"}
@@ -71,6 +73,7 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
     builder.add_node("safety_final", _safety_final)
     builder.add_node("read_graph", read_graph)
     builder.add_node("mutation_graph", mutation_graph)
+    builder.add_node("high_risk_graph", high_risk_graph)
     builder.add_node("fallback", fallback)
     builder.add_node("final", finalize)
     builder.add_edge(START, "router")
@@ -79,10 +82,11 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
     builder.add_edge("guard", "policy_gate")
     builder.add_conditional_edges(
         "policy_gate", _guard_aware_target,
-        {"safety_final": "safety_final", "read_graph": "read_graph", "fallback": "fallback", "mutation_graph": "mutation_graph"},
+        {"safety_final": "safety_final", "read_graph": "read_graph", "fallback": "fallback", "mutation_graph": "mutation_graph", "high_risk_graph": "high_risk_graph"},
     )
     builder.add_edge("read_graph", "final")
     builder.add_edge("mutation_graph", "final")
+    builder.add_edge("high_risk_graph", "final")
     builder.add_edge("fallback", "final")
     builder.add_edge("safety_final", "final")
     builder.add_edge("final", END)

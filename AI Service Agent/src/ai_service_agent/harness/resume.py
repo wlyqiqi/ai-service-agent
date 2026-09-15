@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from langchain_core.messages import BaseMessage
 from langgraph.types import Command
 
@@ -27,3 +29,21 @@ def resolve_resume_payload(interrupt_value, latest_user_text: str = "") -> dict 
         # 未命中关键词 fail-closed：按取消处理（OQ-1；绝不默认放行）
         return {"action": "cancel"}
     return None
+
+
+def approval_dispatch(interrupt_value, now=None) -> str | None:
+    """approval_required 中断的入口判定（OQ-4）：
+    'pending'（保持挂起：不 resume、不新起 run，等审批完成/过期）
+    'expired'（以 {"result":"expired"} 恢复，HighRiskGraph 过期收尾）；其它中断 -> None。
+    """
+    if not isinstance(interrupt_value, dict) or interrupt_value.get("type") != "approval_required":
+        return None
+    expires_at = interrupt_value.get("expires_at")
+    if not expires_at:
+        return "pending"
+    now = now or datetime.now(timezone.utc)
+    try:
+        expires = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return "pending"
+    return "expired" if now >= expires else "pending"

@@ -83,3 +83,14 @@ def test_resolve_resume_payload_confirmation_keywords():
     assert resolve_resume_payload(it.value, latest_user_text="好的，确认") == {"action": "confirm"}
     assert resolve_resume_payload(it.value, latest_user_text="取消吧") == {"action": "cancel"}
     assert resolve_resume_payload(it.value, latest_user_text="随便") == {"action": "cancel"}  # 未命中 fail-closed
+
+def test_approval_dispatch_pending_and_expired():
+    from ai_service_agent.harness.resume import approval_dispatch
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    pending = {"type": "approval_required", "approval_id": "A", "expires_at": (now + timedelta(minutes=30)).isoformat()}
+    expired = {"type": "approval_required", "approval_id": "A", "expires_at": (now - timedelta(minutes=1)).isoformat()}
+    assert approval_dispatch(pending, now=now) == "pending"
+    assert approval_dispatch(expired, now=now) == "expired"
+    assert approval_dispatch({"type": "confirmation_required"}, now=now) is None

@@ -8,7 +8,8 @@ from ai_service_agent.tools.kb import kb_search
 def test_policy_maps_read_path():
     assert POLICY[("order", "read")] == "read_graph"
     assert POLICY[("unknown", "read")] == "fallback"
-    assert POLICY[("order", "high_risk")] == "fallback"  # MVP 未纳入审批
+    assert POLICY[("order", "high_risk")] == "high_risk_graph"  # Task 5 纳入审批
+    assert POLICY[("account", "high_risk")] == "high_risk_graph"
 
 
 def test_build_graph_read_path():
