@@ -21,6 +21,11 @@ class ToolRegistry:
     def register(self, meta: ToolMeta, fn: BaseTool) -> None:
         self._tools[meta.name] = (meta, fn)
 
+    def meta_for(self, name: str) -> Optional[ToolMeta]:
+        """select / safety_check / recheck 消费：按工具名取元数据（P3 预检与分层校验）。"""
+        entry = self._tools.get(name)
+        return entry[0] if entry is not None else None
+
     def for_risk_level(self, level: str) -> list[BaseTool]:
         """构建期注入：只给该风险等级及以下可用的工具（tool-spec.md §1）。"""
         order = {"read": 0, "mutation": 1, "high_risk": 2}
