@@ -3,6 +3,8 @@ import sqlite3
 
 import httpx
 
+from fastapi.testclient import TestClient
+
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -11,7 +13,7 @@ from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
-from ai_service_agent.testing import ToolCallingFakeModel
+from ai_service_agent.testing import ApprovalFlowFakeModel, ToolCallingFakeModel
 
 
 class RaceKeywordModel(ToolCallingFakeModel):
@@ -76,3 +78,30 @@ def test_resolve_and_chat_race_no_double_resume(tmp_path):
     conn.close()
     notices = [r for r in rows if r["role"] == "assistant" and "转接人工" in r["content"]]
     assert len(notices) == 1
+
+
+def test_approval_double_resume_no_double_execution(tmp_path):
+    """同一 approval_id 双 approve 并发：thread 锁 + 锁内权威 precheck -> 一个 200 一个 409，只执行一次。"""
+    db = str(tmp_path / "ar.db")
+    app = create_app(db, model=ApprovalFlowFakeModel(responses=[]))
+    client = TestClient(app)
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        assert "approval_required" in "".join(r.iter_text())
+    conn = sqlite3.connect(db)
+    approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
+    conn.close()
+
+    async def race():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            r1, r2 = await asyncio.gather(
+                c.post(f"/approvals/{approval_id}/approve"),
+                c.post(f"/approvals/{approval_id}/approve"),
+            )
+            return sorted([r1.status_code, r2.status_code])
+
+    assert asyncio.run(race()) == [200, 409]
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT status FROM approval_record WHERE approval_id=?", (approval_id,)).fetchone()[0] == "approved"
+    conn.close()

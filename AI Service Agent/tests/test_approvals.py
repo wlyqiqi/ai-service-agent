@@ -2,6 +2,14 @@ import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from fastapi.testclient import TestClient
+
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.harness.server import create_app
+from ai_service_agent.testing import ApprovalFlowFakeModel
+
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
     ApprovalExpired,
@@ -104,3 +112,63 @@ def test_interrupt_callback_simulate_approval_marks_approved(tmp_path):
                     "expires_at": "2099-01-01T00:00:00+00:00", "requester_user_id": "u1"}))
     assert svc.get("A-10")["status"] == "approved"
     conn.close()
+
+
+def test_approval_endpoint_approve_completes_graph(tmp_path):
+    db = str(tmp_path / "e.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        text = "".join(r.iter_text())
+    assert '"approval_required"' in text
+
+    conn = sqlite3.connect(db)
+    approval_id, thread_id = conn.execute("SELECT approval_id, thread_id FROM approval_record LIMIT 1").fetchone()
+    conn.close()
+
+    r = client.post(f"/approvals/{approval_id}/approve")
+    assert r.status_code == 200
+    assert r.json()["status"] == "approved"
+
+    r2 = client.post(f"/approvals/{approval_id}/approve")  # 幂等：重复 decision -> 409
+    assert r2.status_code == 409
+
+    async def final_state():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(ApprovalFlowFakeModel(responses=[]), saver)
+            st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return st.interrupts, st.values.get("execution_status")
+    interrupts, status = asyncio.run(final_state())
+    assert not interrupts and status == "completed"
+
+
+def test_approval_endpoint_reject_no_tool_and_404(tmp_path):
+    db = str(tmp_path / "r.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        "".join(r.iter_text())
+    conn = sqlite3.connect(db)
+    approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
+    conn.close()
+
+    r = client.post(f"/approvals/{approval_id}/reject", json={"note": "资料不足"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "rejected"
+    conn = sqlite3.connect(db)
+    rec = conn.execute("SELECT status, decided_by FROM approval_record WHERE approval_id=?", (approval_id,)).fetchone()
+    conn.close()
+    assert rec == ("rejected", "approver")
+
+    assert client.get("/approvals/nope").status_code == 404
+    assert client.get(f"/approvals/{approval_id}").json()["status"] == "rejected"
+
+
+def test_approval_get_and_list_pending(tmp_path):
+    db = str(tmp_path / "l.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        "".join(r.iter_text())
+    body = client.get("/approvals?status=pending").json()
+    assert len(body["items"]) == 1 and body["items"][0]["status"] == "pending"

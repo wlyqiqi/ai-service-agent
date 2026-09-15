@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import sqlite3
 
 from fastapi import FastAPI, HTTPException
@@ -9,13 +10,27 @@ from pydantic import BaseModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
+from ai_service_agent.config import get_settings
+
+from ai_service_agent.harness.approvals import (
+    ApprovalAlreadyProcessed,
+    ApprovalExpired,
+    ApprovalNotFound,
+    ApprovalService,
+)
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import HANDOFF_NOTICE, HandoffService
 from ai_service_agent.harness.messages import MessageStore
-from ai_service_agent.harness.resume import HANDOFF_RESUME_ACTION, resolve_resume_payload
+from ai_service_agent.harness.resume import (
+    HANDOFF_RESUME_ACTION,
+    approval_dispatch,
+    resolve_resume_payload,
+)
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import make_fake_model
+
+logger = logging.getLogger("ai_service_agent")
 
 _locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
@@ -28,6 +43,10 @@ class CreateSessionBody(BaseModel):
 class ChatBody(BaseModel):
     session_id: str
     message: str
+
+
+class RejectBody(BaseModel):
+    note: str | None = None
 
 
 def _resolve_model(model):
@@ -44,16 +63,39 @@ async def _thread_lock(thread_id: str) -> asyncio.Lock:
         return _locks[thread_id]
 
 
-def create_app(db_path: str, model=None):
+def _combined_interrupt_callback(handoff_cb, approval_cb):
+    """handoff / approval 两类 interrupt 的统一 on_interrupt 分发（approval-spec §3.1）。"""
+
+    async def on_interrupt(value):
+        if isinstance(value, dict) and value.get("type") == "approval_required":
+            return await approval_cb(value)
+        return await handoff_cb(value)
+
+    return on_interrupt
+
+
+async def _approval_pending_events(it: dict):
+    """OQ-4 hold：审批挂起提示事件（event-spec §2 approval_required data 形状）。"""
+    yield {"type": "approval_required", "data": {
+        "approval_id": it.get("approval_id", ""),
+        "summary": it.get("summary", ""),
+        "expires_at": it.get("expires_at", ""),
+    }}
+    yield {"type": "done", "data": {"final": None, "message_id": None}}
+
+
+def create_app(db_path: str, model=None, simulate_approval: bool | None = None):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
     入口层例外：conversation_mode 轻量判断（handoff-spec.md §2）与 Message Store
     持久化 / 水合（state.messages 工作视图，handoff-spec.md §5.2）。
     """
+    sim = get_settings().simulate_approval if simulate_approval is None else simulate_approval
     conn = sqlite3.connect(db_path, check_same_thread=False)
     status = ConversationStatusStore(conn)
     handoff = HandoffService(conn, status)
     messages_store = MessageStore(conn)
+    approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
 
@@ -88,15 +130,39 @@ def create_app(db_path: str, model=None):
             # 先持久化用户消息（即便本 turn 失败也留痕），再水合历史作为 state.messages 输入
             messages_store.append(conv_id, "user", body.message)
             history = messages_store.hydrate(conv_id)
-            cb = handoff.make_interrupt_callback(conv_id)
+            cb = _combined_interrupt_callback(
+                handoff.make_interrupt_callback(conv_id),
+                approvals.make_interrupt_callback(conv_id, thread_id),
+            )
             lock = await _thread_lock(thread_id)
             async with lock:
                 async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                     graph = make_ai_graph(_resolve_model(model), saver)
                     cfg = {"configurable": {"thread_id": thread_id}}
                     st = await graph.aget_state(cfg)
-                    resume_payload = resolve_resume_payload(st.interrupts[0].value, body.message) if st.interrupts else None
-                    async for ev in event_stream(graph, cfg, history, on_interrupt=cb, resume_payload=resume_payload):
+                    resume_payload = None
+                    if st.interrupts:
+                        it = st.interrupts[0].value
+                        approval_state = approval_dispatch(it)
+                        if approval_state == "pending":
+                            rec = approvals.get(it.get("approval_id", "")) if it.get("approval_id") else None
+                            if sim and rec is not None and rec["status"] == "approved":
+                                # simulate_approval（approval-spec §5）：自动构造 approve 动作，走同一 resume 路径
+                                resume_payload = {"action": "approve"}
+                            else:
+                                # OQ-4：审批挂起 -> 不 resume、不新起 run（用户消息已落 Message Store），保持挂起
+                                async for ev in _approval_pending_events(it):
+                                    yield ev
+                                return
+                        elif approval_state == "expired":
+                            resume_payload = {"result": "expired"}   # HighRiskGraph 过期收尾
+                        else:
+                            resume_payload = resolve_resume_payload(it, body.message)
+                    async for ev in event_stream(
+                        graph, cfg, history, on_interrupt=cb,
+                        resume_payload=resume_payload,
+                        extra_state={"user_id": status.get_user_id(conv_id) or ""},
+                    ):
                         if ev["type"] == "handoff_created":
                             # 外层文案（D3）：落库 + 发 token，图内不生成
                             messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
@@ -126,6 +192,10 @@ def create_app(db_path: str, model=None):
         except KeyError:
             raise HTTPException(status_code=404, detail="handoff not found")
         conv_id = result["conversation_id"]
+        pending = approvals.pending_for_conversation(conv_id)
+        if pending:
+            # D9 裁定：只读信息项，仅日志/坐席展示，不影响 resolve 分支（Handoff 与 Approval 完全独立状态机）
+            logger.info("resolve handoff %s: conversation %s has %d pending approval(s)", handoff_id, conv_id, len(pending))
         thread_id = status.get_thread_id(conv_id)
         lock = await _thread_lock(thread_id)
         async with lock:
@@ -144,6 +214,56 @@ def create_app(db_path: str, model=None):
                         # 降级（D2）：中断保留，下一用户消息经入口 resume 调度兜底
                         pass
         return {"handoff_id": handoff_id, "mode": "ai"}
+
+    def _precheck_approval(approval_id: str) -> dict:
+        try:
+            return approvals.precheck(approval_id)
+        except ApprovalNotFound:
+            raise HTTPException(status_code=404, detail="approval not found")
+        except ApprovalAlreadyProcessed:
+            raise HTTPException(status_code=409, detail="approval already processed")
+        except ApprovalExpired:
+            raise HTTPException(status_code=410, detail="approval expired")
+
+    async def _approval_resume(approval_id: str, resume_payload: dict, decided: str) -> dict:
+        first = approvals.get(approval_id)
+        if first is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        thread_id = first["thread_id"]
+        lock = await _thread_lock(thread_id)
+        async with lock:
+            rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                graph = make_ai_graph(_resolve_model(model), saver)
+                await graph.ainvoke(
+                    Command(resume=resume_payload),
+                    {"configurable": {"thread_id": thread_id}},
+                )
+            # mark_decided 在锁内（T6 裁定）：锁释放前落库，第二个并发请求的锁内 precheck 才能看到非 pending
+            approvals.mark_decided(approval_id, decided, decided_by="approver")
+        return {"approval_id": approval_id, "status": decided}
+
+    @app.post("/approvals/{approval_id}/approve")
+    async def approve_approval(approval_id: str):
+        return await _approval_resume(approval_id, {"action": "approve"}, "approved")
+
+    @app.post("/approvals/{approval_id}/reject")
+    async def reject_approval(approval_id: str, body: RejectBody | None = None):
+        resume = {"action": "reject"}
+        if body is not None and body.note:
+            resume["note"] = body.note
+        return await _approval_resume(approval_id, resume, "rejected")
+
+    @app.get("/approvals/{approval_id}")
+    def get_approval(approval_id: str):
+        rec = approvals.get(approval_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        return rec
+
+    @app.get("/approvals")
+    def list_approvals(status: str | None = None):
+        return {"items": approvals.list_pending() if status == "pending" else approvals.all()}
 
     return app
 

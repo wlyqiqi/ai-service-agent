@@ -12,6 +12,7 @@ async def event_stream(
     messages: list[BaseMessage],
     on_interrupt: Callable | None = None,
     resume_payload: dict | None = None,
+    extra_state: dict | None = None,
 ) -> AsyncGenerator[dict, None]:
     """graph.astream -> SSE 归一化事件（event-spec.md）。
 
@@ -28,7 +29,14 @@ async def event_stream(
     done 的 message_id = 本 turn 最后一条 assistant 消息的 langchain id，
     供 Message Store 对账持久化（handoff-spec.md §5.2）。
     """
-    invocation = Command(resume=resume_payload, update={"messages": messages}) if resume_payload else {"messages": messages}
+    # 非 resume 首轮：messages 之外按需补业务初始 state（如 user_id，供安全预检消费）；
+    # resume 轮 user_id 已随 checkpoint 恢复，仅注入 messages。
+    if resume_payload:
+        invocation = Command(resume=resume_payload, update={"messages": messages})
+    else:
+        invocation = {"messages": messages}
+        if extra_state:
+            invocation = {**invocation, **extra_state}
     final_text: list[str] = []
     final_message_id: str | None = None
     try:

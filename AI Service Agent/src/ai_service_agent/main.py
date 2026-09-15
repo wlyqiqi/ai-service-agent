@@ -11,7 +11,7 @@ def main() -> None:
     db_path = settings.db_path
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     model = "fake" if settings.fake_model else make_model()
-    app = create_app(db_path, model=model)
+    app = create_app(db_path, model=model, simulate_approval=get_settings().simulate_approval)
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
 

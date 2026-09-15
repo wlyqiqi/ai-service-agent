@@ -54,3 +54,9 @@ class ConversationStatusStore:
             "SELECT thread_id FROM conversation_status WHERE conversation_id = ?", (conversation_id,)
         ).fetchone()
         return row[0] if row else None
+
+    def get_user_id(self, conversation_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT user_id FROM conversation_status WHERE conversation_id = ?", (conversation_id,)
+        ).fetchone()
+        return row[0] if row else None

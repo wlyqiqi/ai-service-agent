@@ -38,3 +38,19 @@ def select_json_message(tool: str, args: dict) -> AIMessage:
     """json_mode 契约（OQ-2）：select 节点输入必须是与真实模型 response_format json_object
     输出一致的 AIMessage JSON 字符串（{"tool": ..., "args": {...}}）。"""
     return AIMessage(content=json.dumps({"tool": tool, "args": args}, ensure_ascii=False))
+
+
+class ApprovalFlowFakeModel(ToolCallingFakeModel):
+    """离线：Router -> order/high_risk；select -> refund_apply；其余回显。"""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
+        if "选择器" in system:
+            payload = '{"tool": "refund_apply", "args": {"order_id": "10086"}}'
+        elif "路由器" in system:
+            payload = '{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'
+        else:
+            payload = "已受理"
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])

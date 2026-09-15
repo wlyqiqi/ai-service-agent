@@ -2,10 +2,12 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
+from ai_service_agent.harness.approvals import ApprovalService
 from ai_service_agent.harness.handoff import HandoffService
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
+from ai_service_agent.testing import ApprovalFlowFakeModel
 
 
 def test_sessions_creates_ai_mode(tmp_path):
@@ -189,3 +191,68 @@ def test_chat_and_resolve_share_make_ai_graph_entry(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert len(calls) == 2  # resolve 路径也走同一入口
     assert all(model is not None and checkpointer is not None for model, checkpointer in calls)
+
+
+def test_chat_holds_when_approval_pending(tmp_path):
+    """OQ-4：审批挂起时用户来消息 -> 不 resume、不新起 run，发 approval_required 提示 + 存消息。"""
+    db = str(tmp_path / "hold.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        text1 = "".join(r.iter_text())
+    assert '"approval_required"' in text1
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "好了吗"}) as r:
+        text2 = "".join(r.iter_text())
+    assert '"approval_required"' in text2
+    assert '"error"' not in text2
+
+    conn = sqlite3.connect(db)
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert rows[-1]["role"] == "user" and rows[-1]["content"] == "好了吗"
+
+
+def test_resolve_with_pending_approval_still_completes(tmp_path):
+    """D9：pending-approval 检查是只读信息项（仅日志），不影响 resolve 分支。"""
+    db = str(tmp_path / "d9.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    info = status.create_session("u1")
+    rec = HandoffService(conn, status).create_handoff(info["conversation_id"], "r", "s")
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    ApprovalService(conn).insert_if_absent("A-D9", info["conversation_id"], info["thread_id"], {
+        "type": "approval_required", "approval_id": "A-D9", "summary": "挂起审批",
+        "requester_user_id": "u1", "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=30)).isoformat(),
+    })
+    conn.close()
+
+    client = TestClient(create_app(db, model="fake"))
+    r = client.post(f"/handoffs/{rec['handoff_id']}/resolve")
+    assert r.status_code == 200
+    assert r.json()["mode"] == "ai"
+
+    conn2 = sqlite3.connect(db)
+    assert ApprovalService(conn2).get("A-D9")["status"] == "pending"  # 审批不被 resolve 干预
+    conn2.close()
+
+
+def test_chat_simulate_approval_resumes_approve(tmp_path):
+    """approval-spec §5：simulate_approval 自动批准；下一消息经同一 resume 路径执行。"""
+    db = str(tmp_path / "sim.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[]), simulate_approval=True))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        text1 = "".join(r.iter_text())
+    assert '"approval_required"' in text1
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "好的"}) as r:
+        text2 = "".join(r.iter_text())
+    assert '"error"' not in text2
+    assert '"done"' in text2
+    conn = sqlite3.connect(db)
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert rows[-1]["content"]  # 审批通过后最终回复已落库
