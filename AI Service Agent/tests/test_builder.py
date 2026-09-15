@@ -47,3 +47,8 @@ def test_build_graph_guard_fail_blocks_router_consumption():
     assert out["execution_status"] == "completed"
     assert GUARD_REJECT_TEXT in out["messages"][-1].content
     assert not out.get("__interrupt__")
+
+
+def test_policy_maps_mutation_path():
+    assert POLICY[("order", "mutation")] == "mutation_graph"
+    assert POLICY[("account", "mutation")] == "mutation_graph"

@@ -3,12 +3,13 @@ from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
 def make_ai_graph(model, checkpointer, registry=None):
-    """/chat 与 /handoffs/{id}/resolve 共用的图构建入口。
+    """/chat 与 /handoffs/{id}/resolve 共用的图构建入口（P2 一致性要求）。
 
-    两处必须调用本函数，保证 build_graph 参数（model / tools / checkpointer）完全一致。
+    两处必须调用本函数，保证 build_graph 参数（model / tools / checkpointer / registry）完全一致。
     tools 按 read 档从 ToolRegistry 注入（tool-spec.md §1）：ReadGraph 只拿到
-    min_risk_level == "read" 的工具；mutation / high_risk 档在 P3/P4 按需扩展。
+    min_risk_level == "read" 的工具；mutation / high_risk 档由 build_graph 内部按 registry
+    派生（P3 起 registry 传给 build_graph，两处参数永不漂移）。
     """
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
     tools = reg.for_risk_level("read")
-    return build_graph(model, tools=tools, checkpointer=checkpointer)
+    return build_graph(model, tools=tools, checkpointer=checkpointer, registry=reg)

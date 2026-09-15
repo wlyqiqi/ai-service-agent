@@ -76,3 +76,10 @@ def test_make_ai_graph_respects_registry_read_tier():
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[0], "name", "") == "order_lookup"
     assert str(tool_msgs[0].content).startswith("Error:")  # 未注入 -> 未知工具错误 ToolMessage
+
+
+def test_resolve_resume_payload_confirmation_keywords():
+    it = Interrupt(value={"type": "confirmation_required", "summary": "s"}, id="i2")
+    assert resolve_resume_payload(it.value, latest_user_text="好的，确认") == {"action": "confirm"}
+    assert resolve_resume_payload(it.value, latest_user_text="取消吧") == {"action": "cancel"}
+    assert resolve_resume_payload(it.value, latest_user_text="随便") == {"action": "cancel"}  # 未命中 fail-closed

@@ -32,3 +32,9 @@ def make_fake_model() -> ToolCallingFakeModel:
             AIMessage(content="这是 FAQ 的离线回复（fake model）。"),
         ]
     )
+
+
+def select_json_message(tool: str, args: dict) -> AIMessage:
+    """json_mode 契约（OQ-2）：select 节点输入必须是与真实模型 response_format json_object
+    输出一致的 AIMessage JSON 字符串（{"tool": ..., "args": {...}}）。"""
+    return AIMessage(content=json.dumps({"tool": tool, "args": args}, ensure_ascii=False))
