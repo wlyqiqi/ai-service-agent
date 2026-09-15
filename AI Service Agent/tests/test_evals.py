@@ -105,5 +105,5 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     assert report["case_count"] == 100
     assert report["dimensions"]["policy"]["summary"]["pass"] == 76
     assert report["dimensions"]["guard"]["summary"]["pass"] == 100
-    assert report["dimensions"]["routing"]["summary"]["pass"] == 90  # +0086/0089/0090 转真实断言（D3/D5）
-    assert report["dimensions"]["routing"]["summary"]["skip"] == {"precheck_rule_pending": 1, "handoff_rule_pending": 9}  # 0087 留 Task 4（D4）
+    assert report["dimensions"]["routing"]["summary"]["pass"] == 91  # +0087 读侧数据边界（D4）
+    assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 9}  # deny 全部转真实断言

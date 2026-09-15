@@ -136,11 +136,16 @@ def test_clarify_fires_when_required_field_empty():
 
 **Interfaces:** `order_lookup(order_id: str, user_id: Annotated[str, InjectedState("user_id")]) -> dict`；越权返回 `{"error": "data_boundary", ...}`。
 
-- [ ] **Step 1: 写失败测试（RED）**：`order_lookup.invoke({"order_id": "ORD-1", "user_id": "other"})` → 边界拒绝；`"u1"` → 返回数据
-- [ ] **Step 2: 实现属主校验**（`from langgraph.prebuilt import InjectedState`）
-- [ ] **Step 3: 适配既有测试**（`test_tools.py` 等签名变化）
-- [ ] **Step 4: eval 0087 unskip**（读路径 deny 断言；scripted 响应含 `order_lookup` tool_call）
-- [ ] **Step 5: 全量测试 + validate + 提交**
+- [x] **Step 1: 写失败测试（RED）**：`order_lookup.invoke({"order_id": "ORD-1", "user_id": "other"})` → 边界拒绝；`"u1"` → 返回数据
+- [x] **Step 2: 实现属主校验**（`from langgraph.prebuilt import InjectedState`）
+- [x] **Step 3: 适配既有测试**（`test_tools.py` 等签名变化）
+- [x] **Step 4: eval 0087 unskip**（读路径 deny 断言；scripted 响应含 `order_lookup` tool_call）
+- [x] **Step 5: 全量测试 + validate + 提交**
+
+**实施记录（2026-09-15）**：
+- ReadGraph 需给 `create_agent` 传 `state_schema=ReadAgentState`（messages + user_id）：实测 create_agent 子图状态默认不含外层字段，ToolNode 的 InjectedState 注入会 KeyError。属主校验仍在工具层，ReadGraph 未增加 precheck。
+- 种子新增：`ORD-1`（u1）、`ORD-2`（u2，同事订单，供 0087 跨用户边界断言）。
+- eval 基线：routing 90 → **91**（+0087），skip precheck_rule_pending 清零，仅剩 handoff_rule_pending 9。
 
 ### Task 5: resume 轮 final 提取（D7）
 

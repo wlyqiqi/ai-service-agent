@@ -21,9 +21,8 @@ HANDOFF_SKIP = "handoff_rule_pending"
 READ_MARKER = "READ-OK"
 FALLBACK_EXPLAIN = "我暂时无法处理，请换个说法或联系人工客服。"
 
-# deny 拆分（OQ-7 + D3/D5）：0086/0089/0090 已按 D3/D5 转真实预检断言（含特定 reason）；
-# 0087 属读侧数据边界（D4），Task 4 落地前保持 skip(precheck_rule_pending)。
-DENY_SKIP_IDS = {"CTRL-0087"}
+# deny 拆分（OQ-7 + D3/D5/D4）：全部 deny 已转真实断言——0086/0089/0090 为预检规则（含特定 reason），
+# 0087 为读侧工具层数据边界（D4，ReadGraph 无 precheck，工具返回 data_boundary）。
 UNAUTHENTICATED_IDS = {"CTRL-0088", "CTRL-0095"}
 DENY_TOOL_SCRIPT = {
     "CTRL-0086": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}},
@@ -152,6 +151,15 @@ def _scripted_responses(case: dict) -> list:
     if ep == "approval":
         return [router_json_message(case["expected_capability"], "high_risk", 0.9),
                 select_json_message("refund_apply", {"order_id": "10086"})]
+    if ep == "deny" and case["id"] == "CTRL-0087":
+        # 读侧数据边界（D4）：脚本发起 order_lookup 查同事订单（ORD-2 属主 u2），工具层返回 data_boundary。
+        return [
+            router_json_message("order", "read", 0.9),
+            AIMessage(content="", tool_calls=[
+                {"name": "order_lookup", "args": {"order_id": "ORD-2"}, "id": "call-0087", "type": "tool_call"},
+            ]),
+            AIMessage(content="完成。"),
+        ]
     if ep == "deny":
         script = DENY_TOOL_SCRIPT[case["id"]]
         risk = "high_risk" if script["tool"] in ("refund_apply", "order_cancel") else "mutation"
@@ -211,9 +219,6 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
             ok = ok and not any(getattr(m, "type", "") == "ai" for m in r["state"].get("messages", []))
             results.append({"id": case["id"], "status": "pass" if ok else "fail", "actual": "handoff"})
             continue
-        if ep == "deny" and case["id"] in DENY_SKIP_IDS:
-            results.append({"id": case["id"], "status": "skip", "skip_reason": "precheck_rule_pending"})
-            continue
         user_id = "" if case["id"] in UNAUTHENTICATED_IDS else "u1"
         r = asyncio.run(_run_case_graph(case, _scripted_responses(case), user_id))
         if ep == "allow":
@@ -225,13 +230,23 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
         elif ep == "approval":
             ok = any(i.get("type") == "approval_required" for i in r["interrupts"])
         elif ep == "deny":
-            precheck_events = [
-                e for e in r["custom"]
-                if e.get("type") == "safety_rejected" and e["data"].get("rule") == "precheck"
-            ]
-            ok = (not r["interrupts"] and not r["tool_calls"] and bool(precheck_events))
-            if case["id"] in DENY_EXPECTED_REASON:
-                ok = ok and any(e["data"].get("reason") == DENY_EXPECTED_REASON[case["id"]] for e in precheck_events)
+            if case["id"] == "CTRL-0087":
+                # 读侧数据边界（D4）：属主校验在工具层（safety-spec §1.4），工具被调用但返回
+                # data_boundary；ReadGraph 无 precheck、无 interrupt。
+                boundary = any(
+                    "data_boundary" in str(getattr(m, "content", ""))
+                    for m in r["state"].get("messages", [])
+                    if getattr(m, "type", "") == "tool"
+                )
+                ok = boundary and not r["interrupts"]
+            else:
+                precheck_events = [
+                    e for e in r["custom"]
+                    if e.get("type") == "safety_rejected" and e["data"].get("rule") == "precheck"
+                ]
+                ok = (not r["interrupts"] and not r["tool_calls"] and bool(precheck_events))
+                if case["id"] in DENY_EXPECTED_REASON:
+                    ok = ok and any(e["data"].get("reason") == DENY_EXPECTED_REASON[case["id"]] for e in precheck_events)
         elif ep == "guard_reject":
             ok = (not r["interrupts"] and not r["tool_calls"]
                   and any(e.get("type") == "safety_rejected" and e["data"]["rule"] == "guard" for e in r["custom"])
