@@ -15,7 +15,12 @@ async def event_stream(
 ) -> AsyncGenerator[dict, None]:
     """graph.astream -> SSE 归一化事件（event-spec.md）。
 
-    token / tool_call / tool_result / error / done；done 必有且最后；
+    token / tool_call / tool_result / error / done + custom 事件；done 必有且最后。
+    subgraphs=True（2026-09-15 实测必要）：custom 事件只出现在子图 namespace，必须用
+    3-tuple (namespace, mode, payload) 读取；__interrupt__ 同时出现在顶层与子图 namespace，
+    只在顶层消费一次避免双重 on_interrupt；工具事件只从顶层 updates 的节点聚合 dict 派生
+    （嵌套子图消息以聚合形式出现在顶层 read_graph/... 节点 update，避免与子图 namespace
+    重复——实测同一 tool_call/ToolMessage 会在 3 层 namespace 各出现一次）。
     中断以 updates 顶层 {"__interrupt__": (Interrupt,)} 呈现，由 on_interrupt 接管。
     resume_payload 非 None 时以 Command(resume=..., update={messages}) 恢复挂起中断
     （入口层 resume 调度，graph-spec.md §3）；resume 的 final 只取本轮流式增量，
@@ -27,9 +32,19 @@ async def event_stream(
     final_text: list[str] = []
     final_message_id: str | None = None
     try:
-        async for mode, payload in graph.astream(invocation, config=config, stream_mode=["messages", "updates"]):
-            if mode == "messages":
+        async for _ns, mode, payload in graph.astream(
+            invocation, config=config, stream_mode=["messages", "updates", "custom"], subgraphs=True
+        ):
+            if mode == "custom":
+                if isinstance(payload, dict) and "type" in payload:
+                    yield payload
+            elif mode == "messages":
                 chunk, _meta = payload
+                # 只收顶层直接写入（safety_final 等，ns=()）与嵌套子图回复（read_graph/fallback 等，len>=2）；
+                # 跳过 len==1 顶层节点内部 agent 流——subgraphs=True 时 router 的 create_agent
+                # 分类 JSON 会以 ('router:<uuid>',) 形式透传，那不是回复文本（2026-09-15 实测）。
+                if _ns and len(_ns) < 2:
+                    continue
                 # fake model 产出完整 AIMessage，真实模型产出 AIMessageChunk
                 if isinstance(chunk, (AIMessage, AIMessageChunk)) and chunk.content:
                     text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
@@ -37,27 +52,28 @@ async def event_stream(
                     final_message_id = chunk.id or final_message_id
                     yield {"type": "token", "data": {"text": text}}
             elif mode == "updates":
-                interrupts = payload.get("__interrupt__")
-                if interrupts and on_interrupt is not None:
-                    for it in interrupts:
-                        extra = await on_interrupt(it.value)
-                        if extra:
-                            yield extra
-                for node_name, update in payload.items():
-                    if node_name == "__interrupt__":
-                        continue
-                    for msg in update.get("messages", []):
-                        if isinstance(msg, AIMessage) and msg.tool_calls:
-                            for tc in msg.tool_calls:
+                if not _ns:  # 顶层：__interrupt__ 权威出现位置（子图 namespace 重复项忽略）
+                    interrupts = payload.get("__interrupt__")
+                    if interrupts and on_interrupt is not None:
+                        for it in interrupts:
+                            extra = await on_interrupt(it.value)
+                            if extra:
+                                yield extra
+                    for _node_name, node_update in payload.items():
+                        if _node_name == "__interrupt__" or not isinstance(node_update, dict):
+                            continue
+                        for msg in node_update.get("messages", []):
+                            if isinstance(msg, AIMessage) and msg.tool_calls:
+                                for tc in msg.tool_calls:
+                                    yield {
+                                        "type": "tool_call",
+                                        "data": {"name": tc["name"], "args": tc["args"]},
+                                    }
+                            elif isinstance(msg, ToolMessage):
                                 yield {
-                                    "type": "tool_call",
-                                    "data": {"name": tc["name"], "args": tc["args"]},
+                                    "type": "tool_result",
+                                    "data": {"name": msg.name or "tool", "ok": True, "summary": str(msg.content)[:80]},
                                 }
-                        elif isinstance(msg, ToolMessage):
-                            yield {
-                                "type": "tool_result",
-                                "data": {"name": msg.name or "tool", "ok": True, "summary": str(msg.content)[:80]},
-                            }
         final = "".join(final_text) or None
         if not final and not resume_payload:
             text, msg_id = await _last_assistant_text_and_id(graph, config)
