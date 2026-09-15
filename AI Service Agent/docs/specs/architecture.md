@@ -108,6 +108,7 @@ src/ai_service_agent/
   config.py               # pydantic-settings
   main.py                 # CLI
   harness/                # server / events / session / approvals / streaming / errors / tracing
+  evals/                  # offline eval runner（AGENTS.md §16）
   graph/                  # state / builder / router / agents/ / workflows/
   tools/                  # registry / kb / orders
   memory/                 # store
@@ -162,3 +163,4 @@ docs/                     # project-audit.md + specs/
 - **审批状态**只由服务持久化，业务决策全在图内；MVP 第一公里未纳入（见 `mvp-first-mile.md` §2）。
 - **Handoff Record** 创建与 `mode` 切换为**同一事务**（`handoff-spec.md` §1.2 的原子性）。
 - 全景观图：`docs/diagrams/state-machines.html`。
+

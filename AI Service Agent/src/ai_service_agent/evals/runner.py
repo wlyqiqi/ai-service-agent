@@ -1,19 +1,25 @@
 import json
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.builder import POLICY
 from ai_service_agent.graph.workflows.fallback import check_handoff
+from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.testing import ToolCallingFakeModel
 
 # skip 原因固定词表：mutation/high_risk/guard 为 P3/P4 未实现能力；handoff_rule_pending 为
 # safety-spec §2.1 中未实现规则（投诉/情绪/连续失败/安全等，OQ-3）；not_applicable 为本维度不适用。
 SKIP_REASONS = ("mutation_pending", "high_risk_pending", "guard_pending", "handoff_rule_pending", "not_applicable")
 
 GRAPH_POLICY_SKIP = {"mutation": "mutation_pending", "high_risk": "high_risk_pending", "blocked": "guard_pending"}
+GRAPH_ROUTING_SKIP = {"mutation": "mutation_pending", "high_risk": "high_risk_pending", "blocked": "guard_pending"}
 HANDOFF_SKIP = "handoff_rule_pending"
+READ_MARKER = "READ-OK"
+FALLBACK_EXPLAIN = "我暂时无法处理，请换个说法或联系人工客服。"
 
 
 def load_cases(path: str | Path) -> list[dict]:
@@ -75,6 +81,48 @@ def evaluate_handoff(cases: list[dict]) -> list[dict]:
     return results
 
 
+def _router_payload(case: dict) -> dict:
+    """离线确定性驱动（OQ-2）：由 case 期望分类构造 Router 输出，不调真实 LLM。"""
+    if case["expected_graph"] in ("handoff", "fallback"):
+        return {"capability": "unknown", "risk_level": "read", "confidence": 0.2}
+    return {"capability": case["expected_capability"], "risk_level": case["expected_risk_level"], "confidence": 0.9}
+
+
+def evaluate_routing(cases: list[dict]) -> list[dict]:
+    """整图接线（OQ-2）：fake model 按 case 期望分类驱动，断言子图选择而非 LLM 语义准确率。"""
+    results = []
+    for case in cases:
+        expected = case["expected_graph"]
+        if expected in GRAPH_ROUTING_SKIP:
+            results.append({"id": case["id"], "status": "skip", "skip_reason": GRAPH_ROUTING_SKIP[expected]})
+            continue
+        if expected == "handoff" and not any(k in case["input"] for k in get_settings().handoff_keywords):
+            results.append({"id": case["id"], "status": "skip", "skip_reason": HANDOFF_SKIP})
+            continue
+        payload = _router_payload(case)
+        model = ToolCallingFakeModel(responses=[
+            AIMessage(content=json.dumps(payload, ensure_ascii=False)),
+            AIMessage(content=READ_MARKER),
+        ])
+        graph = make_ai_graph(model, MemorySaver())
+        out = graph.invoke(
+            {"messages": [HumanMessage(content=case["input"])], "user_id": "u1", "session_id": "s1", "context": {}},
+            {"configurable": {"thread_id": f"eval-{case['id']}"}},
+        )
+        last = out.get("messages", [])[-1] if out.get("messages") else None
+        last_text = getattr(last, "content", "") if last is not None else ""
+        if expected == "read":
+            ok = out.get("execution_status") == "completed" and last_text == READ_MARKER
+        elif expected == "fallback":
+            ok = out.get("execution_status") == "completed" and last_text == FALLBACK_EXPLAIN
+        else:  # handoff（关键词已命中）
+            interrupts = out.get("__interrupt__", ())
+            ok = any(getattr(it, "value", {}).get("type") == "handoff_request" for it in interrupts)
+            ok = ok and not any(getattr(m, "type", "") == "ai" for m in out.get("messages", []))
+        results.append({"id": case["id"], "status": "pass" if ok else "fail", "actual": expected})
+    return results
+
+
 def summarize(results: list[dict]) -> dict:
     summary = {"total": len(results), "pass": 0, "fail": 0, "skip": {}}
     for r in results:
@@ -94,6 +142,7 @@ def run_all(control_dir: str | Path) -> dict:
     dimensions = {
         "policy": {"results": evaluate_policy(cases), "summary": None},
         "handoff": {"results": evaluate_handoff(cases), "summary": None},
+        "routing": {"results": evaluate_routing(cases), "summary": None},
     }
     for dim in dimensions.values():
         dim["summary"] = summarize(dim["results"])
