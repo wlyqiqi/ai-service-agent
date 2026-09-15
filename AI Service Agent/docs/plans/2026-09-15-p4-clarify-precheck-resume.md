@@ -49,7 +49,7 @@
   - `clarify.make_clarify_node() -> Callable[[dict], dict]`（读 `clarify_missing`/`clarify_count`，写 `messages` + `clarify_count` 自增 + `execution_status=clarifying`，发 `clarification_required`；>N 写 fallback 文案 + `completed`）
   - `builder.finalize`：`execution_status` 为 `clarifying`/`waiting_*`/`failed` 时不覆盖
 
-- [ ] **Step 1: 写失败测试**（`tests/test_clarify.py`）
+- [x] **Step 1: 写失败测试**（`tests/test_clarify.py`）
 
 ```python
 from ai_service_agent.graph.workflows.clarify import make_clarify_node
@@ -75,26 +75,30 @@ def test_clarify_fires_when_required_field_empty():
     ...
 ```
 
-- [ ] **Step 2: 运行确认失败**（RED：`clarify` 模块不存在 / select 无完备性判定 / builder 覆盖 clarifying）
-- [ ] **Step 3: 实现 `clarify.py`**（label 映射 + 模板 + fallback 文案 + `get_stream_writer` 发 `clarification_required`）
-- [ ] **Step 4: 实现 select 完备性判定**（必填缺失/空串，或全业务字段空 → `clarify_missing`；成功 → `pending_tool` + 清零 `clarify_count`；解析失败/未知工具/schema 错误仍 `_reject`）
-- [ ] **Step 5: 接线 mutation/high_risk 条件边**（`_select_target`：`clarify_missing` → `clarify`；`pending_tool` → `precheck_fetch`/`safety_check`；否则 `safety_final`）
-- [ ] **Step 6: builder `finalize` 条件化**
-- [ ] **Step 7: 全量测试 + validate**（预期：新测试绿、既有 112 不回归——注意 `test_mutation_graph` 既有用例 args 均完整）
-- [ ] **Step 8: 提交**
+- [x] **Step 2: 运行确认失败**（RED：`clarify` 模块不存在 / select 无完备性判定 / builder 覆盖 clarifying）
+- [x] **Step 3: 实现 `clarify.py`**（label 映射 + 模板 + fallback 文案 + `get_stream_writer` 发 `clarification_required`）
+- [x] **Step 4: 实现 select 完备性判定**（必填缺失/空串，或全业务字段空 → `clarify_missing`；成功 → `pending_tool` + 清零 `clarify_count`；解析失败/未知工具/schema 错误仍 `_reject`）
+- [x] **Step 5: 接线 mutation/high_risk 条件边**（`_select_target`：`clarify_missing` → `clarify`；`pending_tool` → `precheck_fetch`/`safety_check`；否则 `safety_final`）
+- [x] **Step 6: builder `finalize` 条件化**
+- [x] **Step 7: 全量测试 + validate**（预期：新测试绿、既有 112 不回归——注意 `test_mutation_graph` 既有用例 args 均完整）
+- [x] **Step 8: 提交**
 
 ### Task 2: 必填标识符非空（D2）
 
 **Files:**
 - Modify: `src/ai_service_agent/graph/workflows/safety.py`（`_check` 通用非空规则）
-- Test: `tests/test_mutation_graph.py`（扩展）、`tests/test_high_risk_graph.py`（扩展）
+- Test: `tests/test_high_risk_graph.py`（扩展：`_check` 纯函数 + safety_check/recheck 微型图节点直测；mutation 档无必填业务字段，无对应用例）
 
 **Interfaces:** `_check` 对 required schema 字段（除 `request_id`）值 `""` → `invalid_args`。
 
-- [ ] **Step 1: 写失败测试**（`refund_apply {"order_id": ""}` 经图 → `invalid_args` 拒绝、无 interrupt）
-- [ ] **Step 2: RED**
-- [ ] **Step 3: 实现**（`meta.schema.model_fields` 遍历 required 且值 `""` → 拒绝）
-- [ ] **Step 4: 全量测试 + validate + 提交**
+- [x] **Step 1: 写失败测试**（Option A 裁定：select 空必填仍走 clarify；D2 为预检层兜底——`_check` 直测 + safety_check/recheck 节点注入空必填 `pending_tool` → `invalid_args`、无 interrupt）
+- [x] **Step 2: RED**
+- [x] **Step 3: 实现**（`meta.schema.model_fields` 遍历 required 且值 `""` → 拒绝）
+- [x] **Step 4: 全量测试 + validate + 提交**
+
+**裁定（2026-09-15）**：用户选 A——D2 为「预检层兜底」（决策记录 D2「双层」语义），
+正常图路径 select 先 clarify，`_check` 兜底防 select 之外来源的 args；不反向修改 Task 1。
+实施：`_check` 在 schema 校验通过后遍历 required（除 request_id）空串 → `invalid_args`，safety_check 与 recheck 共用覆盖。
 
 ### Task 3: 订单状态 stub + precheck-fetch + 业务规则 + CTRL-0089 验证（D3 + D5）
 

@@ -5,6 +5,11 @@ from langchain_core.messages import HumanMessage
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools.kb import kb_search
+from langgraph.graph import END, START, StateGraph
+
+from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.workflows.safety import _check, make_recheck_node, make_safety_check_node
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
 def _hr_model():
@@ -66,4 +71,48 @@ def test_high_risk_unknown_tool_rejected():
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     out = _invoke(graph, "改状态", "h5")
     assert not out.get("__interrupt__")
+    assert out["execution_status"] == "completed"
+
+
+# ---- D2（P4）必填标识符非空：预检层兜底（select 之外来源的 pending_tool；safety-spec §1.2）----
+
+def _safety_mini_graph(node):
+    b = StateGraph(CustomerServiceState)
+    b.add_node("n", node)
+    b.add_edge(START, "n")
+    b.add_edge("n", END)
+    return b.compile()
+
+
+def test_check_rule_required_identifier_nonempty():
+    """纯函数 _check：空必填标识符 -> invalid_args；非空放行；request_id 豁免。"""
+    assert _check({"tool": "refund_apply", "args": {"request_id": "r1", "order_id": ""}}, "high_risk", DEFAULT_TOOL_REGISTRY, "u1") == "invalid_args"
+    assert _check({"tool": "refund_apply", "args": {"request_id": "r1", "order_id": "10086"}}, "high_risk", DEFAULT_TOOL_REGISTRY, "u1") is None
+    assert _check({"tool": "refund_apply", "args": {"request_id": "", "order_id": "10086"}}, "high_risk", DEFAULT_TOOL_REGISTRY, "u1") is None
+
+
+def test_safety_check_node_empty_required_backstop():
+    """safety_check 节点（图上下文）：空必填标识符 -> invalid_args 拒绝，无 interrupt。"""
+    graph = _safety_mini_graph(make_safety_check_node("high_risk", DEFAULT_TOOL_REGISTRY))
+    out = graph.invoke({
+        "messages": [],
+        "user_id": "u1",
+        "session_id": "d2-h1",
+        "context": {"pending_tool": {"tool": "refund_apply", "args": {"request_id": "r1", "order_id": ""}, "request_id": "r1"}},
+    })
+    assert out["context"]["precheck_reason"] == "invalid_args"
+    assert not out.get("__interrupt__")
+    assert out["execution_status"] == "completed"
+
+
+def test_recheck_node_empty_required_backstop():
+    """recheck（resume 路径）同样兜底：空必填标识符 -> recheck_reason=invalid_args。"""
+    graph = _safety_mini_graph(make_recheck_node("high_risk", DEFAULT_TOOL_REGISTRY))
+    out = graph.invoke({
+        "messages": [],
+        "user_id": "u1",
+        "session_id": "d2-h2",
+        "context": {"pending_tool": {"tool": "refund_apply", "args": {"request_id": "r1", "order_id": ""}, "request_id": "r1"}},
+    })
+    assert out["context"]["recheck_reason"] == "invalid_args"
     assert out["execution_status"] == "completed"

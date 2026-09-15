@@ -1,7 +1,8 @@
 """安全预检（safety-spec.md §1，D4 v1 范围）与最小不变量 recheck（D6/D7）。
 
-v1 只覆盖：参数 schema 白名单 + min_risk_level 匹配 + user_id 登录态 + 数据边界（显式 owner_user_id）。
-业务规则（频次/额度/状态机）、敏感操作复核留后续增量（不在 P3 强制，skip(precheck_rule_pending)）。
+v1 覆盖：参数 schema 白名单 + min_risk_level 匹配 + user_id 登录态 + 数据边界（显式 owner_user_id）。
+P4 增量：必填标识符非空（D2，预检层业务兜底，safety-spec §1.2）；退款时限 / 取消状态机（D3，Task 3）
+与其余频次 / 额度 / 敏感操作复核仍留后续增量（skip(precheck_rule_pending)）。
 决策节点返回普通 dict + 条件边路由（LangGraph 1.2.11 实测：Command(goto) 不抑制静态出边，
 静态后继与 goto 目标会并发执行导致双写；路由一律走条件边）。
 """
@@ -30,6 +31,15 @@ def _check(pending: dict, tier: str, registry: ToolRegistry, user_id: str) -> st
         try:
             meta.schema.model_validate(args)
         except Exception:
+            return "invalid_args"
+        # D2（P4）：必填标识符非空（safety-spec §1.2）——schema 校验的业务层兜底，
+        # 防 select 之外来源的 args 绕过；pydantic 接受空串须显式判空，request_id 除外
+        # （其缺失由 recheck 的 missing_request_id 兜底）。
+        required = [
+            n for n in meta.schema.model_fields
+            if n != "request_id" and meta.schema.model_fields[n].is_required()
+        ]
+        if any(args.get(n) == "" for n in required):
             return "invalid_args"
     if not user_id:
         return "not_logged_in"
