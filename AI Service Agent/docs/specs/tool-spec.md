@@ -38,12 +38,13 @@ class ToolMeta:
 | 工具 | 类型 | min_risk_level | 说明 |
 |---|---|---|---|
 | `kb_search` | 知识库检索 | read | sqlite-vec / 关键词兜底 |
-| `order_lookup` | 订单查询 | read | stub 客户端 |
+| `order_lookup` | 订单查询 | read | stub 客户端；**P4（D4）属主校验**：`user_id` 经 `langgraph.prebuilt.InjectedState` 注入，仅返回本人订单，越权拒绝 |
 | `account_update` | 账户变更 | mutation | 幂等 |
 | `order_cancel` | 订单取消 | high_risk | 需人工审批 |
 | `refund_apply` | 退款申请 | high_risk | 需人工审批 |
 
 - **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
+- **P4 实现（D3/D4 定案）**：`orders.py` 升级为最小订单状态模型（`order_id -> {user_id, status, signed_at, cancelled_at}`，含确定性种子数据供离线 eval/测试）；`order_lookup` 承担读侧属主校验（D4）；订单状态事实由 `precheck_fetch` 节点提供给预检（D3，见 safety-spec.md §1.2）。
 
 - 转人工**不是工具**：由 `check_handoff` 确定性节点检测信号并经 `interrupt(handoff_request)` 抛出（见 `safety-spec.md` §2、`graph-spec.md` §6.5），不作为工具注册、不进入任何 agent 工具集；Handoff Record 创建与 `conversation_mode` 切换由外层（Conversation Runtime）完成，子图不直接调用任何 Handoff API。
 

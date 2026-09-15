@@ -20,6 +20,7 @@
 | `safety_rejected` | `{rule, reason}` | 安全预检拒绝（见 safety-spec.md） |
 | `approval_required` | `{approval_id, summary, expires_at}` | HighRisk interrupt（见 approval-spec.md） |
 | `approval_updated` | `{approval_id, status}` | 审批状态变更 |
+| `clarification_required` | `{missing: [...]}` | select 参数不完整 → clarify 节点（普通轮、非 interrupt，D1，见 graph-spec.md §6.2/§6.3） |
 | `confirmation_required` | `{summary}` | Mutation interrupt（等待用户确认，见 graph-spec.md §6.2） |
 | `confirmation_updated` | `{action}` | 用户确认结果（confirm / cancel） |
 | `handoff_created` | `{handoff_id?, reason, summary?, ticket_id?}` | 转人工接管完成（Conversation Runtime 外层发出，见 handoff-spec.md §3） |
@@ -34,8 +35,8 @@
 | 子图 | 允许发出的事件 |
 |---|---|
 | ReadGraph | `tool_call` / `tool_result` / `token` / `error` / `done` |
-| MutationGraph | `tool_call` / `tool_result` / `confirmation_required` / `confirmation_updated` / `token` / `error` / `done` |
-| HighRiskGraph | `tool_call` / `tool_result` / `approval_required` / `approval_updated` / `token` / `error` / `done` |
+| MutationGraph | `tool_call` / `tool_result` / `clarification_required` / `confirmation_required` / `confirmation_updated` / `token` / `error` / `done` |
+| HighRiskGraph | `tool_call` / `tool_result` / `clarification_required` / `approval_required` / `approval_updated` / `token` / `error` / `done` |
 
 - 任意子图触发 Handoff 时额外可能发出 `handoff_created`：**由外层统一发出**，子图自身不直接发出这个事件。
 - 安全预检失败时由预检节点发出 `safety_rejected`（见 `safety-spec.md` §1.3），不改变上述子图事件集合。

@@ -27,7 +27,8 @@ class CustomerServiceState(TypedDict):
 - `messages` 为入口层从 Message Store 水合的工作视图（`handoff-spec.md` §5.2）；图内只累积 / 工作，持久化由入口层完成，工具 / Router 内部消息不入 Store。
 - `messages` 对账（P1 定案）：水合消息带稳定 id（user = `store-{row_id}`、assistant = 落库时的 langchain message id），每次图调用以完整水合历史为输入，经 `add_messages` 按 id 对账，使 `state.messages` 恒等于 Store 快照；图内自产消息（无 store id，如工具消息 / Router 结构化输出）作为工作历史随 checkpoint 累积，不入 Store（见 `handoff-spec.md` §5.2）。
 - `__interrupt__` 由 LangGraph 自动维护，不放进业务字段；它是恢复判断的**权威依据**，`pending_approval` 为派生业务字段（供审批服务查询），两者保持一致。
-- `execution_status` 为每个 turn 的执行阶段状态：`idle`（会话创建 / 无活动 turn）→ `routing`（Router 分类中）→ `running`（子图执行中）；`waiting_confirmation`（Mutation 等待用户确认）、`waiting_approval`（HighRisk 等待人工审批）、`waiting_handoff`（**新增**：因中途触发 Handoff 而暂停，既非正常完成也非失败）、`completed`（正常完成）、`failed`（失败）。
+- `execution_status` 为每个 turn 的执行阶段状态：`idle`（会话创建 / 无活动 turn）→ `routing`（Router 分类中）→ `running`（子图执行中）；`clarifying`（**P4 起由 clarify 节点产出**：select 参数不完整，普通轮非 interrupt，D1）、`waiting_confirmation`（Mutation 等待用户确认）、`waiting_approval`（HighRisk 等待人工审批）、`waiting_handoff`（因中途触发 Handoff 而暂停，既非正常完成也非失败）、`completed`（正常完成）、`failed`（失败）。
+- `context` 业务键（P4 登记，D1/D3）：`clarify_missing`（本轮缺失字段列表）、`clarify_count`（澄清轮次，完整成功 select 清零、clarify 自增，>N=2 转 fallback）、`precheck_data`（预检事实快照：订单状态，仅事实、无裁决）。
 - 子图抛出 `handoff_request` 后 `execution_status` **必须**置 `waiting_handoff`，**不得**置 `completed` 或 `failed`；人工 Resolve 回切 `conversation_mode=ai` 后由服务端主动 resume 完成被中断子图，最终由 `final` 节点置 `completed`（`running` 为 resume 执行中的中间态，不落最终态；见 `graph-spec.md` §3、§6.5）。
 - `conversation_mode` **不在此 State 中**：它属于入口层轻量 `conversation_status` 存储（`handoff-spec.md` §2），图内不维护；`handoff` 字段是图内转人工信号标记，与 `conversation_mode` 分层。
 
