@@ -44,20 +44,23 @@ def pause(state: dict) -> dict:
 
 
 def make_fallback_graph(model):
-    """Fallback / Concierge：兜底解释 + check_handoff（graph-spec.md §6.4）。"""
+    """Fallback / Concierge：check_handoff 前置（graph-spec.md §6.4 P1 定案）。
+
+    命中 handoff -> pause（interrupt，图内不生成文案）；未命中 -> explain 兜底回复。
+    """
     def explain(state: dict) -> dict:
-        return {"messages": [AIMessage(content="我暂时无法处理，已为你转接人工客服。")]}
+        return {"messages": [AIMessage(content="我暂时无法处理，请换个说法或联系人工客服。")]}
 
     builder = StateGraph(CustomerServiceState)
-    builder.add_node("fallback_explain", explain)
     builder.add_node("check_handoff", check_handoff)
+    builder.add_node("explain", explain)
     builder.add_node("pause", pause)
-    builder.add_edge(START, "fallback_explain")
-    builder.add_edge("fallback_explain", "check_handoff")
+    builder.add_edge(START, "check_handoff")
     builder.add_conditional_edges(
         "check_handoff",
-        lambda s: "pause" if s.get("handoff") else "__end__",
-        {"pause": "pause", "__end__": END},
+        lambda s: "pause" if s.get("handoff") else "explain",
+        {"pause": "pause", "explain": "explain"},
     )
+    builder.add_edge("explain", END)
     builder.add_edge("pause", END)
     return builder.compile()
