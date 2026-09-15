@@ -36,7 +36,8 @@ DENY_TOOL_SCRIPT = {
 }
 
 # policy 维度主键（D3）：expected_policy -> 确定性 Policy 目标
-POLICY_EXPECTED = {"allow": "read", "fallback": "fallback", "confirm": "mutation", "approval": "high_risk"}
+POLICY_EXPECTED = {"allow": "read", "fallback": "fallback", "confirm": "mutation", "approval": "high_risk", "clarify": "high_risk"}
+# clarify（D8/OQ-3）：策略门仍路由 high_risk 图，澄清发生在图内 select 层（graph-spec §6.2）
 POLICY_SKIP = {"deny", "guard_reject", "handoff"}
 
 # deny 维度特定 reason 断言（D3/D5，Task 3）：0086=退款时限 / 0089=unknown_tool / 0090=取消状态机；
@@ -169,6 +170,10 @@ def _scripted_responses(case: dict) -> list:
         return [router_json_message("order", "high_risk", 0.9)]
     if ep == "handoff":
         return [router_json_message("unknown", "read", 0.2)]
+    if ep == "clarify":
+        # D8/OQ-3：scripted = router(high_risk) + select 缺参（refund_apply {} -> 缺 order_id -> clarify）
+        return [router_json_message("order", "high_risk", 0.9),
+                select_json_message("refund_apply", {})]
     raise ValueError(f"unexpected expected_policy: {ep}")
 
 
@@ -251,6 +256,11 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
             ok = (not r["interrupts"] and not r["tool_calls"]
                   and any(e.get("type") == "safety_rejected" and e["data"]["rule"] == "guard" for e in r["custom"])
                   and _last_ai_text(r["state"]) == GUARD_REJECT_TEXT)
+        elif ep == "clarify":
+            # D8/OQ-3：普通轮澄清——execution_status=clarifying、无 interrupt、确定性模板文案
+            ok = (r["state"].get("execution_status") == "clarifying"
+                  and not r["interrupts"]
+                  and "请提供" in _last_ai_text(r["state"]))
         else:
             raise ValueError(f"unexpected expected_policy: {ep}")
         results.append({"id": case["id"], "status": "pass" if ok else "fail", "actual": ep})

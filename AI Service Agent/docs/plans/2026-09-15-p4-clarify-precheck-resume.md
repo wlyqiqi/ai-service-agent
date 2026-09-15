@@ -178,10 +178,16 @@ def test_clarify_fires_when_required_field_empty():
 
 **Interfaces:** runner `evaluate_routing` 新增 `ep == "clarify"`：scripted = router(high_risk) + select(缺参) → 断言 `clarifying` + 无 interrupt + 澄清文案。
 
-- [ ] **Step 1: 写失败测试（RED）**：0076 走 clarify 断言
-- [ ] **Step 2: 实现 runner `clarify` 分支 + 数据集语义更新**
-- [ ] **Step 3: 写 Guard LLM 评估报告**（纯文档）
-- [ ] **Step 4: 全量回归 + validate + eval CLI 基线更新**（预期：routing 计数变化：+0076 clarify、+0086/0087/0089/0090 真实断言）
-- [ ] **Step 5: 计划文件全部勾选 + 提交**
+- [x] **Step 1: 写失败测试（RED）**：0076 走 clarify 断言
+- [x] **Step 2: 实现 runner `clarify` 分支 + 数据集语义更新**
+- [x] **Step 3: 写 Guard LLM 评估报告**（纯文档）
+- [x] **Step 4: 全量回归 + validate + eval CLI 基线更新**（预期：routing 计数变化：+0076 clarify、+0086/0087/0089/0090 真实断言）
+- [x] **Step 5: 计划文件全部勾选 + 提交**
+
+**实施记录（2026-09-15，P4 收尾）**：
+- 0076 语义更新含 `expected_capability` unknown → **order**（plan 未显式列出，但为 policy 基线不变与 clarify 流程可达所必需：`policy_target(order, high_risk)=high_risk`）。
+- routing 计数实际不变（91）：0076 由 fallback pass 换成 clarify pass（语义换断言，非新增计数）；policy 76 / guard 100 不变。
+- Guard LLM 评估报告：`docs/decisions/2026-09-15-p4-guard-llm-eval.md`（触发证据：真机冒烟 Guard v1 5/5 字面拦截、6/6 同义改写绕过）。
+- README plans 的 P4 行已在 Spec 修订 commit（66702d3）加入，无需再改。
 
 ---
