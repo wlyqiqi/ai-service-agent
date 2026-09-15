@@ -7,10 +7,11 @@
 from uuid import uuid4
 
 from langchain_core.tools import tool
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class AccountUpdateArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     phone: str | None = None
     email: str | None = None
     address: str | None = None
@@ -18,12 +19,14 @@ class AccountUpdateArgs(BaseModel):
 
 
 class OrderCancelArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     order_id: str
     reason: str | None = None
     request_id: str
 
 
 class RefundApplyArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     order_id: str
     amount: float | None = None
     reason: str | None = None

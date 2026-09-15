@@ -66,3 +66,19 @@ def test_registry_meta_for():
     meta = DEFAULT_TOOL_REGISTRY.meta_for("order_cancel")
     assert meta is not None and meta.min_risk_level == "high_risk" and meta.idempotent is True
     assert DEFAULT_TOOL_REGISTRY.meta_for("nope") is None
+
+
+import pytest
+from pydantic import ValidationError
+
+
+def test_write_schemas_forbid_unknown_fields():
+    """select 契约漂移（2026-09-15 真机冒烟）：未知字段必须显式 invalid_args，绝不静默丢参。"""
+    with pytest.raises(ValidationError):
+        AccountUpdateArgs.model_validate({"action": "update_shipping_address", "request_id": "rq"})
+    with pytest.raises(ValidationError):
+        AccountUpdateArgs.model_validate({"field": "phone", "request_id": "rq"})
+    with pytest.raises(ValidationError):
+        OrderCancelArgs.model_validate({"order_id": "10086", "action": "x", "request_id": "rq"})
+    with pytest.raises(ValidationError):
+        RefundApplyArgs.model_validate({"order_id": "10086", "extra": 1, "request_id": "rq"})

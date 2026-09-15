@@ -17,8 +17,25 @@ from ai_service_agent.tools.registry import ToolRegistry
 SELECT_SYSTEM_TEMPLATE = (
     "你是客服操作选择器。根据用户意图，从允许的工具中选择一个并给出符合其 schema 的参数。\n"
     "只输出 JSON，形状为 {{\"tool\": \"<工具名>\", \"args\": {{...}}}}。\n"
-    "允许的工具：\n{tool_list}\n不要输出其它内容。"
+    "允许的工具：\n{tool_list}\n"
+    "args 只能包含该工具列出的字段名，不要输出 schema 之外的字段（输出未知字段会被拒绝）。\n"
+    "示例：\n"
+    "用户：我要把收货地址改成朝阳区\n"
+    "输出：{{\"tool\": \"account_update\", \"args\": {{\"address\": \"朝阳区\"}}}}\n"
+    "不要输出其它内容。"
 )
+
+
+def _describe_args_schema(meta) -> str:
+    """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
+    if meta is None or meta.schema is None:
+        return ""
+    parts = []
+    for name, info in meta.schema.model_fields.items():
+        if name == "request_id":
+            continue
+        parts.append(f"{name}({'必填' if info.is_required() else '可选'})")
+    return "，".join(parts)
 
 
 def _bind_json(model):
@@ -30,7 +47,14 @@ def _bind_json(model):
 
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], dict]:
     allowed = {t.name for t in tools}
-    tool_list = "\n".join(f"- {t.name}: {t.description}" for t in tools)
+    lines = []
+    for t in tools:
+        line = f"- {t.name}: {t.description}"
+        contract = _describe_args_schema(registry.meta_for(t.name))
+        if contract:
+            line += f"\n  参数：{contract}"
+        lines.append(line)
+    tool_list = "\n".join(lines)
     bound = _bind_json(model)
 
     def _reject(state: dict, reason: str) -> dict:

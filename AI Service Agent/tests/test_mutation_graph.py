@@ -94,3 +94,17 @@ def test_mutation_reject_streams_safety_rejected():
     types = [e["type"] for e in events]
     assert "safety_rejected" in types
     assert types[-1] == "done"
+
+
+def test_mutation_select_unknown_field_rejected_invalid_args():
+    """真实模型漂移样例（{"action": ...}）：未知字段被 select 拒绝为 invalid_args，不产生 interrupt。"""
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "mutation", 0.9),
+        select_json_message("account_update", {"action": "update_shipping_address"}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    out = _invoke(graph, "改一下收货地址", "m7")
+    assert not out.get("__interrupt__")
+    assert out["execution_status"] == "completed"
+    assert out["context"].get("precheck_reason") == "invalid_args"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
