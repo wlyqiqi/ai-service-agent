@@ -24,3 +24,55 @@ def test_resolve_resume_payload_no_interrupt_returns_none():
     assert resolve_resume_payload(None) is None
     assert resolve_resume_payload({"type": "unknown"}) is None
 
+
+from langchain_core.messages import AIMessage, HumanMessage
+
+from ai_service_agent.tools import ToolMeta, ToolRegistry
+from ai_service_agent.tools.kb import kb_search
+from ai_service_agent.testing import ToolCallingFakeModel
+
+
+def _invoke(graph, text, thread_id):
+    return graph.invoke(
+        {"messages": [HumanMessage(content=text)], "user_id": "u1", "session_id": "s1", "context": {}},
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+
+def test_make_ai_graph_injects_read_tools_by_default():
+    model = ToolCallingFakeModel(responses=[
+        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content="", tool_calls=[{"name": "kb_search", "args": {"text": "退款"}, "id": "call_1", "type": "tool_call"}]),
+        AIMessage(content="查到了。"),
+    ])
+    out = _invoke(make_ai_graph(model, MemorySaver()), "保修多久", "t1")
+    assert out["execution_status"] == "completed"
+    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+    assert tool_msgs and getattr(tool_msgs[0], "name", "") == "kb_search"
+    assert "知识库检索结果" in str(tool_msgs[0].content)
+
+
+def test_default_registry_order_lookup_injected():
+    model = ToolCallingFakeModel(responses=[
+        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content="", tool_calls=[{"name": "order_lookup", "args": {"order_id": "ORD-1"}, "id": "call_2", "type": "tool_call"}]),
+        AIMessage(content="完成。"),
+    ])
+    out = _invoke(make_ai_graph(model, MemorySaver()), "查订单", "t2")
+    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+    assert tool_msgs and "已发货" in str(tool_msgs[0].content)
+
+
+def test_make_ai_graph_respects_registry_read_tier():
+    """注入的注册表决定工具集：只注册 kb_search 时，order_lookup 不在 read 档 -> ToolNode 未知工具。"""
+    reg = ToolRegistry()
+    reg.register(ToolMeta("kb_search", "检索", "read"), kb_search)
+    model = ToolCallingFakeModel(responses=[
+        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content="", tool_calls=[{"name": "order_lookup", "args": {"order_id": "ORD-1"}, "id": "call_3", "type": "tool_call"}]),
+        AIMessage(content="完成。"),
+    ])
+    out = _invoke(make_ai_graph(model, MemorySaver(), registry=reg), "查订单", "t3")
+    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+    assert tool_msgs and getattr(tool_msgs[0], "name", "") == "order_lookup"
+    assert str(tool_msgs[0].content).startswith("Error:")  # 未注入 -> 未知工具错误 ToolMessage

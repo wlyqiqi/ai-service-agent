@@ -1,13 +1,14 @@
 from ai_service_agent.graph.builder import build_graph
-
-# MVP：AI 路径暂不注入业务工具；后续 P3/P4 按 capability x risk 从 ToolRegistry 取
-AI_GRAPH_TOOLS: list = []
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
-def make_ai_graph(model, checkpointer):
+def make_ai_graph(model, checkpointer, registry=None):
     """/chat 与 /handoffs/{id}/resolve 共用的图构建入口。
 
-    两处必须调用本函数，保证 build_graph 参数（model / tools / checkpointer）
-    完全一致，避免后续 Mutation/HighRisk 注入后 resume 行为漂移。
+    两处必须调用本函数，保证 build_graph 参数（model / tools / checkpointer）完全一致。
+    tools 按 read 档从 ToolRegistry 注入（tool-spec.md §1）：ReadGraph 只拿到
+    min_risk_level == "read" 的工具；mutation / high_risk 档在 P3/P4 按需扩展。
     """
-    return build_graph(model, tools=AI_GRAPH_TOOLS, checkpointer=checkpointer)
+    reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
+    tools = reg.for_risk_level("read")
+    return build_graph(model, tools=tools, checkpointer=checkpointer)

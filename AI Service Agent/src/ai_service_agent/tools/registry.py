@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel
 
 
 @dataclass
@@ -8,6 +10,7 @@ class ToolMeta:
     name: str
     description: str
     min_risk_level: str
+    schema: Optional[type[BaseModel]] = None
     idempotent: bool = False
 
 

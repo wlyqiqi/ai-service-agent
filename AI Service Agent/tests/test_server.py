@@ -161,3 +161,31 @@ def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
     conn.close()
     assert [r["role"] for r in rows] == ["user", "assistant"]
     assert rows[1]["content"] == HANDOFF_NOTICE
+
+def test_chat_and_resolve_share_make_ai_graph_entry(tmp_path, monkeypatch):
+    """/chat 与 /handoffs/{id}/resolve 都必须经同一个 make_ai_graph 入口（P2 一致性要求）。"""
+    from ai_service_agent.harness import server as server_mod
+    from ai_service_agent.harness.graph import make_ai_graph as _real_make_ai_graph
+
+    calls = []
+
+    def spy(model, checkpointer, registry=None):
+        calls.append((model, checkpointer))
+        return _real_make_ai_graph(model, checkpointer, registry=registry)
+
+    monkeypatch.setattr(server_mod, "make_ai_graph", spy)
+    client = TestClient(create_app(str(tmp_path / "g.db"), model="fake"))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "hi"}) as r:
+        "".join(r.iter_text())
+    assert len(calls) == 1  # /chat ai 路径经 make_ai_graph
+
+    conn = sqlite3.connect(str(tmp_path / "g.db"))
+    status = ConversationStatusStore(conn)
+    rec = HandoffService(conn, status).create_handoff(session_id, "r", "s")
+    conn.close()
+    r = client.post(f"/handoffs/{rec['handoff_id']}/resolve")
+    assert r.status_code == 200
+    assert len(calls) == 2  # resolve 路径也走同一入口
+    assert all(model is not None and checkpointer is not None for model, checkpointer in calls)
