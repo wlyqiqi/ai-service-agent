@@ -108,3 +108,18 @@ def test_mutation_select_unknown_field_rejected_invalid_args():
     assert out["execution_status"] == "completed"
     assert out["context"].get("precheck_reason") == "invalid_args"
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
+def test_mutation_0089_delete_orders_unknown_tool():
+    """D5 验证（P4 Task 3）：CTRL-0089 删除订单——scripted select 输出不存在工具 ->
+    precheck_reason=unknown_tool、无 interrupt（registry 无删除类工具）。"""
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "mutation", 0.9),
+        select_json_message("delete_order_history", {"order_id": "ORD-10086"}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    out = _invoke(graph, "把我在你们这的所有订单记录删掉", "t3-0089")
+    assert not out.get("__interrupt__")
+    assert out["execution_status"] == "completed"
+    assert out["context"].get("precheck_reason") == "unknown_tool"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []

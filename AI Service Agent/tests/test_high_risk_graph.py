@@ -8,7 +8,7 @@ from ai_service_agent.tools.kb import kb_search
 from langgraph.graph import END, START, StateGraph
 
 from ai_service_agent.graph.state import CustomerServiceState
-from ai_service_agent.graph.workflows.safety import _check, make_recheck_node, make_safety_check_node
+from ai_service_agent.graph.workflows.safety import _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
@@ -116,3 +116,57 @@ def test_recheck_node_empty_required_backstop():
     })
     assert out["context"]["recheck_reason"] == "invalid_args"
     assert out["execution_status"] == "completed"
+
+
+# ---- D3（P4 Task 3）：订单状态 stub + precheck_fetch + 业务规则（safety-spec §1.2）----
+
+def _hr_graph(model):
+    return build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+
+
+def test_precheck_fetch_writes_facts_only():
+    """precheck_fetch：写 context[precheck_data] 仅事实、无裁决；无 order_id 不写。"""
+    node = make_precheck_fetch_node()
+    out = node({"context": {"pending_tool": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}}}})
+    d = out["context"]["precheck_data"]
+    assert d["status"] == "signed" and d["user_id"] == "u1" and d["order_id"] == "ORD-10086"
+    assert "precheck_reason" not in out["context"]
+    out2 = node({"context": {"pending_tool": {"tool": "account_update", "args": {"address": "x"}}}})
+    assert "precheck_data" not in out2.get("context", {})  # 无 order_id -> 空更新
+
+
+def test_high_risk_0086_refund_window_expired():
+    """0086：refund_apply + ORD-10086（签收 10 天前，超 7 天窗口）-> 预检拒绝，不进入审批。"""
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": "ORD-10086"}),
+    ])
+    out = _invoke(_hr_graph(model), "我签收已经 10 天了，就要无理由退货", "t3-0086")
+    assert not out.get("__interrupt__")
+    assert out["execution_status"] == "completed"
+    assert out["context"].get("precheck_reason") == "refund_window_expired"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
+def test_high_risk_0090_cancel_already_cancelled():
+    """0090：order_cancel + ORD-CANCEL-1（已取消）-> 预检拒绝。"""
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("order_cancel", {"order_id": "ORD-CANCEL-1"}),
+    ])
+    out = _invoke(_hr_graph(model), "这个订单已经取消了，再帮我取消一次", "t3-0090")
+    assert not out.get("__interrupt__")
+    assert out["execution_status"] == "completed"
+    assert out["context"].get("precheck_reason") == "order_already_cancelled"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
+def test_high_risk_refund_unknown_order_still_approval():
+    """规则不误伤：订单不在种子库 -> 无事实 -> 正常进入审批。"""
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": "ORD-UNKNOWN"}),
+    ])
+    out = _invoke(_hr_graph(model), "申请退款", "t3-pos")
+    values = [it.value for it in out.get("__interrupt__", [])]
+    assert any(v.get("type") == "approval_required" for v in values)

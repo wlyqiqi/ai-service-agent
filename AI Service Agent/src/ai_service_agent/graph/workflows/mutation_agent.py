@@ -18,6 +18,7 @@ from langgraph.prebuilt import ToolNode
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.safety import (
     PRECHECK_REJECT_TEXT,
+    make_precheck_fetch_node,
     make_recheck_node,
     make_safety_check_node,
     safety_final,
@@ -72,7 +73,7 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
         if "clarify_missing" in ctx:
             return "clarify"
         if "pending_tool" in ctx:
-            return "safety_check"
+            return "precheck_fetch"
         return "safety_final"
 
     def _safety_target(state: dict) -> str:
@@ -87,6 +88,7 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
     builder = StateGraph(CustomerServiceState)
     builder.add_node("select", make_select_node(model, "mutation", tools, registry))
     builder.add_node("clarify", make_clarify_node())
+    builder.add_node("precheck_fetch", make_precheck_fetch_node())
     builder.add_node("safety_check", make_safety_check_node("mutation", registry))
     builder.add_node("safety_final", safety_final)
     builder.add_node("prepare_confirm", prepare_confirm)
@@ -100,9 +102,10 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
     builder.add_edge(START, "select")
     builder.add_conditional_edges(
         "select", _select_target,
-        {"clarify": "clarify", "safety_check": "safety_check", "safety_final": "safety_final"},
+        {"clarify": "clarify", "precheck_fetch": "precheck_fetch", "safety_final": "safety_final"},
     )
     builder.add_edge("clarify", END)
+    builder.add_edge("precheck_fetch", "safety_check")
     builder.add_conditional_edges(
         "safety_check", _safety_target, {"prepare_confirm": "prepare_confirm", "safety_final": "safety_final"}
     )

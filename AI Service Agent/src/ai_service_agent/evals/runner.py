@@ -21,10 +21,14 @@ HANDOFF_SKIP = "handoff_rule_pending"
 READ_MARKER = "READ-OK"
 FALLBACK_EXPLAIN = "我暂时无法处理，请换个说法或联系人工客服。"
 
-# deny 拆分（OQ-7）：5 条转真实预检断言；4 条保持 skip(precheck_rule_pending)
-DENY_SKIP_IDS = {"CTRL-0086", "CTRL-0087", "CTRL-0089", "CTRL-0090"}
+# deny 拆分（OQ-7 + D3/D5）：0086/0089/0090 已按 D3/D5 转真实预检断言（含特定 reason）；
+# 0087 属读侧数据边界（D4），Task 4 落地前保持 skip(precheck_rule_pending)。
+DENY_SKIP_IDS = {"CTRL-0087"}
 UNAUTHENTICATED_IDS = {"CTRL-0088", "CTRL-0095"}
 DENY_TOOL_SCRIPT = {
+    "CTRL-0086": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}},
+    "CTRL-0089": {"tool": "delete_order_history", "args": {"order_id": "ORD-10086"}},
+    "CTRL-0090": {"tool": "order_cancel", "args": {"order_id": "ORD-CANCEL-1"}},
     "CTRL-0088": {"tool": "account_update", "args": {"phone": "13800000000"}},
     "CTRL-0092": {"tool": "order_set_status", "args": {"order_id": "10086", "status": "shipped"}},
     "CTRL-0093": {"tool": "delete_repair_records", "args": {}},
@@ -35,6 +39,14 @@ DENY_TOOL_SCRIPT = {
 # policy 维度主键（D3）：expected_policy -> 确定性 Policy 目标
 POLICY_EXPECTED = {"allow": "read", "fallback": "fallback", "confirm": "mutation", "approval": "high_risk"}
 POLICY_SKIP = {"deny", "guard_reject", "handoff"}
+
+# deny 维度特定 reason 断言（D3/D5，Task 3）：0086=退款时限 / 0089=unknown_tool / 0090=取消状态机；
+# 其余 deny 保持通用断言（任一 precheck reason）。
+DENY_EXPECTED_REASON = {
+    "CTRL-0086": "refund_window_expired",
+    "CTRL-0089": "unknown_tool",
+    "CTRL-0090": "order_already_cancelled",
+}
 
 
 def load_cases(path: str | Path) -> list[dict]:
@@ -142,7 +154,8 @@ def _scripted_responses(case: dict) -> list:
                 select_json_message("refund_apply", {"order_id": "10086"})]
     if ep == "deny":
         script = DENY_TOOL_SCRIPT[case["id"]]
-        return [router_json_message(case["expected_capability"], "mutation", 0.9),
+        risk = "high_risk" if script["tool"] in ("refund_apply", "order_cancel") else "mutation"
+        return [router_json_message(case["expected_capability"], risk, 0.9),
                 select_json_message(script["tool"], script["args"])]
     if ep == "guard_reject":
         return [router_json_message("order", "high_risk", 0.9)]
@@ -212,8 +225,13 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
         elif ep == "approval":
             ok = any(i.get("type") == "approval_required" for i in r["interrupts"])
         elif ep == "deny":
-            ok = (not r["interrupts"] and not r["tool_calls"]
-                  and any(e.get("type") == "safety_rejected" and e["data"]["rule"] == "precheck" for e in r["custom"]))
+            precheck_events = [
+                e for e in r["custom"]
+                if e.get("type") == "safety_rejected" and e["data"].get("rule") == "precheck"
+            ]
+            ok = (not r["interrupts"] and not r["tool_calls"] and bool(precheck_events))
+            if case["id"] in DENY_EXPECTED_REASON:
+                ok = ok and any(e["data"].get("reason") == DENY_EXPECTED_REASON[case["id"]] for e in precheck_events)
         elif ep == "guard_reject":
             ok = (not r["interrupts"] and not r["tool_calls"]
                   and any(e.get("type") == "safety_rejected" and e["data"]["rule"] == "guard" for e in r["custom"])

@@ -107,18 +107,24 @@ def test_clarify_fires_when_required_field_empty():
 - Modify: `src/ai_service_agent/graph/workflows/safety.py`（`make_precheck_fetch_node()` + 时限/状态机规则）
 - Modify: `src/ai_service_agent/graph/workflows/mutation_agent.py`、`high_risk_agent.py`（`select → precheck_fetch → safety_check`）
 - Modify: `src/ai_service_agent/evals/runner.py`（`DENY_SKIP_IDS` 移除 0086/0089/0090 + scripted select + 断言）
-- Test: `tests/test_tools.py`（种子）、`tests/test_mutation_graph.py`（0086/0090）、`tests/test_evals.py`（unskip）
+- Test: `tests/test_tools.py`（种子）、`tests/test_high_risk_graph.py`（0086/0090 为 high_risk 工具）、`tests/test_mutation_graph.py`（0089 D5）、`tests/test_evals.py`（unskip + 基线）
 
 **Interfaces:** `lookup_order_state(order_id) -> {"order_id","user_id","status","signed_at","cancelled_at"} | None`；种子：`ORD-10086`（signed，signed_at=10 天前，owner u1）、`ORD-CANCEL-1`（cancelled）；`make_precheck_fetch_node() -> Callable`（写 `context["precheck_data"]`，仅事实）。
 
-- [ ] **Step 1: D5 验证 CTRL-0089**：写测试确认当前拦截路径 = select `unknown_tool`（scripted select 输出不存在工具 → `precheck_reason=unknown_tool`、无 interrupt）；若实际路径不同，**停下来回报**再改 eval 语义
-- [ ] **Step 2: 写种子与 `lookup_order_state` 的测试（RED）**
-- [ ] **Step 3: 实现种子 + `lookup_order_state`**
-- [ ] **Step 4: 写 precheck_fetch + 规则测试（RED）**（0086：refund_apply + `ORD-10086` → 拒绝；0090：order_cancel + `ORD-CANCEL-1` → 拒绝）
-- [ ] **Step 5: 实现 `precheck_fetch` 节点 + `safety_check` 时限/状态机规则**（消费 `precheck_data`）
-- [ ] **Step 6: 接线两子图**（`select → precheck_fetch → safety_check`，条件边）
-- [ ] **Step 7: eval unskip 0086/0089/0090**（`DENY_SKIP_IDS` 移除；scripted select 用种子订单 id；断言 `precheck_reason` 对应值）
-- [ ] **Step 8: 全量测试 + validate + 提交**
+- [x] **Step 1: D5 验证 CTRL-0089**：写测试确认当前拦截路径 = select `unknown_tool`（scripted select 输出不存在工具 → `precheck_reason=unknown_tool`、无 interrupt）；若实际路径不同，**停下来回报**再改 eval 语义
+- [x] **Step 2: 写种子与 `lookup_order_state` 的测试（RED）**
+- [x] **Step 3: 实现种子 + `lookup_order_state`**
+- [x] **Step 4: 写 precheck_fetch + 规则测试（RED）**（0086：refund_apply + `ORD-10086` → 拒绝；0090：order_cancel + `ORD-CANCEL-1` → 拒绝）
+- [x] **Step 5: 实现 `precheck_fetch` 节点 + `safety_check` 时限/状态机规则**（消费 `precheck_data`）
+- [x] **Step 6: 接线两子图**（`select → precheck_fetch → safety_check`，条件边）
+- [x] **Step 7: eval unskip 0086/0089/0090**（`DENY_SKIP_IDS` 移除；scripted select 用种子订单 id；断言 `precheck_reason` 对应值）
+- [x] **Step 8: 全量测试 + validate + 提交**
+
+**实施记录（2026-09-15）**：
+- D5 验证通过：CTRL-0089 当前拦截路径 = select `unknown_tool`（registry 无删除类工具），已按预期转真实断言。
+- 数据集语义修正：CTRL-0086 / CTRL-0090 `expected_risk_level` mutation → **high_risk**（D3 规则绑定 refund_apply / order_cancel，均为 high_risk 档，原标签与工具分档矛盾）。
+- eval 基线：routing 87 → **90**（+0086/0089/0090），skip precheck_rule_pending 4 → **1**（仅 0087，留 Task 4）。
+- 新 reason 码：`refund_window_expired`（0086）、`order_already_cancelled`（0090），写入 `DENY_EXPECTED_REASON` 断言。
 
 ### Task 4: 读侧数据边界（D4 + CTRL-0087）
 

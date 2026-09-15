@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
+
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
-from ai_service_agent.tools.orders import order_lookup
+from ai_service_agent.tools.orders import lookup_order_state, order_lookup
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
 from ai_service_agent.tools.write import (
     AccountUpdateArgs,
@@ -82,3 +84,13 @@ def test_write_schemas_forbid_unknown_fields():
         OrderCancelArgs.model_validate({"order_id": "10086", "action": "x", "request_id": "rq"})
     with pytest.raises(ValidationError):
         RefundApplyArgs.model_validate({"order_id": "10086", "extra": 1, "request_id": "rq"})
+
+
+def test_order_seed_lookup_order_state():
+    """D3（P4）：确定性种子订单状态事实；signed_at 相对 now 生成恒超 7 天窗口。"""
+    signed = lookup_order_state("ORD-10086")
+    assert signed and signed["user_id"] == "u1" and signed["status"] == "signed"
+    assert (datetime.now(timezone.utc) - signed["signed_at"]).days >= 7
+    cancelled = lookup_order_state("ORD-CANCEL-1")
+    assert cancelled and cancelled["status"] == "cancelled" and cancelled["cancelled_at"]
+    assert lookup_order_state("NOPE-1") is None
