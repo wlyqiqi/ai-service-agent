@@ -1,6 +1,6 @@
 # P2 工具注入 + 离线评估基线 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 把 ToolRegistry 的 read 档工具真正注入 `make_ai_graph` / ReadGraph，并建立基于 `tests/evals/control/` 的离线确定性 eval runner（policy mapping / handoff trigger / routing wiring），全程不依赖真实模型 API key，输出可回归的评估结果。
 
@@ -69,7 +69,7 @@
   - `make_ai_graph(model, checkpointer, registry=None)`：`registry` 缺省用 `DEFAULT_TOOL_REGISTRY`；`tools = registry.for_risk_level("read")`；向后兼容（既有 `(model, checkpointer)` 调用不变，P1 调用点：`server.py` 两端点 / `test_concurrency.py` / `test_server.py` / `test_harness_graph.py`）。
   - `ToolMeta.schema: type[BaseModel] | None = None`（OQ-1，字段顺序 `name, description, min_risk_level, schema=None, idempotent=False`，既有位置传参不受影响）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_tools.py` 追加：
 
@@ -183,12 +183,12 @@ def test_chat_and_resolve_share_make_ai_graph_entry(tmp_path, monkeypatch):
 ```
 
 > 注：本测试为 pinning 测试（实现前即应 PASS，防未来某端点改用 `build_graph` 直连）；Task 1 的 RED 由 `DEFAULT_TOOL_REGISTRY` 缺失 / 空工具注入的两个 FAIL 承担。
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_tools.py tests/test_harness_graph.py tests/test_server.py -q`
 Expected: FAIL（`DEFAULT_TOOL_REGISTRY` 不存在 → ImportError；`make_ai_graph` 注入空工具 → tool 结果为未知工具 Error）。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/ai_service_agent/tools/__init__.py`（整文件替换为空内容）：
 
@@ -240,12 +240,12 @@ def make_ai_graph(model, checkpointer, registry=None):
     return build_graph(model, tools=tools, checkpointer=checkpointer)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_tools.py tests/test_harness_graph.py tests/test_server.py -q`
 Expected: PASS（test_tools 既有 2 + 新增 2；test_harness_graph 既有 3 + 新增 3；test_server 既有 7 + pinning 新增 1）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/tools/__init__.py src/ai_service_agent/tools/registry.py src/ai_service_agent/harness/graph.py tests/test_tools.py tests/test_harness_graph.py tests/test_server.py
@@ -270,7 +270,7 @@ git commit -m "feat: ToolRegistry 默认注册表 + make_ai_graph read 档工具
   - `runner.run_all(control_dir) -> dict`（`{dataset, case_count, dimensions: {policy, handoff}, settings}`；routing 维度 Task 3 加入）
 - Task 3 消费：`runner.evaluate_*` / `runner.run_all`。
 
-- [ ] **Step 1: 写失败测试（`tests/test_evals.py`）**
+- [x] **Step 1: 写失败测试（`tests/test_evals.py`）**
 
 ```python
 import json
@@ -328,12 +328,12 @@ def test_summarize_and_determinism(tmp_path):
     assert r1["skip"] == {"mutation_pending": 1}
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_evals.py -q`
 Expected: FAIL（`ai_service_agent.evals` 模块不存在 → ImportError）。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/ai_service_agent/evals/__init__.py`：
 
@@ -454,12 +454,12 @@ def run_all(control_dir: str | Path) -> dict:
     }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_evals.py -q`
 Expected: PASS（4 个新测试）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/evals/__init__.py src/ai_service_agent/evals/runner.py tests/test_evals.py
@@ -482,7 +482,7 @@ git commit -m "feat: evals runner——policy mapping + handoff trigger 离线�
   - `python -m ai_service_agent.evals [--data DIR] [--out FILE]`：输出/落盘 JSON 报告。
 - 语义（实测锚点，见 Global Constraints 的 OQ-6）：整图 invoke 在 handoff 中断时返回 `execution_status="routing"` + `__interrupt__`（含 `handoff_request`），且图内无 AI 文案；read/fallback 返回 `execution_status="completed"`。
 
-- [ ] **Step 1: 写失败测试（追加到 `tests/test_evals.py`）**
+- [x] **Step 1: 写失败测试（追加到 `tests/test_evals.py`）**
 
 ```python
 CASE_FALLBACK = {"id": "T-05", "input": "随便聊聊", "expected_capability": "unknown", "expected_risk_level": "read", "expected_graph": "fallback", **BASE}
@@ -531,12 +531,12 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     assert report["dimensions"]["policy"]["summary"]["pass"] == 33
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_evals.py -q`
 Expected: FAIL（`evaluate_routing` 不存在 / `run_all` 无 routing 维度 / CLI 模块不存在）。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/ai_service_agent/evals/runner.py` 追加（顶部 import 增加 `json` 已有、`AIMessage`/`HumanMessage`、`MemorySaver`、`make_ai_graph`、`ToolCallingFakeModel`）：
 
@@ -635,12 +635,12 @@ if __name__ == "__main__":
     evals/                  # offline eval runner（AGENTS.md §16）
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_evals.py -q`
 Expected: PASS（既有 4 + 新增 3 = 7）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/evals/runner.py src/ai_service_agent/evals/__main__.py tests/test_evals.py docs/specs/architecture.md
@@ -653,7 +653,7 @@ git commit -m "feat: evals routing 维度（整图接线）+ CLI（python -m ai_
 - Modify: 无（如回归发现破坏，回到对应 Task 修复）
 - Verify: 全量 pytest、`python -m ai_service_agent.evals` 全量报告、`langgraph validate`
 
-- [ ] **Step 1: 全量评估（真实数据集）**
+- [x] **Step 1: 全量评估（真实数据集）**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync python -m ai_service_agent.evals --data tests/evals/control --out "$env:TEMP\p2-eval-report.json"`
 Expected（默认 settings 下的确定性汇总；先核对 JSON 中 `settings.handoff_keywords == ["转人工", "人工客服", "找真人", "人工"]`、`router_conf_threshold == 0.6`）：
@@ -666,24 +666,24 @@ Expected（默认 settings 下的确定性汇总；先核对 JSON 中 `settings.
 
 > 说明：routing 维度对 read/fallback/handoff 命中 case 整图编译运行（约 34 次 invoke，耗时 30–60s 属正常）。数值依据：read 23 + fallback 10 + handoff 命中 1 = 34 pass；mutation 23 / high_risk 20 / blocked 14 / handoff 未命中 9 按词表 skip。若 settings 非默认（.env 覆盖），数值会变——先确认未覆盖，或按报告中 `settings` 快照人工复核。
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest -q`
 Expected: 全绿（48 个既有 + 新增 10 = 58）。
 
-- [ ] **Step 3: langgraph validate**
+- [x] **Step 3: langgraph validate**
 
 Run: `langgraph validate`
 Expected: `Configuration file ... is valid. (1 graph found)`。
 
-- [ ] **Step 4: 收尾提交（如有修复）**
+- [x] **Step 4: 收尾提交（如有修复）**
 
 ```bash
 git add -A src tests docs
 git commit -m "chore: P2 收尾（如有）"
 ```
 
-- [ ] **Step 5: 更新计划勾选与验收汇报**
+- [x] **Step 5: 更新计划勾选与验收汇报**
 
 - 逐任务勾选本文件 checkbox。
 - 汇报：commit 列表、新增测试数、48 个既有测试保持不变的回归结果、eval 全量汇总表、OQ-1–OQ-6 的裁定结果。
@@ -710,6 +710,7 @@ git commit -m "chore: P2 收尾（如有）"
 - `ToolMeta(name, description, min_risk_level, schema=None, idempotent=False)`：Task 1 实现与 OQ-1 测试一致；既有位置传参（3 参）兼容。
 - `check_handoff` 返回 `dict | Command`：Task 2 `_handoff_triggered` 双分支处理与实现一致。
 - 整图 handoff 中断断言按实测语义（`__interrupt__` + 无 AI 文案），不用 `execution_status == "waiting_handoff"`（OQ-6 实测，Task 3 一致）。
+
 
 
 
