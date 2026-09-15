@@ -28,6 +28,8 @@
 - **ApprovalRequest 落库**：HighRiskGraph 发起审批时通过 `interrupt()` 携带审批数据；harness 在观察到该 interrupt 时经 hook 写入 Approval Service（纯持久化，见 `architecture.md` §8.1）。
 - **过期状态**："超期"是纯时间比较（`now > expires_at`）的机械结论，由 Approval Service 在读取 / 前置检查时惰性落地为 `expired`；"超期后业务如何收尾"的决策在图内（见 §4）。
 
+- **P3 实现（D8 定案）**：SQLite 轻量表（pending/approved/rejected/expired + expires_at）+ FastAPI 端点（approve/reject/GET，只做前置有效性检查 + 转发）+ `simulate_approval` 测试开关（走同一路径）；业务决策在图内。**迁移触发条件（登记）**：出现多进程/容器化部署需求时，将 Approval Service 迁移至独立存储（如 Postgres），并同步评估线程锁与 checkpointer 的迁移（类比 checkpointer SQLite→Postgres），避免"先用着，后面才想起要迁移"。
+
 ### 3.2 端点行为（FastAPI）
 
 | 方法 | 路径 | 行为 |

@@ -13,7 +13,7 @@
   |    +- NO  -> graph.ainvoke({"messages": 水合历史}) 新起 run
   |                  |
   |                  v
-  |        GuardNode ∥ RouterNode（并行，同一份输入，互不依赖）[P2 起]
+  |        GuardNode ∥ RouterNode（并行，同一份输入，互不依赖）[P3 起]
   |                 |                |
   |                 +---(pass)-------+---> Policy 映射（capability x risk_level）-> 子图
   |                 +---(fail)------------> 安全收尾（丢弃 Router 并行结果）
@@ -39,6 +39,7 @@
 - 只输出 `guard_status`（pass / fail），不参与 capability/risk_level 分类，不执行 tools，不修改业务状态。
 - `fail` → 走安全收尾（见 `safety-spec.md` §1.5），Router 并行结果**不被消费**：实现上若调用可取消则取消，否则以"不消费其输出"兜底。
 - 检测信号与阈值定义见 `safety-spec.md` §1.5。
+- **P3 实现形态（D2 定案）**：确定性规则 v1（关键词/启发式，阈值可配置，无模型 key，离线可测）；**v1 是过渡实现、非 Guard 终态能力**——无法有效覆盖语义层面的恶意输入/越权诱导（如同义替换、间接暗示等绕过关键词匹配的攻击），后续须评估升级为 LLM Guard 或语义层判断（升级评估登记见 `docs/decisions/2026-09-15-p3-design-decisions.md` §2）。
 
 ## 3. Resume 调度（实测修正：入口层调度 + 图内续接）
 
@@ -77,11 +78,13 @@
 - 确定性流程：**安全预检**（`safety-spec.md`）→ `interrupt()` 用户确认（含影响摘要）→ 执行写操作工具 → 结果。
 - 用户确认对应 `Command(resume={"action":"confirm"|"cancel"})`（schema 见 §3）。
 - 用户拒绝 → 收尾并记录，不执行。
+- **恢复后、执行前最小不变量 recheck（D6 定案）**：确认/取消恢复后，执行写工具前复核 `request_id` 存在、参数未变、`context` 非陈旧；不重跑完整预检、不重新调 LLM。确认结果写入 `context`（graph-spec §9），不新增 State 字段。
 
 ### 6.3 HighRiskGraph
 
 - **安全预检** → `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
 - 超时由下一 turn 惰性检查处理为过期。
+- **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
 
 ### 6.4 Fallback / Concierge
 
@@ -119,3 +122,4 @@
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |
 
 - `execution_status` 由入口与图内节点按 turn 阶段维护（取值见 `state-spec.md` §1）；子图抛出 `handoff_request` 时置 `waiting_handoff`，不得置 `completed` / `failed`。
+

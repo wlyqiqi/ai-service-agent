@@ -43,6 +43,8 @@ class ToolMeta:
 | `order_cancel` | 订单取消 | high_risk | 需人工审批 |
 | `refund_apply` | 退款申请 | high_risk | 需人工审批 |
 
+- **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
+
 - 转人工**不是工具**：由 `check_handoff` 确定性节点检测信号并经 `interrupt(handoff_request)` 抛出（见 `safety-spec.md` §2、`graph-spec.md` §6.5），不作为工具注册、不进入任何 agent 工具集；Handoff Record 创建与 `conversation_mode` 切换由外层（Conversation Runtime）完成，子图不直接调用任何 Handoff API。
 
 ## 5. 变更纪律

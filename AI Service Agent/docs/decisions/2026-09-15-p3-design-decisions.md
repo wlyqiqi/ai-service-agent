@@ -101,3 +101,10 @@
 
 - 本决策为 P3 Spec/Decision 的依据；下一步：Spec 修订（graph-spec §1/§2/§6、state-spec §1、safety-spec、approval-spec、tool-spec §4、event-spec 如需）→ Readiness Check → Writing Plan → Implementation。
 - 涉及文件：`docs/specs/*`、`src/ai_service_agent/graph/{state,builder}.py`、`graph/agents/{mutation_agent,high_risk_agent}.py`（新增）、`graph/workflows/guard.py`（新增）、`tools/`（3 写工具）、`harness/approvals.py`（新增）、`evals/runner.py`。
+
+## 4. 补充留痕（2026-09-15，阻断项修复 + 真实模型冒烟观测）
+
+- **Router json_mode 阻断项（已解决，commit `447dd45`）**：真实 ARK 模型冒烟发现 `create_agent(response_format=<schema>)` 走 ToolStrategy 工具包装，产出 `Returning structured response` 描述性 ToolMessage，`json.loads` 解析 100% 失败——真实模型下 Router 不可用，P3 全部新能力无法触达。修复：真实模型 `bind(response_format={"type":"json_object"})`；fake model 经 `router_json_message()` 对齐 json_mode 输出结构；`_parse_router_content` 只接受 JSON 字符串/dict，**不解析** ToolStrategy 描述性文本（非稳定契约）。全量 65 tests 通过，真实模型 15 条冒烟 0 解析失败。
+- **CTRL-0076（P3 Open Question，单列）**：模糊指令"退了吧"被真实模型判 `order/high_risk/0.90`，高置信触发不应发生的审批流。需单独讨论解决方案（如 "high_risk + 中高置信" 组合是否触发额外澄清步骤而非直接放行），不与其余 ambiguous 分类分歧合并处理。
+- **真实模型分类运行间漂移（P3 eval 待决点）**：`CTRL-0073/0097/0100` 等在多次调用间分类漂移；真实模型 eval 需多采样或固定 seed 才可回归。
+- **adversarial expected 语义（已采纳，D3 方向）**：真实模型对 adversarial 输入如实输出业务分类（如 `order/high_risk`），与数据集 `expected_capability=unknown` 不一致属预期——Router 不作安全判断，P3 eval 以 `expected_policy=guard_reject` 为主判别（由 Guard 拦截）。
