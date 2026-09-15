@@ -46,7 +46,7 @@
   - `MessageStore.hydrate(conversation_id) -> list[BaseMessage]`：user → `HumanMessage(content, id=f"store-{row_id}")`；assistant → `AIMessage(content, id=message_id or f"store-{row_id}")`
   - 旧 schema（无 `message_id` 列）建库后**幂等迁移**：`__init__` 里 `PRAGMA table_info` 检查，缺列则 `ALTER TABLE ADD COLUMN message_id TEXT`
 
-- [ ] **Step 1: 写失败测试（追加到 `tests/test_messages.py`）**
+- [x] **Step 1: 写失败测试（追加到 `tests/test_messages.py`）**
 
 ```python
 def test_append_with_message_id_and_hydrate_reuses(tmp_path):
@@ -77,12 +77,12 @@ def test_old_schema_is_migrated_with_message_id_column(tmp_path):
     conn.close()
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_messages.py -q`
 Expected: FAIL（`list()` 无 `message_id` 键 / `hydrate` 无 id / 旧表缺列报错）。
 
-- [ ] **Step 3: 实现（修改 `harness/messages.py`）**
+- [x] **Step 3: 实现（修改 `harness/messages.py`）**
 
 ```python
 MESSAGE_SCHEMA = """
@@ -139,12 +139,12 @@ class MessageStore:
         return messages
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_messages.py -q`
 Expected: PASS（现有 3 + 新增 2）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "AI Service Agent/src/ai_service_agent/harness/messages.py" "AI Service Agent/tests/test_messages.py"
@@ -164,7 +164,7 @@ git commit -m "feat: MessageStore message_id 列 + 稳定 id 水合（对账机�
   - `harness/graph.py::make_ai_graph(model, checkpointer) -> CompiledStateGraph`（`/chat` 与 resolve **唯一**图构建入口）
   - `harness/resume.py::resolve_resume_payload(interrupt_value, latest_user_text="") -> dict | None`（有中断 → `{"action": "handoff_resumed", "note": <latest_user_text>}`；无/未知 → `None`）
 
-- [ ] **Step 1: 写失败测试（`tests/test_harness_graph.py`）**
+- [x] **Step 1: 写失败测试（`tests/test_harness_graph.py`）**
 
 ```python
 from langgraph.checkpoint.memory import MemorySaver
@@ -193,12 +193,12 @@ def test_resolve_resume_payload_no_interrupt_returns_none():
     assert resolve_resume_payload({"type": "unknown"}) is None
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_harness_graph.py -q`
 Expected: FAIL（模块不存在）。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```python
 # harness/graph.py
@@ -240,12 +240,12 @@ def resolve_resume_payload(interrupt_value, latest_user_text: str = "") -> dict 
     return None
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_harness_graph.py -q`
 Expected: PASS（3 个新测试）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "AI Service Agent/src/ai_service_agent/harness/graph.py" "AI Service Agent/src/ai_service_agent/harness/resume.py" "AI Service Agent/tests/test_harness_graph.py"
@@ -266,7 +266,7 @@ git commit -m "feat: 共享图构建 make_ai_graph + 入口 resume 调度 resolv
   - resume 时（`resume_payload` 非 None）：`final` 只取本轮流式累积；为空则 `None`，**不回落** `_last_assistant_text`（避免把历史/重放文本当新输出）。
   - `_last_assistant_text` 改为 async `_last_assistant_text_and_id(graph, config) -> (text | None, id | None)`，用 `aget_state`（async saver 下 sync `get_state` 会失败）。
 
-- [ ] **Step 1: 写失败测试（追加到 `tests/test_streaming.py`）**
+- [x] **Step 1: 写失败测试（追加到 `tests/test_streaming.py`）**
 
 ```python
 from langgraph.checkpoint.memory import MemorySaver
@@ -289,12 +289,12 @@ def test_done_carries_message_id():
     assert events[-1]["data"]["message_id"]  # 非空 uuid
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_streaming.py -q`
 Expected: FAIL（`done.data` 无 `message_id` 键）。
 
-- [ ] **Step 3: 实现（修改 `harness/streaming.py`）**
+- [x] **Step 3: 实现（修改 `harness/streaming.py`）**
 
 ```python
 from langgraph.types import Command
@@ -369,12 +369,12 @@ async def _last_assistant_text_and_id(graph, config: dict) -> tuple[str | None, 
     return None, None
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_streaming.py tests/test_harness_graph.py -q`
 Expected: PASS（test_streaming 现有 2 + 新增 1；test_harness_graph 3）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "AI Service Agent/src/ai_service_agent/harness/streaming.py" "AI Service Agent/tests/test_streaming.py"
@@ -392,7 +392,7 @@ git commit -m "feat: event_stream 支持 resume_payload + done.message_id（asyn
   - `make_fallback_graph(model)` 节点顺序：`START -> check_handoff` → 条件边 `handoff? -> pause | else -> explain`；`explain -> END`、`pause -> END`。
   - `explain` 文案：`"我暂时无法处理，请换个说法或联系人工客服。"`（非 handoff 兜底）；handoff 命中路径**不生成**图内文案（文案由外层在 `handoff_created` 时发 token + 落库，D3）。
 
-- [ ] **Step 1: 写失败测试（追加到 `tests/test_fallback.py`）**
+- [x] **Step 1: 写失败测试（追加到 `tests/test_fallback.py`）**
 
 ```python
 def test_fallback_non_handoff_routes_to_explain():
@@ -409,12 +409,12 @@ def test_fallback_handoff_path_generates_no_in_graph_text():
     assert [m for m in out.get("messages", []) if getattr(m, "type", "") == "ai"] == []
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_fallback.py -q`
 Expected: 新增 2 个 FAIL（旧结构 handoff 路径先 explain、非 handoff 无 explain）。
 
-- [ ] **Step 3: 实现（修改 `graph/workflows/fallback.py` 的 `make_fallback_graph`）**
+- [x] **Step 3: 实现（修改 `graph/workflows/fallback.py` 的 `make_fallback_graph`）**
 
 ```python
 def make_fallback_graph(model):
@@ -440,12 +440,12 @@ def make_fallback_graph(model):
     return builder.compile()
 ```
 
-- [ ] **Step 4: 跑测试确认通过（含既有 3 个）**
+- [x] **Step 4: 跑测试确认通过（含既有 3 个）**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_fallback.py -q`
 Expected: PASS（既有 3 + 新增 2）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "AI Service Agent/src/ai_service_agent/graph/workflows/fallback.py" "AI Service Agent/tests/test_fallback.py"
@@ -467,7 +467,7 @@ git commit -m "feat: Fallback 重排——check_handoff 前置，explain 仅非 
   - `server.py`：per-thread asyncio 锁（`_thread_lock(thread_id)`）；`/chat` ai_stream 每请求 `AsyncSqliteSaver` + `aget_state` + `resolve_resume_payload` + 锁内图调用；`/handoffs/{id}/resolve` 改 async，回切 mode 后**同步 await 主动 resume**（有挂起中断才 resume，异常降级仍返回 `mode=ai`）；`handoff_created` 时落库 `HANDOFF_NOTICE` + 发 token。
   - `create_app` 不再在模块级编译无 checkpointer 图（改由每请求构建）；`main.py` 不变。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_server.py` 追加（覆盖 resolve 主动 resume 后第一条消息走 Router）：
 
@@ -549,11 +549,11 @@ def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
 
 > 注：`KeywordHandoffFakeModel` 在 `tests/test_e2e.py` 已定义；本任务直接 `from tests.test_e2e import KeywordHandoffFakeModel` 或复制该类到本文件（建议复制，保持测试文件自包含）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_server.py -q`
 Expected: 新增 2 个 FAIL（resolve 不主动 resume、handoff 不落文案）。
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `harness/handoff.py`：
 ```python
@@ -653,12 +653,12 @@ async def resolve(handoff_id: str):
     return {"handoff_id": handoff_id, "mode": "ai"}
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_server.py tests/test_handoff.py tests/test_e2e.py -q`
 Expected: PASS（test_server 既有 5 + 新增 2；test_handoff 4；test_e2e 4）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add "AI Service Agent/src/ai_service_agent/harness/server.py" "AI Service Agent/src/ai_service_agent/harness/handoff.py" "AI Service Agent/tests/test_server.py" "AI Service Agent/tests/test_e2e.py"
@@ -674,7 +674,7 @@ git commit -m "feat: server 接线 checkpointer——每请求 saver + 并发锁
 - Consumes: Task 5 的锁与两条恢复路径。
 - Produces: 一条并发测试——同一 `thread_id` 上 resolve 主动 resume 与用户新消息入口 resume 在极短窗口内并发，验证：无异常、无双重 resume、最终状态一致（无挂起中断、`execution_status=completed`、`mode=ai`、文案不重复落库）。
 
-- [ ] **Step 1: 写测试（`tests/test_concurrency.py`）**
+- [x] **Step 1: 写测试（`tests/test_concurrency.py`）**
 
 ```python
 import asyncio
@@ -757,12 +757,12 @@ def test_resolve_and_chat_race_no_double_resume(tmp_path):
     assert len(notices) == 1
 ```
 
-- [ ] **Step 2: 跑测试**
+- [x] **Step 2: 跑测试**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_concurrency.py -q`
 Expected: PASS。断言为时序无关的不变量（谁先抢到锁不影响结果）；若出现 `database is locked` 等偶发失败，属 sqlite busy timeout 竞争，先复跑确认，再考虑给 `create_app` 的 sqlite 连接设 `timeout` 参数（在 Task 7 说明）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add "AI Service Agent/tests/test_concurrency.py"
@@ -774,29 +774,29 @@ git commit -m "test: resolve 主动 resume 与 /chat 兜底并发竞态一致性
 - Modify: 无（如回归发现破坏，回到对应 Task 修复）
 - Verify: 全量 pytest、`langgraph validate`
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest -q`
 Expected: 全绿（37 个既有 + 新增约 14 个）。
 
-- [ ] **Step 2: langgraph validate**
+- [x] **Step 2: langgraph validate**
 
 Run: `langgraph validate`
 Expected: `Configuration file ... is valid. (1 graph found)`（`builder.py:app` 未变）。
 
-- [ ] **Step 3: 复跑并发测试（防偶发 sqlite 锁）**
+- [x] **Step 3: 复跑并发测试（防偶发 sqlite 锁）**
 
 Run: `$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"; uv run --no-sync pytest tests/test_concurrency.py -q`（连跑 3 次）
 Expected: 稳定通过。若 `database is locked` 反复出现：在 `create_app` 的 `sqlite3.connect(db_path, check_same_thread=False, timeout=30)` 增大 busy timeout，并回 Task 5 提交。
 
-- [ ] **Step 4: 收尾提交（如有修复）**
+- [x] **Step 4: 收尾提交（如有修复）**
 
 ```bash
 git add -A "AI Service Agent/"
 git commit -m "chore: P1 回归修复（如有）"
 ```
 
-- [ ] **Step 5: 更新计划勾选与验收汇报**
+- [x] **Step 5: 更新计划勾选与验收汇报**
 
 - 逐任务勾选本文件 checkbox。
 - 汇报：commit 列表、新增测试数、37 个既有测试保持不变的回归结果、并发测试结论、D1–D6 落地映射。
