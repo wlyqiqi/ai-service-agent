@@ -5,6 +5,9 @@ from typing import Callable
 from ai_service_agent.harness.session import ConversationStatusStore
 
 
+HANDOFF_NOTICE = "已为你转接人工客服，坐席将尽快回复。"
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS handoff_record (
     handoff_id TEXT PRIMARY KEY,
@@ -54,7 +57,7 @@ class HandoffService:
                 (handoff_id,),
             )
             self.status.set_mode(conversation_id, "ai", commit=False)
-        return {"handoff_id": handoff_id, "mode": "ai"}
+        return {"handoff_id": handoff_id, "conversation_id": conversation_id, "mode": "ai"}
 
     def make_interrupt_callback(self, conversation_id: str) -> Callable:
         """包装 on_interrupt：handoff_request -> create_handoff + 产出 handoff_created 事件。"""

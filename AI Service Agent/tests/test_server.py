@@ -73,3 +73,91 @@ def test_handoff_resolve_endpoint(tmp_path):
     r = client.post(f"/handoffs/{rec['handoff_id']}/resolve")
     assert r.status_code == 200
     assert r.json()["mode"] == "ai"
+
+import asyncio
+
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+
+from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.testing import ToolCallingFakeModel, make_fake_model
+
+
+class KeywordHandoffFakeModel(ToolCallingFakeModel):
+    """离线：按用户输入路由到 fallback，使 check_handoff 关键词命中 -> handoff_request interrupt。"""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        user = ""
+        for m in reversed(messages):
+            if getattr(m, "type", "") == "human":
+                user = m.content or ""
+                break
+        if "转人工" in user:
+            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
+        else:
+            payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
+
+
+class ResolveProactiveFakeModel(ToolCallingFakeModel):
+    """路由器区分转人工；read agent 回显收到的用户消息条数。"""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
+        user = next((m.content for m in reversed(messages) if getattr(m, "type", "") == "human"), "")
+        users = [m for m in messages if getattr(m, "type", "") == "human"]
+        if "路由器" in system:
+            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}' if "转人工" in user else '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        else:
+            payload = f"echo-{len(users)}"
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
+
+
+def test_resolve_proactively_resumes_then_next_chat_is_answered(tmp_path):
+    db = str(tmp_path / "p.db")
+    client = TestClient(create_app(db, model=ResolveProactiveFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        text1 = "".join(r.iter_text())
+    assert "handoff_created" in text1
+
+    conn = sqlite3.connect(db)
+    handoff_id = conn.execute("SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)).fetchone()[0]
+    thread_id = ConversationStatusStore(conn).get_thread_id(session_id)
+    conn.close()
+
+    r = client.post(f"/handoffs/{handoff_id}/resolve")
+    assert r.json()["mode"] == "ai"
+
+    # resolve 后 checkpoint 应已无挂起中断（主动 resume 完成）
+    async def check_no_interrupt():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(make_fake_model(), saver)
+            st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return st.interrupts, st.values.get("execution_status")
+    interrupts, status = asyncio.run(check_no_interrupt())
+    assert not interrupts
+    assert status == "completed"
+
+    # resolve 后第一条消息走正常 Router 并得到回复（echo-2，两条 user）
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "你好"}) as r:
+        text2 = "".join(r.iter_text())
+    assert "echo-2" in text2
+    assert '"error"' not in text2
+
+
+def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
+    from ai_service_agent.harness.handoff import HANDOFF_NOTICE
+    client = TestClient(create_app(str(tmp_path / "n.db"), model=KeywordHandoffFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        text = "".join(r.iter_text())
+    assert '"token"' in text
+    assert "handoff_created" in text
+    conn = sqlite3.connect(str(tmp_path / "n.db"))
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert rows[1]["content"] == HANDOFF_NOTICE
