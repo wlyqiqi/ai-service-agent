@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     model_api_key: str | None = Field(default=None, validation_alias="ARK_API_KEY")
     router_conf_threshold: float = 0.6
     handoff_keywords: list[str] = ["转人工", "人工客服", "找真人", "人工"]
+    # P3（D2/D4/OQ-1）：Guard v1 过渡规则（关键词/正则，非终态）；确认/取消关键词；审批有效期
+    guard_patterns: list[str] = [
+        r"忽略.*规则", r"绕过审批", r"不需要审批", r"不用审批", r"直接执行",
+        r"系统管理员", r"admin", r"查询.*标记为已退款", r"投诉到封",
+    ]
+    confirm_keywords: list[str] = ["确认", "同意", "好的", "可以", "是", "没错"]
+    cancel_keywords: list[str] = ["取消", "算了", "不用了", "不要", "否"]
+    approval_expires_minutes: int = 30
+    simulate_approval: bool = False
 
 
 @lru_cache
