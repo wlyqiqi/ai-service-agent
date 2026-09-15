@@ -64,6 +64,11 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
     high_risk_graph = make_high_risk_graph(model, reg.for_risk_level("high_risk"), reg)
 
     def finalize(state: dict) -> dict:
+        # 保留子图产出的终态 clarifying（P4 D1 普通轮澄清）；failed 防覆盖。
+        # 其余（含 waiting_handoff resume 后）由 final 置 completed（graph-spec §3 / state-spec §1：
+        # 人工 Resolve 主动 resume 完成后最终置 completed）。
+        if state.get("execution_status") in ("clarifying", "failed"):
+            return {}
         return {"execution_status": "completed"}
 
     builder = StateGraph(CustomerServiceState)

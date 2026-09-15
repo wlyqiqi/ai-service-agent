@@ -22,6 +22,7 @@ from ai_service_agent.graph.workflows.safety import (
     make_safety_check_node,
     safety_final,
 )
+from ai_service_agent.graph.workflows.clarify import make_clarify_node
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
@@ -67,7 +68,12 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
         return {"messages": [AIMessage(content=f"{PRECHECK_REJECT_TEXT}（recheck 失败）")], "execution_status": "completed"}
 
     def _select_target(state: dict) -> str:
-        return "safety_check" if "pending_tool" in state.get("context", {}) else "safety_final"
+        ctx = state.get("context", {})
+        if "clarify_missing" in ctx:
+            return "clarify"
+        if "pending_tool" in ctx:
+            return "safety_check"
+        return "safety_final"
 
     def _safety_target(state: dict) -> str:
         return "safety_final" if state.get("context", {}).get("precheck_reason") else "prepare_confirm"
@@ -80,6 +86,7 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
 
     builder = StateGraph(CustomerServiceState)
     builder.add_node("select", make_select_node(model, "mutation", tools, registry))
+    builder.add_node("clarify", make_clarify_node())
     builder.add_node("safety_check", make_safety_check_node("mutation", registry))
     builder.add_node("safety_final", safety_final)
     builder.add_node("prepare_confirm", prepare_confirm)
@@ -92,8 +99,10 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
     builder.add_node("finalize_aborted", finalize_aborted)
     builder.add_edge(START, "select")
     builder.add_conditional_edges(
-        "select", _select_target, {"safety_check": "safety_check", "safety_final": "safety_final"}
+        "select", _select_target,
+        {"clarify": "clarify", "safety_check": "safety_check", "safety_final": "safety_final"},
     )
+    builder.add_edge("clarify", END)
     builder.add_conditional_edges(
         "safety_check", _safety_target, {"prepare_confirm": "prepare_confirm", "safety_final": "safety_final"}
     )

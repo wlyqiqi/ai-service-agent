@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     cancel_keywords: list[str] = ["取消", "算了", "不用了", "不要", "否"]
     approval_expires_minutes: int = 30
     simulate_approval: bool = False
+    # P4（D1）：Clarify 最大澄清轮次，超限转 fallback
+    clarify_max_turns: int = 2
 
 
 @lru_cache

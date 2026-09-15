@@ -10,6 +10,7 @@ from typing import Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import ValidationError
 from langgraph.config import get_stream_writer
 
 from ai_service_agent.tools.registry import ToolRegistry
@@ -63,6 +64,24 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         # 静态后继与 goto 目标会并发执行导致双写；决策路由一律走条件边）
         return {"context": {**state.get("context", {}), "precheck_reason": reason}, "execution_status": "completed"}
 
+    def _clarify(state: dict, missing: list[str]) -> dict:
+        # 参数不完整 != 拒绝（D1）：只写 clarify_missing，由条件边路由到 clarify 节点（普通轮）。
+        # 不发 safety_rejected；execution_status 由 clarify 节点置 clarifying。
+        return {"context": {**state.get("context", {}), "clarify_missing": missing}}
+
+    def _incomplete_fields(args: dict, meta) -> list[str]:
+        """参数完备性（D1）：必填业务字段缺失/为空串，或全可选工具全部业务字段为空 -> 返回缺失字段；完整 -> []。"""
+        if meta.schema is None:
+            return []
+        fields = [n for n in meta.schema.model_fields if n != "request_id"]
+        required = [n for n in fields if meta.schema.model_fields[n].is_required()]
+        missing = [n for n in required if not args.get(n)]
+        if missing:
+            return missing
+        if not required and all(not args.get(n) for n in fields):
+            return fields
+        return []
+
     def select(state: dict) -> dict:
         last = ""
         for m in reversed(state.get("messages", [])):
@@ -86,13 +105,23 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         if meta.schema is not None:
             try:
                 args = meta.schema.model_validate(args).model_dump()
-            except Exception:
+            except ValidationError as exc:
+                errors = exc.errors()
+                missing = [e["loc"][0] for e in errors if e["type"] == "missing" and e["loc"]]
+                # 只有"全部为缺必填"才走 clarify；混有类型/格式错误仍按 invalid_args 拒绝
+                if missing and len(missing) == len(errors):
+                    missing = [f for f in missing if f != "request_id"]
+                    if missing:
+                        return _clarify(state, missing)
                 return _reject(state, "invalid_args")
-        return {
-            "context": {
-                **state.get("context", {}),
-                "pending_tool": {"tool": tool_name, "args": args, "request_id": args["request_id"]},
-            }
-        }
+            incomplete = _incomplete_fields(args, meta)
+            if incomplete:
+                return _clarify(state, incomplete)
+        ctx = {**state.get("context", {})}
+        ctx.pop("clarify_missing", None)
+        ctx["clarify_count"] = 0  # 完整成功 select 清零（D1 轮次语义）
+        ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
+        return {"context": ctx}
+
 
     return select

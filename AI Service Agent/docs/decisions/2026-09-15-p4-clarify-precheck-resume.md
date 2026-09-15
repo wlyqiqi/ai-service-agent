@@ -26,7 +26,7 @@
   - 区分于既有 `_reject`：解析失败 / 工具不在档（`unknown_tool`）/ schema 校验错误（`invalid_args`）仍为拒绝（发 `safety_rejected`）；**只有"参数不完整"走 clarify**（发 `clarification_required`，不发 `safety_rejected`）。
 - **节点**：mutation / high_risk 子图 select 后新增 clarify 分支（条件边路由，遵守 LangGraph 1.2.11「Command(goto) 不抑制静态出边」裁定，决策路由一律条件边）。
 - **文案**：确定性模板，字段名→中文 label 映射（`order_id→订单号` 等，放 `clarify.py` 内联映射表）；`context["clarify_missing"]` 记录缺失字段列表。
-- **状态**：`execution_status=clarifying`；**builder.py 顶层 `finalize` 必须条件化**（保留 `clarifying`/`waiting_*`，不得无条件覆盖为 `completed`——审计实测当前 finalize 无条件置 completed 会覆盖子图状态）。
+- **状态**：`execution_status=clarifying`；**builder.py 顶层 `finalize` 必须条件化**（保留 `clarifying`（与 `failed`），不得无条件覆盖为 `completed`——审计实测当前 finalize 无条件置 completed 会覆盖子图状态）。**`waiting_handoff` 在人工 Resolve 主动 resume 完成后须由 final 置 `completed`**（graph-spec §3 / state-spec §1；2026-09-15 实施修正：原「保留 waiting_*」措辞过宽，测试 `test_resolve_proactively_resumes...` 钉死）。
 - **轮次**：`context["clarify_count"]`；clarify 节点自增，**完整成功 select（pending_tool 落定）时清零**；超过 N=2 → 确定性 fallback 文案 + `completed`（不再澄清）。
 - **事件**：新增 `clarification_required`（data `{missing: [...]}`），同步 event-spec §2/§2.1。
 - **恢复**：用户澄清后下一条消息正常重走 Router → 子图 → select（历史随 Message Store 水合累积），不需要新 resume 分支。
