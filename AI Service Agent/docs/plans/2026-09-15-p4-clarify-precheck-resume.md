@@ -156,11 +156,16 @@ def test_clarify_fires_when_required_field_empty():
 
 **Interfaces:** 新增 `harness/streaming.py: snapshot_assistant_ids(graph, config) -> set[str]` 与 `new_assistant_text_and_id(graph, config, before_ids) -> tuple[str|None, str|None]`（复用既有 `_last_assistant_text_and_id`）。
 
-- [ ] **Step 1: 写失败测试（RED）**：mutation confirm resume 轮 `done.final == "操作已完成。"`；历史不重放（before id 存在则 None）
-- [ ] **Step 2: 实现 streaming diff**（`final` 空且 `resume_payload` 时，取末条 assistant，id 不在 before 集合才采用）
-- [ ] **Step 3: 写 /approvals 落库测试（RED）**：approve 后 Message Store 出现"审批通过，操作已完成。"
-- [ ] **Step 4: 实现 `_approval_resume` diff + 落库**
-- [ ] **Step 5: 全量测试 + validate + 提交**
+- [x] **Step 1: 写失败测试（RED）**：mutation confirm resume 轮 `done.final == "操作已完成。"`；历史不重放（before id 存在则 None）
+- [x] **Step 2: 实现 streaming diff**（`final` 空且 `resume_payload` 时，取末条 assistant，id 不在 before 集合才采用）
+- [x] **Step 3: 写 /approvals 落库测试（RED）**：approve 后 Message Store 出现"审批通过，操作已完成。"
+- [x] **Step 4: 实现 `_approval_resume` diff + 落库**
+- [x] **Step 5: 全量测试 + validate + 提交**
+
+**实施记录（2026-09-15）**：
+- 新 helper 均为 async：`snapshot_assistant_ids` / `new_assistant_text_and_id`（复用 aget_state）。
+- `event_stream`：resume_payload 存在时 run 前快照；final 空时 diff 取本轮新增（id 不在 before），否则 None。
+- `server._approval_resume`：取 approval record 的 `conversation_id`，ainvoke 后 diff → `messages_store.append` 落库（approve/reject 均覆盖，拒绝文案同样落库）。
 
 ### Task 6: eval 语义 + Guard 评估报告 + 收尾（D6 + D8）
 

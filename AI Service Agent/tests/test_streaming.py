@@ -94,3 +94,55 @@ def test_stream_emits_tool_events_from_nested_subgraph():
     types = [e["type"] for e in events]
     assert "tool_call" in types and "tool_result" in types
     assert types[-1] == "done"
+
+
+# ---- D7（P4 Task 5）：resume 轮 final 提取（pre/post message diff）----
+
+def test_stream_resume_done_final_from_new_message():
+    """mutation confirm resume 轮 done.final == '操作已完成。'（diff 取本轮新增，不回落历史）。"""
+    from langgraph.checkpoint.memory import MemorySaver
+    from ai_service_agent.testing import router_json_message, select_json_message
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "mutation", 0.9),
+        select_json_message("account_update", {"phone": "13800000000"}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    graph.invoke(
+        {"messages": [HumanMessage(content="改一下收货地址")], "user_id": "u1", "session_id": "s1", "context": {}},
+        {"configurable": {"thread_id": "r1"}},
+    )
+    events = _collect(event_stream(
+        graph, {"configurable": {"thread_id": "r1"}},
+        messages=[HumanMessage(content="确认")],
+        resume_payload={"action": "confirm"},
+    ))
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["data"]["final"] == "操作已完成。"
+    assert done["data"]["message_id"]
+
+
+def test_new_assistant_text_and_id_no_replay():
+    """before 快照含全部既有 assistant id -> 无新增，返回 None（不回落历史文本）。"""
+    from langgraph.checkpoint.memory import MemorySaver
+    from ai_service_agent.harness.streaming import new_assistant_text_and_id, snapshot_assistant_ids
+    from ai_service_agent.testing import router_json_message
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("faq", "read", 0.9),
+        AIMessage(content="FAQ 回答。"),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "r2"}}
+    graph.invoke(
+        {"messages": [HumanMessage(content="hi")], "user_id": "u1", "session_id": "s1", "context": {}},
+        config,
+    )
+    async def check():
+        before = await snapshot_assistant_ids(graph, config)
+        assert before
+        return await new_assistant_text_and_id(graph, config, before)
+
+    text, mid = asyncio.run(check())
+    assert text is None and mid is None

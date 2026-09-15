@@ -6,6 +6,34 @@ from langgraph.types import Command
 from ai_service_agent.harness.errors import normalize_error
 
 
+async def snapshot_assistant_ids(graph, config: dict) -> set:
+    """D7：resume run 前快照 checkpoint 中已有 assistant message id 集合（供 pre/post diff）。"""
+    try:
+        state = await _aget_state(graph, config)
+        return {m.id for m in state.values.get("messages", []) if isinstance(m, AIMessage) and m.id}
+    except Exception:
+        return set()
+
+
+async def new_assistant_text_and_id(graph, config: dict, before_ids: set) -> tuple:
+    """D7：run 后取末条 assistant 文本，仅当其 id 不在 before 快照（本轮新增）时返回 (text, id)；
+    否则 (None, None)——不回落历史文本（P1 原则）。"""
+    try:
+        state = await _aget_state(graph, config)
+        for m in reversed(state.values.get("messages", [])):
+            if isinstance(m, AIMessage) and m.content:
+                if m.id not in before_ids:
+                    return (m.content if isinstance(m.content, str) else str(m.content)), m.id
+                return None, None
+    except Exception:
+        pass
+    return None, None
+
+
+async def _aget_state(graph, config: dict):
+    return await graph.aget_state(config)
+
+
 async def event_stream(
     graph,
     config: dict,
@@ -39,6 +67,9 @@ async def event_stream(
             invocation = {**invocation, **extra_state}
     final_text: list[str] = []
     final_message_id: str | None = None
+    before_ids: set = set()
+    if resume_payload:
+        before_ids = await snapshot_assistant_ids(graph, config)
     try:
         async for _ns, mode, payload in graph.astream(
             invocation, config=config, stream_mode=["messages", "updates", "custom"], subgraphs=True
@@ -83,8 +114,12 @@ async def event_stream(
                                     "data": {"name": msg.name or "tool", "ok": True, "summary": str(msg.content)[:80]},
                                 }
         final = "".join(final_text) or None
-        if not final and not resume_payload:
-            text, msg_id = await _last_assistant_text_and_id(graph, config)
+        if not final:
+            if resume_payload:
+                # D7：resume 轮 final 只取本轮新增 assistant（diff），不回落历史文本
+                text, msg_id = await new_assistant_text_and_id(graph, config, before_ids)
+            else:
+                text, msg_id = await _last_assistant_text_and_id(graph, config)
             final = text
             final_message_id = final_message_id or msg_id
         yield {"type": "done", "data": {"final": final, "message_id": final_message_id}}

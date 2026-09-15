@@ -27,7 +27,7 @@ from ai_service_agent.harness.resume import (
     resolve_resume_payload,
 )
 from ai_service_agent.harness.session import ConversationStatusStore
-from ai_service_agent.harness.streaming import event_stream
+from ai_service_agent.harness.streaming import event_stream, new_assistant_text_and_id, snapshot_assistant_ids
 from ai_service_agent.testing import make_fake_model
 
 logger = logging.getLogger("ai_service_agent")
@@ -230,15 +230,19 @@ def create_app(db_path: str, model=None, simulate_approval: bool | None = None):
         if first is None:
             raise HTTPException(status_code=404, detail="approval not found")
         thread_id = first["thread_id"]
+        conv_id = first["conversation_id"]
         lock = await _thread_lock(thread_id)
         async with lock:
             rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver)
-                await graph.ainvoke(
-                    Command(resume=resume_payload),
-                    {"configurable": {"thread_id": thread_id}},
-                )
+                cfg = {"configurable": {"thread_id": thread_id}}
+                before_ids = await snapshot_assistant_ids(graph, cfg)  # D7：resume 前快照
+                await graph.ainvoke(Command(resume=resume_payload), cfg)
+                # D7：diff 取本轮新增 assistant 文本 -> Message Store（唯一真相源）
+                final, final_message_id = await new_assistant_text_and_id(graph, cfg, before_ids)
+                if final is not None:
+                    messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
             # mark_decided 在锁内（T6 裁定）：锁释放前落库，第二个并发请求的锁内 precheck 才能看到非 pending
             approvals.mark_decided(approval_id, decided, decided_by="approver")
         return {"approval_id": approval_id, "status": decided}

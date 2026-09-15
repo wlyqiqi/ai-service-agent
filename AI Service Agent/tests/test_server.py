@@ -256,3 +256,23 @@ def test_chat_simulate_approval_resumes_approve(tmp_path):
     rows = MessageStore(conn).list(session_id)
     conn.close()
     assert rows[-1]["content"]  # 审批通过后最终回复已落库
+
+
+def test_approve_resume_persists_final_to_message_store(tmp_path):
+    """D7：/approvals/{id}/approve 直接 ainvoke 后 diff 提取本轮新增 assistant 文本并落 Message Store。"""
+    db = str(tmp_path / "d7.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        "".join(r.iter_text())
+    conn = sqlite3.connect(db)
+    approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
+    conn.close()
+
+    r = client.post(f"/approvals/{approval_id}/approve")
+    assert r.status_code == 200
+
+    conn = sqlite3.connect(db)
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert any(row["role"] == "assistant" and "审批通过" in row["content"] for row in rows)
