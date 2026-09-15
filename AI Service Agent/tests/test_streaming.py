@@ -44,3 +44,22 @@ def test_stream_emits_error_then_done():
     assert types[-1] == "done"
     assert "error" in types
     assert events[-1]["data"]["final"] is None
+
+from langgraph.checkpoint.memory import MemorySaver
+
+from ai_service_agent.graph.builder import build_graph
+from ai_service_agent.tools.kb import kb_search
+
+
+def test_done_carries_message_id():
+    model = ToolCallingFakeModel(
+        responses=[
+            AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+            AIMessage(content="带 id 的回复。"),
+        ]
+    )
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    events = _collect(event_stream(graph, {"configurable": {"thread_id": "t1"}}, [HumanMessage(content="hi")]))
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] == "带 id 的回复。"
+    assert events[-1]["data"]["message_id"]  # 非空 uuid
