@@ -20,6 +20,9 @@ class ToolMeta:
   - MutationGraph：`read` + `mutation`。
   - HighRiskGraph：`read` + `mutation` + `high_risk`。
 - ReadGraph 永远拿不到写工具（构建期过滤，而非运行期拦截）。
+- 写图 select 节点允许集为**档内严格**（P5 B2b）：仅 `min_risk_level == tier` 的写工具可被选中；
+  只读工具不进入写图 select 允许集与系统提示，若模型仍选中已注册低档工具 → `tier_clarify` 澄清
+  （普通轮，见 graph-spec.md §6.2/§6.3），未知工具仍拒绝。ToolNode 工具注入保持分层。
 
 ## 2. 工具实现约定
 
@@ -45,6 +48,9 @@ class ToolMeta:
 
 - **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
 - **P4 实现（D3/D4 定案）**：`orders.py` 升级为最小订单状态模型（`order_id -> {user_id, status, signed_at, cancelled_at}`，含确定性种子数据供离线 eval/测试）；`order_lookup` 承担读侧属主校验（D4）；订单状态事实由 `precheck_fetch` 节点提供给预检（D3，见 safety-spec.md §1.2）。
+- **P5（B1）**：只读工具补 select 侧 schema（`kb_search`=`{text, request_id}`、
+  `order_lookup`=`{order_id, request_id}`；`request_id` 由 select 注入，`user_id` 经 InjectedState 注入不入 schema），
+  注册表元数据完备（预检用）。
 
 - 转人工**不是工具**：由 `check_handoff` 确定性节点检测信号并经 `interrupt(handoff_request)` 抛出（见 `safety-spec.md` §2、`graph-spec.md` §6.5），不作为工具注册、不进入任何 agent 工具集；Handoff Record 创建与 `conversation_mode` 切换由外层（Conversation Runtime）完成，子图不直接调用任何 Handoff API。
 

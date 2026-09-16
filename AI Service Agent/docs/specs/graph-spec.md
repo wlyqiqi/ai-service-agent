@@ -77,6 +77,8 @@
 
 - 确定性流程：**select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**；完整 → **安全预检**（`safety-spec.md`；含业务规则，D3：`precheck_fetch` 提供订单状态事实 → `context["precheck_data"]`，`safety_check` 确定性裁决）→ `interrupt()` 用户确认（含影响摘要）→ 执行写操作工具 → 结果。
 - 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串，或（全可选工具）全部业务字段为空 → 进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / schema 校验错误仍为拒绝（`safety_rejected`），不走 clarify。
+- 写图 select 允许集为档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` →
+  clarify 节点（普通轮，`clarification_required` + `reason:"tier_mismatch"`，`execution_status=clarifying`）。
 - 用户确认对应 `Command(resume={"action":"confirm"|"cancel"})`（schema 见 §3）。
 - 用户拒绝 → 收尾并记录，不执行。
 - **恢复后、执行前最小不变量 recheck（D6 定案）**：确认/取消恢复后，执行写工具前复核 `request_id` 存在、参数未变、`context` 非陈旧；不重跑完整预检、不重新调 LLM。确认结果写入 `context`（graph-spec §9），不新增 State 字段。
@@ -84,6 +86,8 @@
 ### 6.3 HighRiskGraph
 
 - **select（参数完备性，同 §6.2 clarify 机制）** → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
+- **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
+  选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
 - 超时由下一 turn 惰性检查处理为过期。
 - **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
 
@@ -119,8 +123,8 @@
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
-| select（mutation/high_risk） | `messages`、`context`（`clarify_count`） | `context`（`pending_tool` 或 `clarify_missing`；完整 select 时清零 `clarify_count`） |
-| clarify | `context`（`clarify_missing`、`clarify_count`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
+| select（mutation/high_risk） | `messages`、`context`（`clarify_count`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify`；完整 select 时清零 `clarify_count`） |
+| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |
