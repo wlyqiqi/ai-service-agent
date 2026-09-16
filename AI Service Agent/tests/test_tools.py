@@ -106,3 +106,24 @@ def test_order_lookup_owner_boundary():
     cross = order_lookup.invoke({"order_id": "ORD-2", "user_id": "u1"})  # ORD-2 属主 u2（同事订单）
     assert cross.get("error") == "data_boundary"
     assert lookup_order_state("ORD-1") and lookup_order_state("ORD-1")["user_id"] == "u1"
+
+
+def test_read_tool_schemas_registered():
+    """B1（P5 D1）：只读工具注册 select 侧 schema，注册表元数据完备（tool-spec §1 预检用）。"""
+    assert DEFAULT_TOOL_REGISTRY.meta_for("order_lookup").schema is not None
+    assert DEFAULT_TOOL_REGISTRY.meta_for("kb_search").schema is not None
+
+
+def test_read_tool_schema_contracts():
+    """B1：select 侧契约——业务字段 + request_id（select 注入）；user_id 为 InjectedState 注入、不入 schema。"""
+    from ai_service_agent.tools.orders import OrderLookupArgs
+    from ai_service_agent.tools.kb import KbSearchArgs
+
+    assert "order_id" in OrderLookupArgs.model_fields
+    assert "request_id" in OrderLookupArgs.model_fields
+    assert "user_id" not in OrderLookupArgs.model_fields
+    assert OrderLookupArgs.model_validate({"order_id": "ORD-1", "request_id": "r1"}).order_id == "ORD-1"
+
+    assert "text" in KbSearchArgs.model_fields
+    assert "request_id" in KbSearchArgs.model_fields
+    assert KbSearchArgs.model_validate({"text": "退款", "request_id": "r1"}).text == "退款"

@@ -3,6 +3,15 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
+from pydantic import BaseModel, ConfigDict
+
+
+class OrderLookupArgs(BaseModel):
+    """order_lookup 的 select 侧契约（P5 B1）：仅业务字段 + request_id（select 注入）；
+    user_id 由 langgraph.prebuilt.InjectedState 注入，不入 schema。"""
+    model_config = ConfigDict(extra="forbid")
+    order_id: str
+    request_id: str
 
 
 def _days_ago(days: int) -> datetime:
