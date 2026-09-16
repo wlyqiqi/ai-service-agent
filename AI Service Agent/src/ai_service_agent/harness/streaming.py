@@ -52,8 +52,8 @@ async def event_stream(
     重复——实测同一 tool_call/ToolMessage 会在 3 层 namespace 各出现一次）。
     中断以 updates 顶层 {"__interrupt__": (Interrupt,)} 呈现，由 on_interrupt 接管。
     resume_payload 非 None 时以 Command(resume=..., update={messages}) 恢复挂起中断
-    （入口层 resume 调度，graph-spec.md §3）；resume 的 final 只取本轮流式增量，
-    为空则 None（不回落历史文本，避免重复落库）。
+    （入口层 resume 调度，graph-spec.md §3）；done.final 只取本轮新增（token 流 / diff），interrupt 或纯历史轮为 None，
+    不回落历史文本（避免重复落库）。
     done 的 message_id = 本 turn 最后一条 assistant 消息的 langchain id，
     供 Message Store 对账持久化（handoff-spec.md §5.2）。
     """
@@ -67,9 +67,7 @@ async def event_stream(
             invocation = {**invocation, **extra_state}
     final_text: list[str] = []
     final_message_id: str | None = None
-    before_ids: set = set()
-    if resume_payload:
-        before_ids = await snapshot_assistant_ids(graph, config)
+    before_ids: set = await snapshot_assistant_ids(graph, config)
     try:
         async for _ns, mode, payload in graph.astream(
             invocation, config=config, stream_mode=["messages", "updates", "custom"], subgraphs=True
@@ -115,11 +113,8 @@ async def event_stream(
                                 }
         final = "".join(final_text) or None
         if not final:
-            if resume_payload:
-                # D7：resume 轮 final 只取本轮新增 assistant（diff），不回落历史文本
-                text, msg_id = await new_assistant_text_and_id(graph, config, before_ids)
-            else:
-                text, msg_id = await _last_assistant_text_and_id(graph, config)
+            # 统一 diff 语义（D7）：只取本轮新增 assistant，不回落历史文本（防重复落库）
+            text, msg_id = await new_assistant_text_and_id(graph, config, before_ids)
             final = text
             final_message_id = final_message_id or msg_id
         yield {"type": "done", "data": {"final": final, "message_id": final_message_id}}
@@ -127,13 +122,3 @@ async def event_stream(
         yield normalize_error(exc)
         yield {"type": "done", "data": {"final": None, "message_id": None}}
 
-
-async def _last_assistant_text_and_id(graph, config: dict) -> tuple[str | None, str | None]:
-    try:
-        state = await graph.aget_state(config)
-        for m in reversed(state.values.get("messages", [])):
-            if isinstance(m, AIMessage) and m.content:
-                return (m.content if isinstance(m.content, str) else str(m.content)), m.id
-    except Exception:
-        pass
-    return None, None

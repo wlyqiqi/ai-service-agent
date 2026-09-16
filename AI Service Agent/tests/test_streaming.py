@@ -146,3 +146,41 @@ def test_new_assistant_text_and_id_no_replay():
 
     text, mid = asyncio.run(check())
     assert text is None and mid is None
+
+
+def test_stream_done_final_null_on_interrupt_turn():
+    """回归（P5 收尾）：多轮会话中 confirmation interrupt 轮无新 assistant 消息时，
+    done.final / message_id 必须为 None——不得回落历史 assistant 文案（否则 Message Store 重复落库）。"""
+    from langgraph.checkpoint.memory import MemorySaver
+    from ai_service_agent.testing import router_json_message, select_json_message
+
+    model = ToolCallingFakeModel(responses=[
+        # turn1：改地址但参数全空 -> clarify（写入 assistant 文案）
+        router_json_message("account", "mutation", 0.9),
+        select_json_message("account_update", {}),
+        # turn2：补参 -> confirmation interrupt（无新 assistant）
+        router_json_message("account", "mutation", 0.9),
+        select_json_message("account_update", {"address": "北京市朝阳区"}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "interrupt-null"}}
+    extra = {"user_id": "u1", "session_id": "s1", "context": {}}
+
+    async def on_interrupt(value):
+        if isinstance(value, dict) and value.get("type") == "confirmation_required":
+            return {"type": "confirmation_required", "data": value}
+        return None
+
+    ev1 = _collect(event_stream(graph, config, [HumanMessage(content="我要改个地址")], extra_state=extra))
+    assert ev1[-1]["type"] == "done"
+    assert ev1[-1]["data"]["final"] == "请提供：手机号、邮箱、收货地址。"
+
+    ev2 = _collect(event_stream(
+        graph, config, [HumanMessage(content="新地址是北京市朝阳区")],
+        extra_state=extra, on_interrupt=on_interrupt,
+    ))
+    types2 = [e["type"] for e in ev2]
+    assert "confirmation_required" in types2
+    assert ev2[-1]["type"] == "done"
+    assert ev2[-1]["data"]["final"] is None
+    assert ev2[-1]["data"]["message_id"] is None
