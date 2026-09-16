@@ -24,6 +24,9 @@ FIELD_LABELS = {
     "email": "邮箱",
     "address": "收货地址",
     "text": "检索内容",
+    "company": "公司名",
+    "tax_no": "税号",
+    "note": "订单备注",
 }
 
 

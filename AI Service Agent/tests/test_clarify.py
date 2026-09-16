@@ -194,3 +194,9 @@ def test_tier_clarify_streams_event_with_reason():
     assert clar["data"].get("reason") == "tier_mismatch"
     assert clar["data"]["missing"] == []
     assert types[-1] == "done"
+
+
+def test_clarify_labels_invoice_fields():
+    """2026-09-17 工具集定案：create_invoice 必填字段标签可读，update_order_note 字段 note 标签。"""
+    assert clarify_text(["order_id", "amount", "company", "tax_no"]) == "请提供：订单号、金额、公司名、税号。"
+    assert clarify_text(["note"]) == "请提供：订单备注。"
