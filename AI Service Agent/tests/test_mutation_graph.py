@@ -13,7 +13,7 @@ from ai_service_agent.tools.kb import kb_search
 def _mutation_model():
     return ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("account_update", {"phone": "13800000000"}),
+        select_json_message("update_address", {"address": "北京市朝阳区"}),
     ])
 
 
@@ -40,7 +40,7 @@ def test_mutation_confirm_executes_tool():
     out = _invoke(graph, "确认", "m2", resume={"action": "confirm"})
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
-    assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "account_update"
+    assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "update_address"
 
 
 def test_mutation_cancel_does_not_execute_tool():
@@ -67,7 +67,7 @@ def test_mutation_unknown_tool_rejected_no_interrupt():
 def test_mutation_precheck_rejects_unauthenticated():
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("account_update", {"address": "新地址"}),
+        select_json_message("update_address", {"address": "新地址"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     out = graph.invoke(
@@ -100,7 +100,7 @@ def test_mutation_select_unknown_field_rejected_invalid_args():
     """真实模型漂移样例（{"action": ...}）：未知字段被 select 拒绝为 invalid_args，不产生 interrupt。"""
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("account_update", {"action": "update_shipping_address"}),
+        select_json_message("update_address", {"action": "update_shipping_address"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     out = _invoke(graph, "改一下收货地址", "m7")
@@ -142,11 +142,11 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
 
     clarify_model = ToolCallingFakeModel(responses=[
         router_json_message("account", "mutation", 0.9),
-        select_json_message("account_update", {}),
+        select_json_message("update_address", {}),
     ])
     complete_model = ToolCallingFakeModel(responses=[
         router_json_message("account", "mutation", 0.9),
-        select_json_message("account_update", {"address": "北京市朝阳区"}),
+        select_json_message("update_address", {"address": "北京市朝阳区"}),
     ])
     tid = "mt-clarify-1"
 
@@ -154,20 +154,20 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     t1 = _turn(_build(clarify_model), "我要改个地址", tid)
     assert t1["execution_status"] == "clarifying"
     assert not t1.get("__interrupt__")
-    assert set(t1["context"]["clarify_missing"]) == {"phone", "email", "address"}
-    assert "请提供" in t1["messages"][-1].content
+    assert t1["context"]["clarify_missing"] == ["address"]
+    assert "请提供：收货地址。" in t1["messages"][-1].content
 
     # 轮2：补地址 -> 完整 select -> 确认中断（参数已进 summary，本轮不执行工具）
     t2 = _turn(_build(complete_model), "新地址是北京市朝阳区", tid)
     values = [it.value for it in t2.get("__interrupt__", [])]
     confirm = next((v for v in values if v.get("type") == "confirmation_required"), None)
     assert confirm is not None
-    assert "account_update" in confirm["summary"]
+    assert "update_address" in confirm["summary"]
     assert "北京市朝阳区" in confirm["summary"]
 
     # 轮3：confirm -> recheck -> execute -> 工具只执行一次
     t3 = _build(complete_model).invoke(Command(resume={"action": "confirm"}), {"configurable": {"thread_id": tid}})
     assert t3["execution_status"] == "completed"
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
-    assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "account_update"
+    assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
     assert "操作已完成" in t3["messages"][-1].content

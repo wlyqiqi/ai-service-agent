@@ -45,21 +45,21 @@ def test_config_clarify_max_turns_default():
 
 
 def test_select_incomplete_sets_clarify_missing():
-    """select 直测：account_update 全空 -> clarify_missing，不落 pending_tool、不动 count。"""
-    model = ToolCallingFakeModel(responses=[select_json_message("account_update", {})])
+    """select 直测：update_address 全空 -> clarify_missing，不落 pending_tool、不动 count。"""
+    model = ToolCallingFakeModel(responses=[select_json_message("update_address", {})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = node({"messages": [HumanMessage(content="改一下收货地址")], "context": {"clarify_count": 1}})
-    assert set(out["context"]["clarify_missing"]) == {"phone", "email", "address"}
+    assert out["context"]["clarify_missing"] == ["address"]
     assert "pending_tool" not in out["context"]
     assert out["context"]["clarify_count"] == 1  # select 不清零，由 clarify 节点/完整 select 管理
 
 
 def test_select_complete_resets_clarify_count():
-    model = ToolCallingFakeModel(responses=[select_json_message("account_update", {"address": "北京市朝阳区"})])
+    model = ToolCallingFakeModel(responses=[select_json_message("update_address", {"address": "北京市朝阳区"})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = node({"messages": [HumanMessage(content="改地址")], "context": {"clarify_count": 1}})
     assert out["context"]["clarify_count"] == 0  # 完整 select 清零（D1）
-    assert out["context"]["pending_tool"]["tool"] == "account_update"
+    assert out["context"]["pending_tool"]["tool"] == "update_address"
     assert "clarify_missing" not in out["context"]
 
 
@@ -78,14 +78,15 @@ def test_highrisk_empty_required_clarifies():
     assert out["context"]["clarify_missing"] == ["order_id"]
 
 
-def test_mutation_all_optional_empty_clarifies():
+def test_mutation_empty_args_clarifies():
+    """2026-09-17 工具集定案：mutation 图空参 select（update_address 缺必填）-> 澄清，非 interrupt。"""
     model = ToolCallingFakeModel(responses=[
         router_json_message("account", "mutation", 0.9),
-        select_json_message("account_update", {}),
+        select_json_message("update_address", {}),
     ])
     out = _invoke(_graph(model), "改一下收货地址", "c3")
     assert out["execution_status"] == "clarifying"
-    assert set(out["context"]["clarify_missing"]) == {"phone", "email", "address"}
+    assert out["context"]["clarify_missing"] == ["address"]
 
 
 def test_clarify_over_limit_falls_back():

@@ -105,7 +105,7 @@ def test_stream_resume_done_final_from_new_message():
 
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("account_update", {"phone": "13800000000"}),
+        select_json_message("update_address", {"address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     graph.invoke(
@@ -157,10 +157,10 @@ def test_stream_done_final_null_on_interrupt_turn():
     model = ToolCallingFakeModel(responses=[
         # turn1：改地址但参数全空 -> clarify（写入 assistant 文案）
         router_json_message("account", "mutation", 0.9),
-        select_json_message("account_update", {}),
+        select_json_message("update_address", {}),
         # turn2：补参 -> confirmation interrupt（无新 assistant）
         router_json_message("account", "mutation", 0.9),
-        select_json_message("account_update", {"address": "北京市朝阳区"}),
+        select_json_message("update_address", {"address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "interrupt-null"}}
@@ -173,7 +173,7 @@ def test_stream_done_final_null_on_interrupt_turn():
 
     ev1 = _collect(event_stream(graph, config, [HumanMessage(content="我要改个地址")], extra_state=extra))
     assert ev1[-1]["type"] == "done"
-    assert ev1[-1]["data"]["final"] == "请提供：手机号、邮箱、收货地址。"
+    assert ev1[-1]["data"]["final"] == "请提供：收货地址。"
 
     ev2 = _collect(event_stream(
         graph, config, [HumanMessage(content="新地址是北京市朝阳区")],
