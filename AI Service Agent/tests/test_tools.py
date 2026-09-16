@@ -5,12 +5,20 @@ from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools.orders import lookup_order_state, order_lookup
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
 from ai_service_agent.tools.write import (
-    AccountUpdateArgs,
-    OrderCancelArgs,
+    CancelOrderArgs,
+    CreateInvoiceArgs,
+    CreateServiceTicketArgs,
     RefundApplyArgs,
-    account_update,
-    order_cancel,
+    UpdateAddressArgs,
+    UpdateOrderNoteArgs,
+    UpdatePhoneArgs,
+    cancel_order,
+    create_invoice,
+    create_service_ticket,
     refund_apply,
+    update_address,
+    update_order_note,
+    update_phone,
 )
 
 
@@ -18,13 +26,21 @@ def test_registry_injects_by_risk_level():
     reg = ToolRegistry()
     reg.register(ToolMeta("kb_search", "检索", "read"), kb_search)
     reg.register(ToolMeta("order_lookup", "查订单", "read"), order_lookup)
-    reg.register(ToolMeta("account_update", "改账户", "mutation", schema=None, idempotent=True), account_update)
-    reg.register(ToolMeta("order_cancel", "取消", "high_risk", schema=None, idempotent=True), order_cancel)
+    reg.register(ToolMeta("update_address", "改地址", "mutation", schema=None, idempotent=True), update_address)
+    reg.register(ToolMeta("update_phone", "改电话", "mutation", schema=None, idempotent=True), update_phone)
+    reg.register(ToolMeta("update_order_note", "改备注", "mutation", schema=None, idempotent=True), update_order_note)
+    reg.register(ToolMeta("create_invoice", "开发票", "mutation", schema=None, idempotent=True), create_invoice)
+    reg.register(ToolMeta("create_service_ticket", "售后工单", "mutation", schema=None, idempotent=True), create_service_ticket)
+    reg.register(ToolMeta("cancel_order", "取消订单", "high_risk", schema=None, idempotent=True), cancel_order)
     reg.register(ToolMeta("refund_apply", "退款", "high_risk", schema=None, idempotent=True), refund_apply)
     assert {t.name for t in reg.for_risk_level("read")} == {"kb_search", "order_lookup"}
-    assert {t.name for t in reg.for_risk_level("mutation")} == {"kb_search", "order_lookup", "account_update"}
+    assert {t.name for t in reg.for_risk_level("mutation")} == {
+        "kb_search", "order_lookup", "update_address", "update_phone", "update_order_note",
+        "create_invoice", "create_service_ticket",
+    }
     assert {t.name for t in reg.for_risk_level("high_risk")} == {
-        "kb_search", "order_lookup", "account_update", "order_cancel", "refund_apply",
+        "kb_search", "order_lookup", "update_address", "update_phone", "update_order_note",
+        "create_invoice", "create_service_ticket", "cancel_order", "refund_apply",
     }
 
 
@@ -38,34 +54,42 @@ def test_default_registry_tiered():
     mutation_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")}
     high_risk_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk")}
     assert read_tools == {"kb_search", "order_lookup"}
-    assert mutation_tools == read_tools | {"account_update"}
-    assert high_risk_tools == read_tools | {"account_update", "order_cancel", "refund_apply"}
+    assert mutation_tools == read_tools | {"update_address", "update_phone", "update_order_note",
+                                           "create_invoice", "create_service_ticket"}
+    assert high_risk_tools == mutation_tools | {"cancel_order", "refund_apply"}
+    assert "account_update" not in mutation_tools
+    assert "order_cancel" not in high_risk_tools
 
 
-def test_tool_meta_carries_schema_field():  # OQ-1
+def test_tool_meta_carries_schema_field():
     meta = ToolMeta("kb_search", "检索", "read")
     assert meta.schema is None
-    meta2 = ToolMeta("order_cancel", "取消", "high_risk", schema=None, idempotent=True)
+    meta2 = ToolMeta("cancel_order", "取消", "high_risk", schema=None, idempotent=True)
     assert meta2.idempotent is True
 
 
 def test_write_tools_stub_idempotent_by_request_id():
-    r1 = account_update.invoke({"phone": "13800000000", "request_id": "rq-1"})
-    r2 = account_update.invoke({"phone": "13800000000", "request_id": "rq-1"})
+    r1 = update_address.invoke({"address": "北京市朝阳区", "request_id": "rq-1"})
+    r2 = update_address.invoke({"address": "北京市朝阳区", "request_id": "rq-1"})
     assert r1["replayed"] is False and r2["replayed"] is True
     assert r1["result"] == r2["result"]
-    r3 = account_update.invoke({"phone": "13900000000", "request_id": "rq-2"})
+    r3 = update_address.invoke({"address": "上海市浦东", "request_id": "rq-2"})
     assert r3["replayed"] is False
 
 
 def test_write_tool_schemas():
-    assert AccountUpdateArgs(request_id="rq").request_id == "rq"
-    assert OrderCancelArgs(order_id="10086", request_id="rq").order_id == "10086"
+    assert UpdateAddressArgs(address="a", request_id="rq").address == "a"
+    assert UpdatePhoneArgs(phone="13800000000", request_id="rq").phone == "13800000000"
+    assert UpdateOrderNoteArgs(note="n", request_id="rq").note == "n"
+    inv = CreateInvoiceArgs(order_id="10086", amount=99.0, company="c", tax_no="t", request_id="rq")
+    assert inv.amount == 99.0 and inv.company == "c" and inv.tax_no == "t"
+    assert CreateServiceTicketArgs(order_id="10086", reason="r", request_id="rq").reason == "r"
+    assert CancelOrderArgs(order_id="10086", request_id="rq").order_id == "10086"
     assert RefundApplyArgs(order_id="10086", amount=99.0, request_id="rq").amount == 99.0
 
 
 def test_registry_meta_for():
-    meta = DEFAULT_TOOL_REGISTRY.meta_for("order_cancel")
+    meta = DEFAULT_TOOL_REGISTRY.meta_for("cancel_order")
     assert meta is not None and meta.min_risk_level == "high_risk" and meta.idempotent is True
     assert DEFAULT_TOOL_REGISTRY.meta_for("nope") is None
 
@@ -77,13 +101,29 @@ from pydantic import ValidationError
 def test_write_schemas_forbid_unknown_fields():
     """select 契约漂移（2026-09-15 真机冒烟）：未知字段必须显式 invalid_args，绝不静默丢参。"""
     with pytest.raises(ValidationError):
-        AccountUpdateArgs.model_validate({"action": "update_shipping_address", "request_id": "rq"})
+        UpdateAddressArgs.model_validate({"action": "update_shipping_address", "request_id": "rq"})
     with pytest.raises(ValidationError):
-        AccountUpdateArgs.model_validate({"field": "phone", "request_id": "rq"})
+        UpdateAddressArgs.model_validate({"field": "address", "request_id": "rq"})
     with pytest.raises(ValidationError):
-        OrderCancelArgs.model_validate({"order_id": "10086", "action": "x", "request_id": "rq"})
+        CancelOrderArgs.model_validate({"order_id": "10086", "action": "x", "request_id": "rq"})
     with pytest.raises(ValidationError):
         RefundApplyArgs.model_validate({"order_id": "10086", "extra": 1, "request_id": "rq"})
+
+
+def test_registry_risk_sets_v2():
+    """新工具集定案：mutation 5 工具 + high_risk 2 工具（2026-09-17）。"""
+    read = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("read")}
+    mutation = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")}
+    high = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk")}
+    assert read == {"kb_search", "order_lookup"}
+    assert mutation == read | {"update_address", "update_phone", "update_order_note",
+                               "create_invoice", "create_service_ticket"}
+    assert high == mutation | {"cancel_order", "refund_apply"}
+
+
+def test_cancel_order_meta_is_high_risk():
+    meta = DEFAULT_TOOL_REGISTRY.meta_for("cancel_order")
+    assert meta is not None and meta.min_risk_level == "high_risk" and meta.idempotent
 
 
 def test_order_seed_lookup_order_state():

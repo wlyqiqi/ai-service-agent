@@ -2,16 +2,25 @@ from ai_service_agent.tools.kb import KbSearchArgs, kb_search
 from ai_service_agent.tools.orders import OrderLookupArgs, order_lookup
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
 from ai_service_agent.tools.write import (
-    AccountUpdateArgs,
-    OrderCancelArgs,
+    CancelOrderArgs,
+    CreateInvoiceArgs,
+    CreateServiceTicketArgs,
     RefundApplyArgs,
-    account_update,
-    order_cancel,
+    UpdateAddressArgs,
+    UpdateOrderNoteArgs,
+    UpdatePhoneArgs,
+    cancel_order,
+    create_invoice,
+    create_service_ticket,
     refund_apply,
+    update_address,
+    update_order_note,
+    update_phone,
 )
 
-# 默认注册表（tool-spec.md §4 v1 清单 + D5 写工具 stub）：
-# read 档：kb_search / order_lookup；mutation 档：+ account_update；high_risk 档：+ order_cancel / refund_apply。
+# 默认注册表（tool-spec.md §4 v1 清单 + P5 工具集定案）：
+# read 档：kb_search / order_lookup；mutation 档：+ update_address / update_phone / update_order_note /
+# create_invoice / create_service_ticket；high_risk 档：+ cancel_order（原 order_cancel）/ refund_apply。
 DEFAULT_TOOL_REGISTRY = ToolRegistry()
 DEFAULT_TOOL_REGISTRY.register(
     ToolMeta("kb_search", "知识库检索", "read", schema=KbSearchArgs), kb_search,
@@ -19,15 +28,26 @@ DEFAULT_TOOL_REGISTRY.register(
 DEFAULT_TOOL_REGISTRY.register(
     ToolMeta("order_lookup", "订单查询", "read", schema=OrderLookupArgs), order_lookup,
 )
+# mutation 档：5 个写工具
 DEFAULT_TOOL_REGISTRY.register(
-    ToolMeta("account_update", "账户变更", "mutation", schema=AccountUpdateArgs, idempotent=True),
-    account_update,
+    ToolMeta("update_address", "修改收货地址", "mutation", schema=UpdateAddressArgs, idempotent=True), update_address,
 )
 DEFAULT_TOOL_REGISTRY.register(
-    ToolMeta("order_cancel", "订单取消", "high_risk", schema=OrderCancelArgs, idempotent=True),
-    order_cancel,
+    ToolMeta("update_phone", "修改联系电话", "mutation", schema=UpdatePhoneArgs, idempotent=True), update_phone,
 )
 DEFAULT_TOOL_REGISTRY.register(
-    ToolMeta("refund_apply", "退款申请", "high_risk", schema=RefundApplyArgs, idempotent=True),
-    refund_apply,
+    ToolMeta("update_order_note", "修改订单备注", "mutation", schema=UpdateOrderNoteArgs, idempotent=True), update_order_note,
+)
+DEFAULT_TOOL_REGISTRY.register(
+    ToolMeta("create_invoice", "开具发票", "mutation", schema=CreateInvoiceArgs, idempotent=True), create_invoice,
+)
+DEFAULT_TOOL_REGISTRY.register(
+    ToolMeta("create_service_ticket", "创建售后工单", "mutation", schema=CreateServiceTicketArgs, idempotent=True), create_service_ticket,
+)
+# high_risk 档：cancel_order（原 order_cancel 重命名）+ refund_apply
+DEFAULT_TOOL_REGISTRY.register(
+    ToolMeta("cancel_order", "取消订单", "high_risk", schema=CancelOrderArgs, idempotent=True), cancel_order,
+)
+DEFAULT_TOOL_REGISTRY.register(
+    ToolMeta("refund_apply", "退款申请", "high_risk", schema=RefundApplyArgs, idempotent=True), refund_apply,
 )
