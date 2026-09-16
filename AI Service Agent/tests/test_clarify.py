@@ -105,3 +105,49 @@ def test_clarify_streams_event_and_done():
     types = [e["type"] for e in events]
     assert "clarification_required" in types
     assert types[-1] == "done"
+def _build(model, saver):
+    return build_graph(model, tools=[kb_search], checkpointer=saver)
+
+
+def _turn(graph, text, thread_id, user_id="u1"):
+    # 续接轮不传 context：context 由 checkpoint 保留（真实 /chat 入口同语义），仅追加新消息
+    return graph.invoke(
+        {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id},
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+
+def test_multi_turn_clarify_then_complete_enters_highrisk():
+    """0076 跨 turn 链路：首轮"退了吧"澄清 -> 用户补订单号 -> 下轮以完整参数进入 HighRisk 审批闸。
+
+    Ruling（2026-09-16，ledger）：子图 interrupt 时父图不落子图 context/execution_status 写
+    （LangGraph 语义，mutation 确认闸同；harness 不依赖父图这些字段）。故断言可观测契约：
+    approval_required interrupt 携带完整 args（ORD-UNKNOWN），且本轮不再澄清、工具未执行。
+    clarify_count 清零发生在子图内，父图视图在 resume 完成后才同步。
+    """
+    saver = MemorySaver()
+    t1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c7")
+    assert t1["execution_status"] == "clarifying"
+    assert t1["context"]["clarify_count"] == 1
+    assert not t1.get("__interrupt__")
+
+    # 第二轮补参：ORD-UNKNOWN 不在种子库 -> 无事实 -> 预检通过 -> approval_required（同 t3-pos）
+    t2 = _turn(_build(_highrisk_model({"order_id": "ORD-UNKNOWN"}), saver), "订单号是 ORD-UNKNOWN", "c7")
+    interrupts = [it.value for it in t2.get("__interrupt__", [])]
+    approval = next((v for v in interrupts if v.get("type") == "approval_required"), None)
+    assert approval is not None                  # 第二轮正常进入 HighRisk 审批闸
+    assert "ORD-UNKNOWN" in approval["summary"]  # 完整 select 已被消费（参数进入审批摘要）
+    assert not any(getattr(m, "type", "") == "tool" for m in t2["messages"])  # 审批前工具不执行
+
+
+def test_multi_turn_clarify_over_limit_falls_back():
+    """0076 跨 turn：连续 3 轮不补齐 -> 超过 clarify_max_turns=2 -> 确定性 fallback，绝不默认执行。"""
+    saver = MemorySaver()
+    r1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c8")
+    assert r1["execution_status"] == "clarifying" and r1["context"]["clarify_count"] == 1
+    r2 = _turn(_build(_highrisk_model({}), saver), "还是没有订单号", "c8")
+    assert r2["execution_status"] == "clarifying" and r2["context"]["clarify_count"] == 2
+    r3 = _turn(_build(_highrisk_model({}), saver), "那就这样吧", "c8")
+    assert r3["execution_status"] == "completed"
+    assert CLARIFY_FALLBACK_TEXT in r3["messages"][-1].content
+    assert not r3.get("__interrupt__")
