@@ -1,4 +1,4 @@
-"""真实模型端到端 HTTP+SSE 冒烟（4 场景：FAQ/Read · Mutation · HighRisk · Handoff）。
+"""真实模型端到端 HTTP+SSE 冒烟（6 场景：FAQ/Read · Clarify0076 · MutationClarifyMultiTurn · Mutation · HighRisk · Handoff）。
 
 - 前置：.env 已配置 ARK_MODEL / ARK_BASE_URL / ARK_API_KEY；离线全量测试全绿。
 - 每次运行使用全新临时 SQLite DB，可重复执行。
@@ -169,6 +169,7 @@ def graph_state(db_path: str, thread_id: str) -> dict:
             return {
                 "interrupts": [getattr(it, "value", None) for it in st.interrupts],
                 "execution_status": st.values.get("execution_status"),
+                "clarify_count": (st.values.get("context") or {}).get("clarify_count", 0),
                 "handoff": st.values.get("handoff"),
                 "last_assistant": assistant_tail[-1] if assistant_tail else None,
                 "messages": [
@@ -341,6 +342,73 @@ def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
     }
 
 
+def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> dict:
+    """Mutation 多轮 clarify 闭环（P4 D1 跨轮）：缺参 -> clarification_required ->
+    补参 -> confirmation_required -> 确认 -> 工具只执行一次。
+
+    验证 clarify_count 跨 turn 保留（缺参=1）、完整成功 select 清零；若真实模型为
+    缺参输入编造必填参数导致 turn1 直接 confirmation_required，暴露 D3 残余风险。
+    """
+    sid, sess = new_session(client)
+    st1 = st2 = st3 = None
+
+    code1, ev1 = chat_sse(client, sid, "我要改个地址")
+    types1 = event_types(ev1)
+    clarify1 = any(e.get("type") == "clarification_required" for e in ev1)
+    tool1 = any(e.get("type") == "tool_call" for e in ev1)
+    done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
+    if done1 is not None:
+        st1 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+
+    code2, ev2 = chat_sse(client, sid, "新地址是北京市朝阳区")
+    types2 = event_types(ev2)
+    clarify2 = any(e.get("type") == "clarification_required" for e in ev2)
+    confirm2 = any(e.get("type") == "confirmation_required" for e in ev2)
+    done2 = next((e for e in reversed(ev2) if e.get("type") == "done"), None)
+    if done2 is not None:
+        st2 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+
+    code3, ev3 = chat_sse(client, sid, "确认")
+    types3 = event_types(ev3)
+    calls3, results3 = count_tool_events(ev3, "account_update")
+    done3 = next((e for e in reversed(ev3) if e.get("type") == "done"), None)
+    if done3 is not None:
+        st3 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+
+    st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+    tool_msgs = [m for m in st["messages"] if m["name"] == "account_update"]
+    msgs = open_messages(db_path, sid)
+    d7_store = any(m["role"] == "assistant" and "操作已完成" in m["content"] for m in msgs)
+    pass_ = (
+        code1 == 200 and clarify1 and not tool1 and done1 is not None
+        and (st1 or {}).get("execution_status") == "clarifying"
+        and code2 == 200 and confirm2 and not clarify2 and done2 is not None
+        and code3 == 200 and calls3 == 1 and results3 == 1
+        and (st3 or {}).get("execution_status") == "completed"
+        and len(tool_msgs) == 1 and d7_store
+    )
+    return {
+        "name": "MutationClarifyMultiTurn", "pass": pass_, "session_id": sid,
+        "turn1": {"http": code1, "timeline": types1, "clarification_required": clarify1,
+                  "tool_called": tool1, "done_final": (done1 or {}).get("data"),
+                  "clarify_count": (st1 or {}).get("clarify_count")},
+        "turn2": {"http": code2, "timeline": types2, "confirmation_required": confirm2,
+                  "clarification_required": clarify2, "done_final": (done2 or {}).get("data"),
+                  "clarify_count": (st2 or {}).get("clarify_count")},
+        "turn3": {"http": code3, "timeline": types3, "tool_call": calls3, "tool_result": results3,
+                  "done_final": (done3 or {}).get("data"),
+                  "clarify_count": (st3 or {}).get("clarify_count")},
+        "d7": {"message_store_has_final": d7_store,
+               "message_store": [{"role": m["role"], "content": m["content"][:40]} for m in msgs]},
+        "thread_id": open_status(db_path, sid)["thread_id"],
+        "final_state": {"execution_status": st["execution_status"], "clarify_count": st["clarify_count"],
+                        "tool_messages": len(tool_msgs), "interrupts": st["interrupts"],
+                        "last_assistant": st["last_assistant"]},
+        "mode": open_status(db_path, sid)["mode"],
+        "thread_id_consistent": check_thread_id_consistent(db_path, sid, "MutationClarifyMultiTurn"),
+    }
+
+
 def scenario_handoff(client: httpx.Client, db_path: str) -> dict:
     sid, sess = new_session(client)
     code1, ev1 = chat_sse(client, sid, "我要转人工")
@@ -418,6 +486,7 @@ def main() -> int:
             results = [
                 scenario_faq(client, db_path),
                 scenario_clarify_0076(client, db_path),
+                scenario_mutation_clarify_multi_turn(client, db_path),
                 scenario_mutation(client, db_path),
                 scenario_highrisk(client, db_path),
                 scenario_handoff(client, db_path),
