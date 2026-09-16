@@ -28,6 +28,34 @@ def _describe_args_schema(meta) -> str:
         parts.append(f"{name}({'必填' if info.is_required() else '可选'})")
     return "，".join(parts)
 
+def _build_examples(tier_tools: list, registry: ToolRegistry) -> str:
+    """按档位生成 select 示例：每工具一个真实示例（必填字段占位）+ 一个缺参示例。"""
+    parts = []
+    for t in tier_tools:
+        meta = registry.meta_for(t.name)
+        if meta is None or meta.schema is None:
+            continue
+        required = [
+            n for n in meta.schema.model_fields
+            if n != "request_id" and meta.schema.model_fields[n].is_required()
+        ]
+        if not required:
+            continue
+        args = {n: f"{n}示例" for n in required}
+        parts.append(
+            f"用户：{t.description}，请执行\n"
+            f"输出：{{\"tool\": \"{t.name}\", \"args\": {json.dumps(args, ensure_ascii=False)}}}"
+        )
+    if tier_tools:
+        first = tier_tools[0]
+        first_meta = registry.meta_for(first.name)
+        parts.append(
+            f"用户：{first_meta.description}，但参数不完整\n"
+            f"输出：{{\"tool\": \"{first.name}\", \"args\": {{}}}}"
+        )
+    return "\n\n".join(parts)
+
+
 def _bind_json(model):
     """json_mode 绑定（与 router.py 同契约）：真实模型 response_format json_object，fake 直接 JSON 字符串。"""
     if isinstance(model, FakeMessagesListChatModel):
@@ -88,7 +116,10 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 last = m.content if isinstance(m.content, str) else str(m.content)
                 break
         resp = bound.invoke([
-            SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(tool_list=tool_list)),
+            SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
+                tool_list=tool_list,
+                examples=_build_examples(tier_tools, registry),
+            )),
             HumanMessage(content=last),
         ])
         try:

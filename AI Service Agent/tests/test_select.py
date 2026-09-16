@@ -19,7 +19,7 @@ class RecordingSelectModel(ToolCallingFakeModel):
 
 def _select_node():
     model = RecordingSelectModel(responses=[
-        select_json_message("account_update", {"address": "朝阳区"}),
+        select_json_message("update_address", {"address": "朝阳区"}),
     ])
     node = make_select_node(
         model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
@@ -45,13 +45,38 @@ def test_select_system_template_has_example():
     model, node = _select_node()
     node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
     assert "示例：" in model.seen_system
-    assert "account_update" in model.seen_system
+    assert "update_address" in model.seen_system
 
 
 def test_select_system_template_tier_strict_no_read_tools():
     """B2b：写图 select 系统提示只列该档写工具，只读工具不进入允许集。"""
     model, node = _select_node()
     node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
-    assert "account_update" in model.seen_system
+    assert "update_address" in model.seen_system
     assert "kb_search" not in model.seen_system
     assert "order_lookup" not in model.seen_system
+
+
+def test_select_system_template_carries_new_tools_and_schema():
+    model, node = _select_node()
+    node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
+    assert "update_address" in model.seen_system
+    assert "create_invoice" in model.seen_system
+    assert "address" in model.seen_system
+    assert "company" in model.seen_system
+    assert "account_update" not in model.seen_system
+
+
+def test_select_system_template_forbids_extra_fields_and_fabrication():
+    model, node = _select_node()
+    node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
+    assert "不要输出 schema 之外的字段" in model.seen_system
+    assert "严禁编造" in model.seen_system
+
+
+def test_select_system_template_examples_match_tier():
+    model, node = _select_node()
+    node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
+    assert '"tool": "update_address"' in model.seen_system
+    assert '"tool": "refund_apply"' not in model.seen_system   # 跨档示例不注入
+    assert "参数不完整" in model.seen_system                     # 缺参示例

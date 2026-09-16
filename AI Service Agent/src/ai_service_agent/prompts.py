@@ -100,16 +100,19 @@ confidence:
 输出：
 {"capability":"unknown","risk_level":"read","confidence":0.20}
 """
-SELECT_SYSTEM_TEMPLATE = (
-    "你是客服操作选择器。根据用户意图，从允许的工具中选择一个并给出符合其 schema 的参数。\n"
-    "只输出 JSON，形状为 {{\"tool\": \"<工具名>\", \"args\": {{...}}}}。\n"
-    "允许的工具：\n{tool_list}\n"
-    "args 只能包含该工具列出的字段名，不要输出 schema 之外的字段（输出未知字段会被拒绝）。\n"
-    "示例：\n"
-    "用户：我要把收货地址改成朝阳区\n"
-    "输出：{{\"tool\": \"account_update\", \"args\": {{\"address\": \"朝阳区\"}}}}\n"
-    "不要输出其它内容。"
-)
+SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。根据用户意图，从允许的工具中选择一个并给出符合其 schema 的参数。
+只输出 JSON，形状为 {{"tool": "<工具名>", "args": {{...}}}}，不要输出其它内容（禁止 Markdown 代码块）。
+
+允许的工具：
+{tool_list}
+
+规则：
+- args 只能包含该工具 schema 列出的字段名，不要输出 schema 之外的字段（输出未知字段会被拒绝）。
+- 参数必须来自用户原话；用户没有提供的参数直接省略或留空，严禁编造（不得把订单号写成 "unknown" 或虚构数字）。
+
+示例：
+{examples}
+"""
 
 READ_SYSTEM_PROMPT = """你是客服智能助手，语气亲切、耐心、简洁。
 
