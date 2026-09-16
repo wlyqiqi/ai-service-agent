@@ -37,17 +37,21 @@ class SmokeFakeModel(ToolCallingFakeModel):
         if "路由器" in system:
             if "转人工" in user:
                 payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
-            elif "退款" in user:
+            elif "退了吧" in user or "退款" in user:
                 payload = '{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'
-            elif "收货地址" in user:
+            elif "地址" in user:
                 payload = '{"capability": "account", "risk_level": "mutation", "confidence": 0.9}'
             else:
                 payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
         elif "选择器" in system:
-            if "退款" in user:
+            if "退了吧" in user:
+                payload = '{"tool": "refund_apply", "args": {}}'
+            elif "退款" in user:
                 payload = '{"tool": "refund_apply", "args": {"order_id": "10086"}}'
+            elif "我要改个地址" in user:
+                payload = '{"tool": "update_address", "args": {}}'
             else:
-                payload = '{"tool": "account_update", "args": {"address": "北京市朝阳区"}}'
+                payload = '{"tool": "update_address", "args": {"address": "北京市朝阳区"}}'
         else:
             payload = "离线冒烟回复"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
@@ -271,11 +275,11 @@ def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
 
     code2, ev2 = chat_sse(client, sid, "确认")
     types2 = event_types(ev2)
-    calls, results = count_tool_events(ev2, "account_update")
+    calls, results = count_tool_events(ev2, "update_address")
     done2 = next((e for e in reversed(ev2) if e.get("type") == "done"), None)
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
-    tool_msgs = [m for m in st["messages"] if m["name"] == "account_update"]
+    tool_msgs = [m for m in st["messages"] if m["name"] == "update_address"]
     msgs = open_messages(db_path, sid)
     d7_final = (done2 or {}).get("data", {}).get("final")
     d7_store = any(m["role"] == "assistant" and "操作已完成" in m["content"] for m in msgs)
@@ -370,17 +374,18 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
 
     code3, ev3 = chat_sse(client, sid, "确认")
     types3 = event_types(ev3)
-    calls3, results3 = count_tool_events(ev3, "account_update")
+    calls3, results3 = count_tool_events(ev3, "update_address")
     done3 = next((e for e in reversed(ev3) if e.get("type") == "done"), None)
     if done3 is not None:
         st3 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
-    tool_msgs = [m for m in st["messages"] if m["name"] == "account_update"]
+    tool_msgs = [m for m in st["messages"] if m["name"] == "update_address"]
     msgs = open_messages(db_path, sid)
     d7_store = any(m["role"] == "assistant" and "操作已完成" in m["content"] for m in msgs)
     pass_ = (
         code1 == 200 and clarify1 and not tool1 and done1 is not None
+        and (done1 or {}).get("data", {}).get("final") == "请提供：收货地址。"
         and (st1 or {}).get("execution_status") == "clarifying"
         and code2 == 200 and confirm2 and not clarify2 and done2 is not None
         and code3 == 200 and calls3 == 1 and results3 == 1
