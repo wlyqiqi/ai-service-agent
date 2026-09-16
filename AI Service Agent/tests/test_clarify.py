@@ -105,6 +105,8 @@ def test_clarify_streams_event_and_done():
     types = [e["type"] for e in events]
     assert "clarification_required" in types
     assert types[-1] == "done"
+
+
 def _build(model, saver):
     return build_graph(model, tools=[kb_search], checkpointer=saver)
 

@@ -38,7 +38,7 @@
 - Consumes: `docs/decisions/2026-09-15-p3-design-decisions.md`（OQ-5/CTRL-0076）、`docs/decisions/2026-09-15-p4-clarify-precheck-resume.md`（D1/D8/OQ-3）、`docs/decisions/2026-09-15-p4-guard-llm-eval.md`（§8 2026-09-16 登记）
 - Produces: 决策记录文件（后续 Task 2/3 与未来排期的依据；无代码接口）
 
-- [ ] **Step 1: 创建决策记录文件**
+- [x] **Step 1: 创建决策记录文件**
 
 写入 `docs/decisions/2026-09-16-ctrl-0076-clarify-verification.md`：
 
@@ -78,11 +78,11 @@
 - 决策：本文件；验证：`tests/test_clarify.py`、`scripts/real_model_http_smoke.py`、`docs/real-model-smoke.md`。
 ```
 
-- [ ] **Step 2: 核对事实**
+- [x] **Step 2: 核对事实**
 
 对照以下断言逐条核对记录内容：0076 数据集当前为 `expected_policy=clarify`（`tests/evals/control/master.jsonl:76`）；`routing.jsonl` 不被 runner 消费（`rg "routing.jsonl" src tests docs` 仅命中 `dataset-audit.md`）；真实模型实测置信度 0.90（P3 审计记录）；select 拦截路径（`select.py` `_clarify` → 条件边 → `clarify.py`）。核对无出入即完成。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 cd "D:\AI_Project\AI Service Agent"
@@ -101,7 +101,7 @@ git commit -m "docs: CT-RL-0076 决策登记——D1 不新增置信度门 / D3 
 - Consumes: `build_graph(model, tools, checkpointer=None, registry=None)`（`graph/builder.py`）、`kb_search`（`ai_service_agent.tools.kb`）、`_highrisk_model(args)` / `_graph` 同文件既有 helper 语义、`CLARIFY_FALLBACK_TEXT`（`clarify.py`）、`router_json_message` / `select_json_message` / `ToolCallingFakeModel`（`ai_service_agent.testing`）
 - Produces: `_build(model, saver)` / `_turn(graph, text, thread_id, user_id="u1")`（本文件局部 helper）；跨 turn 行为断言（澄清续接、count 保留/清零、超限 fallback）
 
-- [ ] **Step 1: 写测试（追加到 `tests/test_clarify.py`）**
+- [x] **Step 1: 写测试（追加到 `tests/test_clarify.py`）**
 
 ```python
 def _build(model, saver):
@@ -145,7 +145,7 @@ def test_multi_turn_clarify_over_limit_falls_back():
     assert not r3.get("__interrupt__")
 ```
 
-- [ ] **Step 2: 运行测试（预期 PASS——这是既有行为的表征测试，非新功能 RED）**
+- [x] **Step 2: 运行测试（预期 PASS——这是既有行为的表征测试，非新功能 RED）**
 
 ```powershell
 $env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"
@@ -154,7 +154,7 @@ uv run --no-sync python -m pytest tests/test_clarify.py::test_multi_turn_clarify
 
 Expected: 2 passed。若 FAIL：说明跨 turn 链路存在真实缺陷（如 context 未保留/续接断裂），**先记录现象与根因再报告，不自行扩范围修复**（Global Constraints）。
 
-- [ ] **Step 3: 全量回归**
+- [x] **Step 3: 全量回归**
 
 ```powershell
 uv run --no-sync python -m pytest -q
@@ -162,7 +162,7 @@ uv run --no-sync python -m pytest -q
 
 Expected: 136（+2）= 138 passed；`uv run --no-sync python -m ai_service_agent.evals --data tests/evals/control` 基线不变（routing 91 / policy 76 / guard 100 / handoff 91，skip 仅 `handoff_rule_pending` 9）。
 
-- [ ] **Step 4: langgraph validate**
+- [x] **Step 4: langgraph validate**
 
 ```powershell
 langgraph validate
@@ -170,7 +170,7 @@ langgraph validate
 
 Expected: valid（不涉及图结构改动，应保持）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 cd "D:\AI_Project\AI Service Agent"
@@ -190,7 +190,7 @@ git commit -m "test: CT-RL-0076 跨 turn 澄清链路断言——补参进 HighR
 - Consumes: `new_session` / `chat_sse` / `event_types` / `open_status` / `graph_state` / `check_thread_id_consistent`（脚本既有 helper）
 - Produces: `scenario_clarify_0076(client, db_path) -> dict`（name="Clarify0076"，含 `pass` 判定与 timeline/最终状态）；`main()` 结果列表第 2 项
 
-- [ ] **Step 1: 新增场景函数（插到 `scenario_faq` 之后）**
+- [x] **Step 1: 新增场景函数（插到 `scenario_faq` 之后）**
 
 ```python
 def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
@@ -222,7 +222,7 @@ def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
     }
 ```
 
-- [ ] **Step 2: 注册进 `main()`**
+- [x] **Step 2: 注册进 `main()`**
 
 把 `main()` 中的 `results = [...]` 改为：
 
@@ -236,7 +236,7 @@ def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
             ]
 ```
 
-- [ ] **Step 3: 语法检查**
+- [x] **Step 3: 语法检查**
 
 ```powershell
 uv run --no-sync python -m py_compile scripts/real_model_http_smoke.py
@@ -244,7 +244,7 @@ uv run --no-sync python -m py_compile scripts/real_model_http_smoke.py
 
 Expected: 退出码 0，无输出。
 
-- [ ] **Step 4: 真机冒烟（ARK 真实模型，约 1–3 分钟）**
+- [x] **Step 4: 真机冒烟（ARK 真实模型，约 1–3 分钟）**
 
 ```powershell
 $env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy"
@@ -253,7 +253,7 @@ uv run --no-sync python scripts/real_model_http_smoke.py
 
 Expected: 5 场景全 PASS（FAQ / **Clarify0076** / Mutation / HighRisk / Handoff），其中 Clarify0076 判定 `clarification_required=true`、`approval_required=false`、`execution_status=clarifying`。若 Clarify0076 FAIL：停止扩测试范围，定位属于 Transport / Graph / Model 行为哪一层，记录现象与根因后报告（不自行重构）。
 
-- [ ] **Step 5: 追加实测记录到 `docs/real-model-smoke.md`**
+- [x] **Step 5: 追加实测记录到 `docs/real-model-smoke.md`**
 
 在文档末尾追加 §7（以 Step 4 实际结果为填充值）：
 
@@ -270,10 +270,22 @@ Expected: 5 场景全 PASS（FAQ / **Clarify0076** / Mutation / HighRisk / Hando
 
 （`<实际 timeline>` 以 Step 4 输出为准，格式如 `["clarification_required", "done"]`。）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 cd "D:\AI_Project\AI Service Agent"
 git add scripts/real_model_http_smoke.py docs/real-model-smoke.md
 git commit -m "test+docs: CT-RL-0076 真机冒烟复验——模糊退款走澄清不进审批（D2）+ D3 探针"
 ```
+
+
+---
+
+## 执行结果（2026-09-16）
+
+- **Task 1 ✅**：决策登记（commit fb283de），内容与 brief 逐字一致、四项事实核对全过。
+- **Task 2 ✅**：跨 turn 澄清链路断言（commit daa5a29），138 passed / eval 基线不变（policy 76 · guard 100 · routing 91 · handoff 91）/ `langgraph validate` valid。
+- **Task 3 ✅（含 Ruling）**：真机冒烟探针落地（commit c6613d8）；Clarify0076 因真实模型**稳定选择只读工具 order_lookup**（无 `ToolMeta.schema` → D1 澄清不触发）如实 FAIL，记录于 `docs/real-model-smoke.md` §7；HighRisk 为偶发漂移（复跑恢复 PASS）。
+- **Ruling（Task 2）**：子图 interrupt 时父图不落子图 `context`/`execution_status` 写（LangGraph 语义，mutation 确认闸同），计划原断言 `execution_status==waiting_approval` / `clarify_count==0`（父图视图）不成立 → 测试改为断言可观测契约（approval_required 携带完整 args、本轮不再澄清、审批前工具不执行）。
+- **Ruling（Task 3）**：B（无 schema 只读工具 + 写图 select 允许集对齐）转 **P5 open question**，本计划不实现；探针保持原断言不弱化。
+- **全分支审查**：clean（1 处空白行 nit 已随本次提交修复）。
