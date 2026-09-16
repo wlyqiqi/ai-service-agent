@@ -63,5 +63,27 @@
      在 checkpoint 中可见，但该轮 SSE `done.final=null`、不写入 Message Store——resume 轮 final 只取流式增量，
      确定性节点写入不产生 messages 流。若演示要求"确认后用户能看到完成文案"，需在 P4 评估
      resume 轮 final 文本提取/落库。
+     - **→ P4 D7（2026-09-15）已落地**：resume 轮 final 经 pre/post message diff 提取
+       （`harness/streaming.py` `snapshot_assistant_ids` / `new_assistant_text_and_id`），
+       SSE `done.final`（`/chat` done 分支落 Message Store）与 `/approvals/{id}/approve`
+       （`_approval_resume`）双入口同步落库；真机复验结果见 §6。
   2. **handoff turn 的 error(ModeChanged) 是设计行为**（handoff-spec.md §1.4：AI 回复发送前实时校验
      mode，已切走则丢弃），不是故障。
+
+## 6. P4 D7 复验：resume 轮 final 提取与落库（2026-09-15 真机实测）
+
+- 复验脚本：`scripts/real_model_http_smoke.py`（本次新增 D7 断言：Mutation「确认」resume 轮
+  `done.final` 精确文案 + Message Store 落库；HighRisk approve 后 Message Store 落库）。
+- 判据：`docs/decisions/2026-09-15-p4-clarify-precheck-resume.md` D7——resume 轮 final 经
+  pre/post message diff 提取（`streaming.py`），SSE `done.final` 与 Message Store 双入口同步，
+  不恢复历史消息。
+- 实测（ARK 真实模型，4 场景全 PASS）：
+
+| 场景 | D7 断言 | 实测 | 结果 |
+|---|---|---|---|
+| Mutation「确认」 | resume 轮 `done.final == "操作已完成。"` | `done.final="操作已完成。"`（message_id=4f7fd3eb…）；Message Store 含 assistant「操作已完成。」 | PASS |
+| HighRisk approve | `/approvals/{id}/approve` 后 Message Store 含「审批通过，操作已完成。」 | approve → status=approved；Message Store 含 assistant「审批通过，操作已完成。」 | PASS |
+
+- 结论：§5 已知观察 1 已解决——resume 轮 final 不再为 null，且同时落入 SSE `done.final` 与
+  Message Store（`/chat` done 分支 + `_approval_resume` 双入口，各落库一次）。tool 仍恰执行 1 次
+  （Mutation 1×、HighRisk 1×）；execution_status=completed；无残留中断；thread_id 全程一致。

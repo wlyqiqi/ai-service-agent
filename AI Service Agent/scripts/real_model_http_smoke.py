@@ -246,15 +246,20 @@ def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "account_update"]
+    msgs = open_messages(db_path, sid)
+    d7_final = (done2 or {}).get("data", {}).get("final")
+    d7_store = any(m["role"] == "assistant" and "操作已完成" in m["content"] for m in msgs)
     pass_ = (
         code1 == 200 and confirm and (done1 is not None)
         and code2 == 200 and calls == 1 and results == 1
         and st["execution_status"] == "completed" and len(tool_msgs) == 1
+        and d7_final == "操作已完成。" and d7_store
     )
     return {
         "name": "Mutation", "pass": pass_, "session_id": sid,
         "turn1": {"http": code1, "timeline": types1, "confirm_required": confirm, "done_final": (done1 or {}).get("data")},
         "turn2": {"http": code2, "timeline": types2, "tool_call": calls, "tool_result": results, "done_final": (done2 or {}).get("data")},
+        "d7": {"done_final": d7_final, "message_store_has_final": d7_store, "message_store": [{"role": m["role"], "content": m["content"][:40]} for m in msgs]},
         "thread_id": open_status(db_path, sid)["thread_id"],
         "final_state": {"execution_status": st["execution_status"], "tool_messages": len(tool_msgs), "interrupts": st["interrupts"], "last_assistant": st["last_assistant"]},
         "mode": open_status(db_path, sid)["mode"],
@@ -287,15 +292,19 @@ def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "refund_apply"]
+    msgs = open_messages(db_path, sid)
+    d7_store = any(m["role"] == "assistant" and "审批通过，操作已完成" in m["content"] for m in msgs)
     pass_ = (
         code1 == 200 and approval_ev is not None
         and (approve or {}).get("http") == 200 and (approve or {}).get("body", {}).get("status") == "approved"
         and st["execution_status"] == "completed" and len(tool_msgs) == 1
+        and d7_store
     )
     return {
         "name": "HighRisk", "pass": pass_, "session_id": sid, "approval_id": approval_id,
         "chat": {"http": code1, "timeline": types1, "done_final": (done1 or {}).get("data")},
         "get_pending": pending, "approve": approve, "get_after": after,
+        "d7": {"message_store_has_final": d7_store, "message_store": [{"role": m["role"], "content": m["content"][:40]} for m in msgs]},
         "thread_id": open_status(db_path, sid)["thread_id"],
         "final_state": {"execution_status": st["execution_status"], "tool_messages": len(tool_msgs), "interrupts": st["interrupts"], "last_assistant": st["last_assistant"]},
         "mode": open_status(db_path, sid)["mode"],
