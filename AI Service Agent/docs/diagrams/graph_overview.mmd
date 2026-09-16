@@ -1,0 +1,123 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	guard(guard)
+	policy_gate(policy_gate)
+	safety_final(safety_final)
+	final(final)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> guard;
+	__start__ --> router\3amodel;
+	fallback\3a__end__ --> final;
+	guard --> policy_gate;
+	high_risk_graph\3a__end__ --> final;
+	mutation_graph\3a__end__ --> final;
+	policy_gate -.-> fallback\3acheck_handoff;
+	policy_gate -.-> high_risk_graph\3aselect;
+	policy_gate -.-> mutation_graph\3aselect;
+	policy_gate -.-> read_graph\3a__start__;
+	policy_gate -.-> safety_final;
+	read_graph\3afinalize --> final;
+	router\3amodel --> policy_gate;
+	safety_final --> final;
+	final --> __end__;
+	subgraph read_graph
+	read_graph\3a__start__(<p>__start__</p>)
+	read_graph\3atools(tools)
+	read_graph\3afinalize(finalize)
+	read_graph\3a__start__ --> read_graph\3aagent\3amodel;
+	read_graph\3aagent\3amodel -. &nbsp;__end__&nbsp; .-> read_graph\3afinalize;
+	read_graph\3aagent\3amodel -.-> read_graph\3atools;
+	read_graph\3atools --> read_graph\3aagent\3amodel;
+	end
+	subgraph mutation_graph
+	mutation_graph\3aselect(select)
+	mutation_graph\3aclarify(clarify)
+	mutation_graph\3aprecheck_fetch(precheck_fetch)
+	mutation_graph\3asafety_check(safety_check)
+	mutation_graph\3asafety_final(safety_final)
+	mutation_graph\3aprepare_confirm(prepare_confirm)
+	mutation_graph\3aconfirm_pause(confirm_pause)
+	mutation_graph\3arecheck(recheck)
+	mutation_graph\3aexecute(execute)
+	mutation_graph\3atools(tools)
+	mutation_graph\3afinalize_ok(finalize_ok)
+	mutation_graph\3afinalize_rejected(finalize_rejected)
+	mutation_graph\3afinalize_aborted(finalize_aborted)
+	mutation_graph\3a__end__(<p>__end__</p>)
+	mutation_graph\3aconfirm_pause -.-> mutation_graph\3afinalize_rejected;
+	mutation_graph\3aconfirm_pause -.-> mutation_graph\3arecheck;
+	mutation_graph\3aexecute --> mutation_graph\3atools;
+	mutation_graph\3aprecheck_fetch --> mutation_graph\3asafety_check;
+	mutation_graph\3aprepare_confirm --> mutation_graph\3aconfirm_pause;
+	mutation_graph\3arecheck -.-> mutation_graph\3aexecute;
+	mutation_graph\3arecheck -.-> mutation_graph\3afinalize_aborted;
+	mutation_graph\3asafety_check -.-> mutation_graph\3aprepare_confirm;
+	mutation_graph\3asafety_check -.-> mutation_graph\3asafety_final;
+	mutation_graph\3aselect -.-> mutation_graph\3aclarify;
+	mutation_graph\3aselect -.-> mutation_graph\3aprecheck_fetch;
+	mutation_graph\3aselect -.-> mutation_graph\3asafety_final;
+	mutation_graph\3atools --> mutation_graph\3afinalize_ok;
+	mutation_graph\3aclarify --> mutation_graph\3a__end__;
+	mutation_graph\3afinalize_aborted --> mutation_graph\3a__end__;
+	mutation_graph\3afinalize_ok --> mutation_graph\3a__end__;
+	mutation_graph\3afinalize_rejected --> mutation_graph\3a__end__;
+	mutation_graph\3asafety_final --> mutation_graph\3a__end__;
+	end
+	subgraph high_risk_graph
+	high_risk_graph\3aselect(select)
+	high_risk_graph\3aclarify(clarify)
+	high_risk_graph\3aprecheck_fetch(precheck_fetch)
+	high_risk_graph\3asafety_check(safety_check)
+	high_risk_graph\3asafety_final(safety_final)
+	high_risk_graph\3aprepare_approval(prepare_approval)
+	high_risk_graph\3aapproval_pause(approval_pause)
+	high_risk_graph\3arecheck(recheck)
+	high_risk_graph\3aexecute(execute)
+	high_risk_graph\3atools(tools)
+	high_risk_graph\3afinalize_ok(finalize_ok)
+	high_risk_graph\3afinalize_rejected(finalize_rejected)
+	high_risk_graph\3afinalize_expired(finalize_expired)
+	high_risk_graph\3afinalize_aborted(finalize_aborted)
+	high_risk_graph\3a__end__(<p>__end__</p>)
+	high_risk_graph\3aapproval_pause -.-> high_risk_graph\3afinalize_expired;
+	high_risk_graph\3aapproval_pause -.-> high_risk_graph\3afinalize_rejected;
+	high_risk_graph\3aapproval_pause -.-> high_risk_graph\3arecheck;
+	high_risk_graph\3aexecute --> high_risk_graph\3atools;
+	high_risk_graph\3aprecheck_fetch --> high_risk_graph\3asafety_check;
+	high_risk_graph\3aprepare_approval --> high_risk_graph\3aapproval_pause;
+	high_risk_graph\3arecheck -.-> high_risk_graph\3aexecute;
+	high_risk_graph\3arecheck -.-> high_risk_graph\3afinalize_aborted;
+	high_risk_graph\3asafety_check -.-> high_risk_graph\3aprepare_approval;
+	high_risk_graph\3asafety_check -.-> high_risk_graph\3asafety_final;
+	high_risk_graph\3aselect -.-> high_risk_graph\3aclarify;
+	high_risk_graph\3aselect -.-> high_risk_graph\3aprecheck_fetch;
+	high_risk_graph\3aselect -.-> high_risk_graph\3asafety_final;
+	high_risk_graph\3atools --> high_risk_graph\3afinalize_ok;
+	high_risk_graph\3aclarify --> high_risk_graph\3a__end__;
+	high_risk_graph\3afinalize_aborted --> high_risk_graph\3a__end__;
+	high_risk_graph\3afinalize_expired --> high_risk_graph\3a__end__;
+	high_risk_graph\3afinalize_ok --> high_risk_graph\3a__end__;
+	high_risk_graph\3afinalize_rejected --> high_risk_graph\3a__end__;
+	high_risk_graph\3asafety_final --> high_risk_graph\3a__end__;
+	end
+	subgraph fallback
+	fallback\3acheck_handoff(check_handoff)
+	fallback\3aexplain(explain)
+	fallback\3apause(pause)
+	fallback\3a__end__(<p>__end__</p>)
+	fallback\3acheck_handoff -.-> fallback\3aexplain;
+	fallback\3acheck_handoff -.-> fallback\3apause;
+	fallback\3aexplain --> fallback\3a__end__;
+	fallback\3apause --> fallback\3a__end__;
+	end
+	subgraph router
+	router\3amodel(model)
+	end
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
