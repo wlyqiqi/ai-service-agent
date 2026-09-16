@@ -38,7 +38,7 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None) -> str | No
             age_days = (datetime.now(timezone.utc) - signed_at).total_seconds() / 86400
             if age_days > REFUND_WINDOW_DAYS:
                 return "refund_window_expired"
-    if tool_name == "order_cancel" and precheck_data.get("status") == "cancelled":
+    if tool_name == "cancel_order" and precheck_data.get("status") == "cancelled":
         return "order_already_cancelled"
     return None
 

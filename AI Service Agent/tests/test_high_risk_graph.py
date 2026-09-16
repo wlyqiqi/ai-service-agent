@@ -131,7 +131,7 @@ def test_precheck_fetch_writes_facts_only():
     d = out["context"]["precheck_data"]
     assert d["status"] == "signed" and d["user_id"] == "u1" and d["order_id"] == "ORD-10086"
     assert "precheck_reason" not in out["context"]
-    out2 = node({"context": {"pending_tool": {"tool": "account_update", "args": {"address": "x"}}}})
+    out2 = node({"context": {"pending_tool": {"tool": "update_address", "args": {"address": "x"}}}})
     assert "precheck_data" not in out2.get("context", {})  # 无 order_id -> 空更新
 
 
@@ -149,16 +149,26 @@ def test_high_risk_0086_refund_window_expired():
 
 
 def test_high_risk_0090_cancel_already_cancelled():
-    """0090：order_cancel + ORD-CANCEL-1（已取消）-> 预检拒绝。"""
+    """0090：cancel_order + ORD-CANCEL-1（已取消）-> 预检拒绝。"""
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "high_risk", 0.9),
-        select_json_message("order_cancel", {"order_id": "ORD-CANCEL-1"}),
+        select_json_message("cancel_order", {"order_id": "ORD-CANCEL-1"}),
     ])
     out = _invoke(_hr_graph(model), "这个订单已经取消了，再帮我取消一次", "t3-0090")
     assert not out.get("__interrupt__")
     assert out["execution_status"] == "completed"
     assert out["context"].get("precheck_reason") == "order_already_cancelled"
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
+def test_precheck_cancel_order_already_cancelled():
+    """预检业务规则（D3）：cancel_order + 已取消订单状态 -> order_already_cancelled。"""
+    from ai_service_agent.graph.workflows.safety import _apply_business_rules
+    reason = _apply_business_rules(
+        {"tool": "cancel_order", "args": {"order_id": "ORD-CANCEL-1"}},
+        {"order_id": "ORD-CANCEL-1", "status": "cancelled"},
+    )
+    assert reason == "order_already_cancelled"
 
 
 def test_high_risk_refund_unknown_order_still_approval():
