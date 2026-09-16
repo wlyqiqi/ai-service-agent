@@ -1,6 +1,6 @@
 # P5 Select 工具风险对齐实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 修复真实模型在写图内选择只读工具导致的 D1 澄清盲区与"对只读操作发起确认/审批"漂移：B1 给只读工具补 select 侧 schema；B2b 写图 select 档内严格、低档工具选中走 tier_mismatch 澄清；D3 离线回归 + ARK 真机探针复验。Guard / Approval 迁移 / Memory 仅登记观察（D4）。
 
@@ -35,7 +35,7 @@
 
 ### Task 0: 计划文件落库
 
-- [ ] **Step 1: Commit 本计划文件**
+- [x] **Step 1: Commit 本计划文件**
 
 ```bash
 git add docs/plans/2026-09-16-p5-select-tier-alignment.md
@@ -57,7 +57,7 @@ git commit -m "docs: P5 Select 工具风险对齐实现计划（B1/B2b/D3）"
   - `OrderLookupArgs(BaseModel)`：字段 `order_id: str`、`request_id: str`，`extra="forbid"`
   - `DEFAULT_TOOL_REGISTRY.meta_for("kb_search").schema is not None`、`meta_for("order_lookup").schema is not None`
 
-- [ ] **Step 1: 写失败测试**（`tests/test_tools.py` 追加）
+- [x] **Step 1: 写失败测试**（`tests/test_tools.py` 追加）
 
 ```python
 def test_read_tool_schemas_registered():
@@ -81,12 +81,12 @@ def test_read_tool_schema_contracts():
     assert KbSearchArgs.model_validate({"text": "退款", "request_id": "r1"}).text == "退款"
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `pytest tests/test_tools.py -q`
 Expected: FAIL（`schema is None` / `ImportError: cannot import name 'OrderLookupArgs'`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src/ai_service_agent/tools/orders.py` 追加：
 
@@ -129,12 +129,12 @@ DEFAULT_TOOL_REGISTRY.register(
 )
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `pytest tests/test_tools.py -q`
 Expected: PASS（含既有分层允许集 / 属主边界断言不变）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/tools/kb.py src/ai_service_agent/tools/orders.py src/ai_service_agent/tools/__init__.py tests/test_tools.py
@@ -156,7 +156,7 @@ git commit -m "feat: P5 D1 只读工具补 select 侧 schema（B1）——order_
   - `clarify.make_clarify_node()`：读 `tier_clarify` → 发 `clarification_required`（`{"missing": [], "reason": "tier_mismatch"}`）+ `TIER_CLARIFY_TEXT`；`execution_status=clarifying`、`clarify_count` 自增、>N fallback
   - mutation/high_risk `_select_target`：`tier_clarify` 存在 → `"clarify"`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_select.py` 追加：
 
@@ -214,12 +214,12 @@ def test_tier_clarify_streams_event_with_reason():
     assert types[-1] == "done"
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `pytest tests/test_select.py tests/test_clarify.py -q`
 Expected: FAIL（`kb_search` 仍在提示中 / 无 `tier_clarify`、直接进确认/审批闸）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src/ai_service_agent/graph/workflows/select.py`：顶部 import 增加
 
@@ -317,12 +317,12 @@ TIER_CLARIFY_TEXT = "您的请求涉及较高风险操作，但我无法确定�
             return "clarify"
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `pytest tests/test_select.py tests/test_clarify.py tests/test_mutation_graph.py tests/test_high_risk_graph.py -q`
 Expected: PASS（含既有"缺必填→澄清"、unknown_tool 拒绝、确认/审批闸用例全部保持）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/graph/workflows/select.py src/ai_service_agent/graph/workflows/clarify.py src/ai_service_agent/graph/workflows/mutation_agent.py src/ai_service_agent/graph/workflows/high_risk_agent.py tests/test_select.py tests/test_clarify.py
@@ -337,7 +337,7 @@ git commit -m "feat: P5 D2 写图 select 档内严格（B2b）——低档工具
 
 **Interfaces:** 无代码接口；把 B1/B2b 契约（schema、`tier_clarify`、`reason` 字段）登记到唯一权威文档。
 
-- [ ] **Step 1: 创建决策记录**
+- [x] **Step 1: 创建决策记录**
 
 写入 `docs/decisions/2026-09-16-p5-select-tier-alignment.md`：
 
@@ -380,7 +380,7 @@ git commit -m "feat: P5 D2 写图 select 档内严格（B2b）——低档工具
   不属于本计划范围。
 ```
 
-- [ ] **Step 2: 修订四个 spec**
+- [x] **Step 2: 修订四个 spec**
 
 1. `docs/specs/tool-spec.md` §1：分层注入三条之后补一句；§4 表格下方补 B1 注记。
 
@@ -421,12 +421,12 @@ clarify 节点（普通轮，`clarification_required` + `reason:"tier_mismatch"`
 | `clarification_required` | `{missing: [...], reason?: "tier_mismatch"}` | select 参数不完整 / 低档工具档不匹配（tier_mismatch）→ clarify 节点（普通轮、非 interrupt，D1/B2b，见 graph-spec.md §6.2/§6.3） |
 ```
 
-- [ ] **Step 3: 一致性核验**
+- [x] **Step 3: 一致性核验**
 
 Run: `rg -n "tier_clarify|tier_mismatch" docs/specs docs/decisions`
 Expected: 四处 spec + 决策记录均有登记；无代码测试。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/decisions/2026-09-16-p5-select-tier-alignment.md docs/specs/tool-spec.md docs/specs/graph-spec.md docs/specs/state-spec.md docs/specs/event-spec.md
@@ -437,23 +437,23 @@ git commit -m "docs: P5 D1/D2 spec 同步——tool-spec/graph-spec/state-spec/e
 
 **Files:** 无新增；验证门禁。
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 
 Run: `pytest -q`
 Expected: PASS（138 + Task 1 的 2 + Task 2 的 4 = 144 全绿）
 
-- [ ] **Step 2: 离线 eval**
+- [x] **Step 2: 离线 eval**
 
 Run: `python -m ai_service_agent.evals`
 Expected: policy 76 / guard 100 / routing 91 / handoff 91（基线不变，`handoff_rule_pending` 跳过 9 条）。
 若 routing 变化，先定位是否为 scripted select 受影响，报告现象不自行扩范围。
 
-- [ ] **Step 3: langgraph validate**
+- [x] **Step 3: langgraph validate**
 
 Run: `langgraph validate`（仓库根目录，全局 CLI 0.4.31；venv 内无 CLI）
 Expected: valid
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -466,28 +466,37 @@ git commit -m "test: P5 regression——全量 pytest + eval + langgraph validat
 - Modify: `docs/real-model-smoke.md`（§7 结果更新）
 - Modify（如需）: `scripts/real_model_http_smoke.py`（探针断言若需强化）
 
-- [ ] **Step 1: 前置确认**
+- [x] **Step 1: 前置确认**
 
 离线全量全绿（Task 4）；`.env` 已配置 `ARK_MODEL` / `ARK_BASE_URL` / `ARK_API_KEY`。
 
-- [ ] **Step 2: 运行冒烟**
+- [x] **Step 2: 运行冒烟**
 
 Run: `python scripts/real_model_http_smoke.py`
 （脚本每次运行使用全新临时 SQLite DB，可重复执行；关注 Clarify0076 行，其余四场景作为回归对照）
 
-- [ ] **Step 3: 判据（D3）**
+- [x] **Step 3: 判据（D3）**
 
 Clarify0076 行 PASS = SSE 含 `clarification_required`、不含 `approval_required`、`thread_id` 一致。
 真实模型若选 `order_lookup`（→ tier_mismatch 澄清）或 `refund_apply` 空参（→ 字段澄清）均视为通过；
 若 FAIL，记录事件时间线与根因层（Transport / Runtime / Graph / Checkpoint），不扩范围，报告后处理。
 
-- [ ] **Step 4: 更新冒烟文档**
+- [x] **Step 4: 更新冒烟文档**
 
 `docs/real-model-smoke.md` §7 重写为复验结果：新事件时间线、结论、四场景回归对照。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/real-model-smoke.md scripts/real_model_http_smoke.py
 git commit -m "docs+test: P5 D3 真机探针复验——Clarify0076 结果更新"
 ```
+
+---
+
+## 执行结果（2026-09-16）
+
+- 全部 Task 完成（0–5），5 个 commit（`0ea6492` 计划落库 → `11a051c` B1 → `2ddfc4d` B2b → `e55288c` spec 同步 → `6ccdb69` D3 复验）。
+- **Task 4 为纯验证门禁，零文件改动、无 commit**：pytest 144 passed；eval policy 76 / guard 100 / routing 91 / handoff 91（基线不变）；`langgraph validate` valid。
+- **Task 5 真机探针（D3）PASS**：`退了吧` → SSE `[clarification_required, done]`、无 `approval_required`、`execution_status=clarifying`；本轮真实模型选 `refund_apply` 空参 → D1 字段澄清「请提供：订单号。」（tier_mismatch 路径由 `tests/test_clarify.py` 离线锁定）；FAQ/Mutation/HighRisk/Handoff 四场景全 PASS。
+- Rulings：B1 使只读工具注册表元数据完备（safety 预检纵深防御）；B2b 使写图 select 档内严格、低档工具选中走 tier 澄清，`for_risk_level`/ToolNode 分层语义不变；残余风险（写工具必填参数来源校验）维持登记，不进入本计划。
