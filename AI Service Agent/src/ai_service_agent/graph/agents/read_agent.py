@@ -7,15 +7,12 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_service_agent.graph.state import CustomerServiceState
-
-READ_SYSTEM_PROMPT = "你是客服智能助手。使用提供的信息回答用户问题。"
-
+from ai_service_agent.prompts import READ_SYSTEM_PROMPT
 
 class ReadAgentState(TypedDict):
     """create_agent 子图状态：messages + user_id（D4 属主校验注入所需，safety-spec §1.4）。"""
     messages: Annotated[list[AnyMessage], add_messages]
     user_id: str
-
 
 def make_read_graph(model, tools: list):
     """ReadGraph：create_agent + 只读工具集（graph-spec.md §6.1），无业务 interrupt。

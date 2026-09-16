@@ -15,18 +15,7 @@ from langgraph.config import get_stream_writer
 
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.registry import ToolRegistry
-
-SELECT_SYSTEM_TEMPLATE = (
-    "你是客服操作选择器。根据用户意图，从允许的工具中选择一个并给出符合其 schema 的参数。\n"
-    "只输出 JSON，形状为 {{\"tool\": \"<工具名>\", \"args\": {{...}}}}。\n"
-    "允许的工具：\n{tool_list}\n"
-    "args 只能包含该工具列出的字段名，不要输出 schema 之外的字段（输出未知字段会被拒绝）。\n"
-    "示例：\n"
-    "用户：我要把收货地址改成朝阳区\n"
-    "输出：{{\"tool\": \"account_update\", \"args\": {{\"address\": \"朝阳区\"}}}}\n"
-    "不要输出其它内容。"
-)
-
+from ai_service_agent.prompts import SELECT_SYSTEM_TEMPLATE
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -39,13 +28,11 @@ def _describe_args_schema(meta) -> str:
         parts.append(f"{name}({'必填' if info.is_required() else '可选'})")
     return "，".join(parts)
 
-
 def _bind_json(model):
     """json_mode 绑定（与 router.py 同契约）：真实模型 response_format json_object，fake 直接 JSON 字符串。"""
     if isinstance(model, FakeMessagesListChatModel):
         return model
     return model.bind(response_format={"type": "json_object"})
-
 
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], dict]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
@@ -139,6 +126,5 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         ctx["clarify_count"] = 0  # 完整成功 select 清零（D1 轮次语义）
         ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
         return {"context": ctx}
-
 
     return select

@@ -6,21 +6,12 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from pydantic import BaseModel
 
 from ai_service_agent.config import get_settings
-
+from ai_service_agent.prompts import ROUTER_SYSTEM
 
 class RouterSchema(BaseModel):
     capability: str
     risk_level: Literal["read", "mutation", "high_risk"]
     confidence: float
-
-
-ROUTER_SYSTEM = (
-    "你是客服意图路由器。只输出 JSON："
-    '{"capability": "faq|order|account|smalltalk|unknown", '
-    '"risk_level": "read|mutation|high_risk", "confidence": 0-1}。'
-    "不要输出其它内容。"
-)
-
 
 def _router_model(model):
     """json_mode 绑定（2026-09-15 阻断项修复）。
@@ -36,7 +27,6 @@ def _router_model(model):
         return model
     return model.bind(response_format={"type": "json_object"})
 
-
 def _parse_router_content(content) -> dict:
     """解析 Router 模型输出：只接受 JSON 字符串 / dict。
 
@@ -48,7 +38,6 @@ def _parse_router_content(content) -> dict:
     if isinstance(content, dict):
         return content
     return RouterSchema.model_validate(content).model_dump()
-
 
 def make_router(model) -> Callable[[dict], dict]:
     """生产用 create_agent + json_object 结构化输出；fake model 下解析其 JSON 文本。
