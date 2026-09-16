@@ -153,3 +153,44 @@ def test_multi_turn_clarify_over_limit_falls_back():
     assert r3["execution_status"] == "completed"
     assert CLARIFY_FALLBACK_TEXT in r3["messages"][-1].content
     assert not r3.get("__interrupt__")
+
+
+def _tier_model(tool_name, risk):
+    return ToolCallingFakeModel(responses=[
+        router_json_message("order", risk, 0.9),
+        select_json_message(tool_name, {}),
+    ])
+
+
+def test_highrisk_read_tool_selected_tier_clarifies():
+    """B2b：high_risk 图内 fake select 只读工具 order_lookup -> tier_mismatch 澄清（普通轮），
+    不进审批闸、无 interrupt。镜像真机冒烟 §7 Run 2 的漂移路径。"""
+    out = _invoke(_graph(_tier_model("order_lookup", "high_risk")), "退了吧", "b2-h1")
+    assert out["execution_status"] == "clarifying"
+    assert not out.get("__interrupt__")
+    assert out["context"].get("tier_clarify") == "order_lookup"
+    assert "pending_tool" not in out["context"]
+    assert "请明确" in out["messages"][-1].content
+
+
+def test_mutation_read_tool_selected_tier_clarifies():
+    """B2b：mutation 图内 fake select 只读工具 kb_search -> tier_mismatch 澄清。"""
+    out = _invoke(_graph(_tier_model("kb_search", "mutation")), "先查一下再改", "b2-m1")
+    assert out["execution_status"] == "clarifying"
+    assert out["context"].get("tier_clarify") == "kb_search"
+    assert not out.get("__interrupt__")
+
+
+def test_tier_clarify_streams_event_with_reason():
+    """B2b：事件契约——clarification_required 带 reason=tier_mismatch，末事件 done。"""
+    events = asyncio.run(_acollect(event_stream(
+        _graph(_tier_model("order_lookup", "high_risk")),
+        {"configurable": {"thread_id": "b2-s1"}},
+        [HumanMessage(content="退了吧")],
+    )))
+    types = [e["type"] for e in events]
+    assert "clarification_required" in types
+    clar = next(e for e in events if e["type"] == "clarification_required")
+    assert clar["data"].get("reason") == "tier_mismatch"
+    assert clar["data"]["missing"] == []
+    assert types[-1] == "done"

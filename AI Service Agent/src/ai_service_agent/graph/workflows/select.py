@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 from langgraph.config import get_stream_writer
 
+from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.registry import ToolRegistry
 
 SELECT_SYSTEM_TEMPLATE = (
@@ -47,9 +48,15 @@ def _bind_json(model):
 
 
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], dict]:
-    allowed = {t.name for t in tools}
+    # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
+    # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
+    tier_tools = [
+        t for t in tools
+        if (meta := registry.meta_for(t.name)) is not None and meta.min_risk_level == tier
+    ]
+    allowed = {t.name for t in tier_tools}
     lines = []
-    for t in tools:
+    for t in tier_tools:
         line = f"- {t.name}: {t.description}"
         contract = _describe_args_schema(registry.meta_for(t.name))
         if contract:
@@ -68,6 +75,11 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         # 参数不完整 != 拒绝（D1）：只写 clarify_missing，由条件边路由到 clarify 节点（普通轮）。
         # 不发 safety_rejected；execution_status 由 clarify 节点置 clarifying。
         return {"context": {**state.get("context", {}), "clarify_missing": missing}}
+
+    def _tier_clarify(state: dict, tool_name: str) -> dict:
+        # B2b：已注册低档工具在写图内被选中 = 意图与风险档不匹配 -> 澄清（普通轮）。
+        # 不 reject（工具真实存在）、不进闸门、不执行。
+        return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
 
     def _incomplete_fields(args: dict, meta) -> list[str]:
         """参数完备性（D1）：必填业务字段缺失/为空串，或全可选工具全部业务字段为空 -> 返回缺失字段；完整 -> []。"""
@@ -100,7 +112,11 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             return _reject(state, "select_parse_failed")
         args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
-        if meta is None or tool_name not in allowed:
+        if meta is None:
+            return _reject(state, "unknown_tool")
+        if tool_name not in allowed:
+            if RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
+                return _tier_clarify(state, tool_name)
             return _reject(state, "unknown_tool")
         if meta.schema is not None:
             try:
@@ -119,6 +135,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 return _clarify(state, incomplete)
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
+        ctx.pop("tier_clarify", None)
         ctx["clarify_count"] = 0  # 完整成功 select 清零（D1 轮次语义）
         ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
         return {"context": ctx}

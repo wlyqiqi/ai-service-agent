@@ -14,6 +14,8 @@ from ai_service_agent.config import get_settings
 
 CLARIFY_FALLBACK_TEXT = "抱歉，暂时无法确定您的需求，请换个说法或联系人工客服。"
 
+TIER_CLARIFY_TEXT = "您的请求涉及较高风险操作，但我无法确定具体要执行哪一项业务（如：申请退款、取消订单），请明确说明。"
+
 FIELD_LABELS = {
     "order_id": "订单号",
     "amount": "金额",
@@ -21,6 +23,7 @@ FIELD_LABELS = {
     "phone": "手机号",
     "email": "邮箱",
     "address": "收货地址",
+    "text": "检索内容",
 }
 
 
@@ -33,7 +36,6 @@ def clarify_text(missing: list[str]) -> str:
 def make_clarify_node() -> Callable[[dict], dict]:
     def clarify(state: dict) -> dict:
         ctx = state.get("context", {})
-        missing = ctx.get("clarify_missing") or []
         count = int(ctx.get("clarify_count", 0))
         max_turns = get_settings().clarify_max_turns
         if count >= max_turns:
@@ -42,9 +44,16 @@ def make_clarify_node() -> Callable[[dict], dict]:
                 "context": {**ctx, "clarify_count": count + 1},
                 "execution_status": "completed",
             }
-        get_stream_writer()({"type": "clarification_required", "data": {"missing": missing}})
+        if ctx.get("tier_clarify"):
+            data = {"missing": [], "reason": "tier_mismatch"}
+            text = TIER_CLARIFY_TEXT
+        else:
+            missing = ctx.get("clarify_missing") or []
+            data = {"missing": missing}
+            text = clarify_text(missing)
+        get_stream_writer()({"type": "clarification_required", "data": data})
         return {
-            "messages": [AIMessage(content=clarify_text(missing))],
+            "messages": [AIMessage(content=text)],
             "context": {**ctx, "clarify_count": count + 1},
             "execution_status": "clarifying",
         }

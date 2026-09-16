@@ -46,3 +46,12 @@ def test_select_system_template_has_example():
     node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
     assert "示例：" in model.seen_system
     assert "account_update" in model.seen_system
+
+
+def test_select_system_template_tier_strict_no_read_tools():
+    """B2b：写图 select 系统提示只列该档写工具，只读工具不进入允许集。"""
+    model, node = _select_node()
+    node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}})
+    assert "account_update" in model.seen_system
+    assert "kb_search" not in model.seen_system
+    assert "order_lookup" not in model.seen_system

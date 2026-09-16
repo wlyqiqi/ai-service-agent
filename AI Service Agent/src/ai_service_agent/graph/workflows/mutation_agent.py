@@ -70,7 +70,7 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry):
 
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})
-        if "clarify_missing" in ctx:
+        if "clarify_missing" in ctx or ctx.get("tier_clarify"):
             return "clarify"
         if "pending_tool" in ctx:
             return "precheck_fetch"
