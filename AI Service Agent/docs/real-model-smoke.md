@@ -87,3 +87,19 @@
 - 结论：§5 已知观察 1 已解决——resume 轮 final 不再为 null，且同时落入 SSE `done.final` 与
   Message Store（`/chat` done 分支 + `_approval_resume` 双入口，各落库一次）。tool 仍恰执行 1 次
   （Mutation 1×、HighRisk 1×）；execution_status=completed；无残留中断；thread_id 全程一致。
+
+
+## 7. CT-RL-0076 真机复验：模糊退款请求——真实模型行为漂移（2026-09-16 实测，2 次运行）
+
+- 输入：`退了吧`（ambiguous，未指明订单/原因/金额）。
+- 判据（D2）：SSE 必须含 `clarification_required`、不得含 `approval_required`；`execution_status=clarifying`。
+- 实测（2 次运行均 FAIL，漂移稳定）：
+  - Run 1：timeline `[confirmation_required, done]`，interrupt=「order_lookup」{request_id}——Router 判入 mutation 图，select 选只读工具 order_lookup。
+  - Run 2：timeline `[approval_required, done]`，interrupt=「order_lookup」{request_id}——Router 判入 high_risk 图，select 仍选 order_lookup。
+- 根因：真实模型对"退了吧"**稳定选择只读工具 order_lookup**（而非 refund_apply 空参）；order_lookup/kb_search
+  无 `ToolMeta.schema` → D1 参数完备性 Clarify 不触发 → 直接进闸门（Run 2 甚至对只读工具发起审批）。
+- D3 探针：Run 2 实际**命中 D3 残余风险类**——模型对模糊请求未澄清、直接推进到审批闸（工具为只读，无害但不达目的）。
+- 对照同批：HighRisk"订单10086申请退款" Run 1 误判（select=order_lookup/确认闸）、Run 2 恢复正确
+  （refund_apply→approval→PASS），**该输入为偶发漂移**；FAQ/Mutation/Handoff 两轮均 PASS。
+- 结论：0076 冒烟断言如实 FAIL；离线契约（select 缺必填→clarify）仍由 `tests/test_clarify.py` 确定性锁定，
+  不受真实模型选择漂移影响。order_lookup/kb_search 无 schema + 只读工具可入写图 select 允许集 → P5 open question。

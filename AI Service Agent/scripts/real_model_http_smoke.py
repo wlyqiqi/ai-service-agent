@@ -232,6 +232,35 @@ def scenario_faq(client: httpx.Client, db_path: str) -> dict:
     }
 
 
+def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
+    """CT-RL-0076（D2+D3 探针）："退了吧" -> clarification_required、不得出现 approval_required。
+
+    若真实模型为缺参输入编造 order_id 导致 select 放行 -> approval_required 出现 -> 本场景 FAIL，
+    即暴露 D3 残余风险（模型编造必填参数），不是纯代码回归。
+    """
+    sid, sess = new_session(client)
+    code, events = chat_sse(client, sid, "退了吧")
+    types = event_types(events)
+    clarification = any(e.get("type") == "clarification_required" for e in events)
+    approval = any(e.get("type") == "approval_required" for e in events)
+    done = next((e for e in reversed(events) if e.get("type") == "done"), None)
+    st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+    pass_ = (
+        code == 200 and clarification and not approval
+        and done is not None and st["execution_status"] == "clarifying"
+    )
+    return {
+        "name": "Clarify0076", "pass": pass_, "session_id": sid,
+        "chat": {"http": code, "timeline": types,
+                 "clarification_required": clarification, "approval_required": approval,
+                 "done_final": (done or {}).get("data")},
+        "thread_id": open_status(db_path, sid)["thread_id"],
+        "final_state": {"execution_status": st["execution_status"], "interrupts": st["interrupts"], "last_assistant": st["last_assistant"]},
+        "mode": open_status(db_path, sid)["mode"],
+        "thread_id_consistent": check_thread_id_consistent(db_path, sid, "Clarify0076"),
+    }
+
+
 def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
     sid, sess = new_session(client)
     code1, ev1 = chat_sse(client, sid, "把收货地址改成北京市朝阳区")
@@ -388,6 +417,7 @@ def main() -> int:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
             results = [
                 scenario_faq(client, db_path),
+                scenario_clarify_0076(client, db_path),
                 scenario_mutation(client, db_path),
                 scenario_highrisk(client, db_path),
                 scenario_handoff(client, db_path),
