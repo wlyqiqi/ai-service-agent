@@ -108,3 +108,9 @@
 - **CTRL-0076（P3 Open Question，单列）**：模糊指令"退了吧"被真实模型判 `order/high_risk/0.90`，高置信触发不应发生的审批流。需单独讨论解决方案（如 "high_risk + 中高置信" 组合是否触发额外澄清步骤而非直接放行），不与其余 ambiguous 分类分歧合并处理。
 - **真实模型分类运行间漂移（P3 eval 待决点）**：`CTRL-0073/0097/0100` 等在多次调用间分类漂移；真实模型 eval 需多采样或固定 seed 才可回归。
 - **adversarial expected 语义（已采纳，D3 方向）**：真实模型对 adversarial 输入如实输出业务分类（如 `order/high_risk`），与数据集 `expected_capability=unknown` 不一致属预期——Router 不作安全判断，P3 eval 以 `expected_policy=guard_reject` 为主判别（由 Guard 拦截）。
+## 5. 待讨论登记（2026-09-16）
+
+- **议题：提高 handoff 触发命中率——Router 结构化 handoff 信号 vs 纯关键词**
+  - 背景：纯关键词子串匹配（`handoff_keywords`）命中率低，语义变体（如 CTRL-0062「我不想跟机器人聊，叫个真人来」）漏判；当前 `handoff_rule_pending` 9 条按 D13 保持 skip。
+  - 讨论方向（未定案）：给 Router（`router_llm`，json_mode）新增 `handoff_signal: bool` 结构化输出，由 `check_handoff` 确定性合并裁决（关键词 OR 信号），保持「LLM 理解、规则裁决」原则（AGENTS.md §18b）；不采用「LLM 在生成回复时临时决定转人工」。
+  - 状态：**仅登记，暂不讨论、不实现**。后续触发条件：语义变体漏判造成真实影响，或需提升演示 handoff 命中率时，再立项走 Design Audit → 决策 → 计划 → 实现。
