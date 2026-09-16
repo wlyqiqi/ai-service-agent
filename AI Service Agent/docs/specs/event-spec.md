@@ -44,7 +44,7 @@
 ## 3. 事件流时序（示例：HighRisk turn）
 
 ```text
-token... -> tool_call(order_cancel) -> safety_rejected? / approval_required -> done
+token... -> tool_call(cancel_order) -> safety_rejected? / approval_required -> done
 ```
 
 ## 4. 约定

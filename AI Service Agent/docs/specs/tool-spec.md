@@ -42,8 +42,12 @@ class ToolMeta:
 |---|---|---|---|
 | `kb_search` | 知识库检索 | read | sqlite-vec / 关键词兜底 |
 | `order_lookup` | 订单查询 | read | stub 客户端；**P4（D4）属主校验**：`user_id` 经 `langgraph.prebuilt.InjectedState` 注入，仅返回本人订单，越权拒绝 |
-| `account_update` | 账户变更 | mutation | 幂等 |
-| `order_cancel` | 订单取消 | high_risk | 需人工审批 |
+| `update_address` | 修改收货地址 | mutation | 幂等 |
+| `update_phone` | 修改联系电话 | mutation | 幂等 |
+| `update_order_note` | 修改订单备注 | mutation | 幂等 |
+| `create_invoice` | 开具发票 | mutation | 幂等；order_id/amount/company/tax_no 必填 |
+| `create_service_ticket` | 创建售后工单 | mutation | 幂等 |
+| `cancel_order` | 取消订单 | high_risk | 需人工审批（原 `order_cancel` 重命名） |
 | `refund_apply` | 退款申请 | high_risk | 需人工审批 |
 
 - **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
@@ -51,6 +55,8 @@ class ToolMeta:
 - **P5（B1）**：只读工具补 select 侧 schema（`kb_search`=`{text, request_id}`、
   `order_lookup`=`{order_id, request_id}`；`request_id` 由 select 注入，`user_id` 经 InjectedState 注入不入 schema），
   注册表元数据完备（预检用）。
+
+- **工具集重构（2026-09-17）**：`account_update` 拆分为 5 个聚焦 mutation 工具（`update_address` / `update_phone` / `update_order_note` / `create_invoice` / `create_service_ticket`）；`order_cancel` 重命名为 `cancel_order` 并留在 high_risk 档。
 
 - 转人工**不是工具**：由 `check_handoff` 确定性节点检测信号并经 `interrupt(handoff_request)` 抛出（见 `safety-spec.md` §2、`graph-spec.md` §6.5），不作为工具注册、不进入任何 agent 工具集；Handoff Record 创建与 `conversation_mode` 切换由外层（Conversation Runtime）完成，子图不直接调用任何 Handoff API。
 
