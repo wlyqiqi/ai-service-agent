@@ -109,7 +109,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
         return "finalize_aborted" if state.get("context", {}).get("recheck_reason") else "execute"
 
     builder = StateGraph(CustomerServiceState)
-    builder.add_node("select", make_select_node(model, "high_risk", tools, registry))
+    builder.add_node("select_llm", make_select_node(model, "high_risk", tools, registry))
     builder.add_node("clarify", make_clarify_node())
     builder.add_node("precheck_fetch", make_precheck_fetch_node())
     builder.add_node("safety_check", make_safety_check_node("high_risk", registry))
@@ -123,9 +123,9 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
     builder.add_node("finalize_rejected", finalize_rejected)
     builder.add_node("finalize_expired", finalize_expired)
     builder.add_node("finalize_aborted", finalize_aborted)
-    builder.add_edge(START, "select")
+    builder.add_edge(START, "select_llm")
     builder.add_conditional_edges(
-        "select", _select_target,
+        "select_llm", _select_target,
         {"clarify": "clarify", "precheck_fetch": "precheck_fetch", "safety_final": "safety_final"},
     )
     builder.add_edge("clarify", END)

@@ -72,7 +72,7 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
         return {"execution_status": "completed"}
 
     builder = StateGraph(CustomerServiceState)
-    builder.add_node("router", router)
+    builder.add_node("router_llm", router)
     builder.add_node("guard", guard)
     builder.add_node("policy_gate", _policy_gate)
     builder.add_node("safety_final", _safety_final)
@@ -81,9 +81,9 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
     builder.add_node("high_risk_graph", high_risk_graph)
     builder.add_node("fallback", fallback)
     builder.add_node("final", finalize)
-    builder.add_edge(START, "router")
+    builder.add_edge(START, "router_llm")
     builder.add_edge(START, "guard")
-    builder.add_edge("router", "policy_gate")
+    builder.add_edge("router_llm", "policy_gate")
     builder.add_edge("guard", "policy_gate")
     builder.add_conditional_edges(
         "policy_gate", _guard_aware_target,

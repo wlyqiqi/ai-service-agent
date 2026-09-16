@@ -27,13 +27,13 @@ def make_read_graph(model, tools: list):
         return {"execution_status": "completed"}
 
     builder = StateGraph(CustomerServiceState)
-    builder.add_node("agent", agent)
+    builder.add_node("agent_llm", agent)
     builder.add_node("tools", tools_node)
     builder.add_node("finalize", finalize)
-    builder.add_edge(START, "agent")
+    builder.add_edge(START, "agent_llm")
     builder.add_conditional_edges(
-        "agent", tools_condition, {"tools": "tools", "__end__": "finalize"}
+        "agent_llm", tools_condition, {"tools": "tools", "__end__": "finalize"}
     )
-    builder.add_edge("tools", "agent")
+    builder.add_edge("tools", "agent_llm")
     builder.add_edge("finalize", END)
     return builder.compile()

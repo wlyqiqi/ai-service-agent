@@ -2,6 +2,17 @@
 
 - 关联：`state-spec.md`（状态契约）· `tool-spec.md`（工具集）· `safety-spec.md`（预检与转人工）· `approval-spec.md`（审批服务）· `architecture.md`（总览）
 
+## 0. 节点命名约定（LLM 节点标记）
+
+- 图内**包含 LLM 推理的节点，节点 ID 一律带 `_llm` 后缀**，便于在 LangGraph Studio / 图可视化中直接辨识（本节为唯一权威约定）。
+- 当前 `_llm` 节点清单（v0.1.0）：
+  - 顶层：`router_llm`（json_mode 结构化分类）
+  - ReadGraph：`agent_llm`（ReAct agent，`create_agent`）
+  - MutationGraph / HighRiskGraph：`select_llm`（json_mode 工具 + 参数提取）
+- 确定性节点（关键词 / 模板 / 预检 / 中断 / 收尾）**不得**使用 `_llm` 后缀。
+- `guard` 节点当前为实现**确定性 v1**（关键词/正则），非 `_llm` 节点；若未来升级为 LLM Guard，须改名并同步本清单。
+- 新增任何 LLM 节点时必须遵循本约定，并在本节登记。
+
 ## 1. 总图结构与入口 resume 调度
 
 ```text
