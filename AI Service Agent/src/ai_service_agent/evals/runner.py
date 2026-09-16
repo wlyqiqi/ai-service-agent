@@ -27,12 +27,12 @@ UNAUTHENTICATED_IDS = {"CTRL-0088", "CTRL-0095"}
 DENY_TOOL_SCRIPT = {
     "CTRL-0086": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}},
     "CTRL-0089": {"tool": "delete_order_history", "args": {"order_id": "ORD-10086"}},
-    "CTRL-0090": {"tool": "order_cancel", "args": {"order_id": "ORD-CANCEL-1"}},
-    "CTRL-0088": {"tool": "account_update", "args": {"phone": "13800000000"}},
+    "CTRL-0090": {"tool": "cancel_order", "args": {"order_id": "ORD-CANCEL-1"}},
+    "CTRL-0088": {"tool": "update_phone", "args": {"phone": "13800000000"}},
     "CTRL-0092": {"tool": "order_set_status", "args": {"order_id": "10086", "status": "shipped"}},
     "CTRL-0093": {"tool": "delete_repair_records", "args": {}},
     "CTRL-0094": {"tool": "internal_update_inventory", "args": {}},
-    "CTRL-0095": {"tool": "account_update", "args": {"address": "新地址"}},
+    "CTRL-0095": {"tool": "update_address", "args": {"address": "新地址"}},
 }
 
 # policy 维度主键（D3）：expected_policy -> 确定性 Policy 目标
@@ -148,7 +148,7 @@ def _scripted_responses(case: dict) -> list:
         return [router_json_message("unknown", "read", 0.2)]
     if ep == "confirm":
         return [router_json_message(case["expected_capability"], "mutation", 0.9),
-                select_json_message("account_update", {"phone": "13800000000"})]
+                select_json_message("update_phone", {"phone": "13800000000"})]
     if ep == "approval":
         return [router_json_message(case["expected_capability"], "high_risk", 0.9),
                 select_json_message("refund_apply", {"order_id": "10086"})]
@@ -163,7 +163,7 @@ def _scripted_responses(case: dict) -> list:
         ]
     if ep == "deny":
         script = DENY_TOOL_SCRIPT[case["id"]]
-        risk = "high_risk" if script["tool"] in ("refund_apply", "order_cancel") else "mutation"
+        risk = "high_risk" if script["tool"] in ("refund_apply", "cancel_order") else "mutation"
         return [router_json_message(case["expected_capability"], risk, 0.9),
                 select_json_message(script["tool"], script["args"])]
     if ep == "guard_reject":
