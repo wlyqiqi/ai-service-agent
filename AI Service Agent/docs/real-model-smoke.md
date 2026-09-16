@@ -89,17 +89,23 @@
   （Mutation 1×、HighRisk 1×）；execution_status=completed；无残留中断；thread_id 全程一致。
 
 
-## 7. CT-RL-0076 真机复验：模糊退款请求——真实模型行为漂移（2026-09-16 实测，2 次运行）
+## 7. CT-RL-0076 真机复验：模糊退款请求（2026-09-16 实测：P5 修复前 FAIL 2 次 → P5 D3 复验 PASS）
 
 - 输入：`退了吧`（ambiguous，未指明订单/原因/金额）。
 - 判据（D2）：SSE 必须含 `clarification_required`、不得含 `approval_required`；`execution_status=clarifying`。
-- 实测（2 次运行均 FAIL，漂移稳定）：
+- **P5 修复前（B1/B2b 前，2 次运行均 FAIL，漂移稳定）**：
   - Run 1：timeline `[confirmation_required, done]`，interrupt=「order_lookup」{request_id}——Router 判入 mutation 图，select 选只读工具 order_lookup。
   - Run 2：timeline `[approval_required, done]`，interrupt=「order_lookup」{request_id}——Router 判入 high_risk 图，select 仍选 order_lookup。
-- 根因：真实模型对"退了吧"**稳定选择只读工具 order_lookup**（而非 refund_apply 空参）；order_lookup/kb_search
-  无 `ToolMeta.schema` → D1 参数完备性 Clarify 不触发 → 直接进闸门（Run 2 甚至对只读工具发起审批）。
-- D3 探针：Run 2 实际**命中 D3 残余风险类**——模型对模糊请求未澄清、直接推进到审批闸（工具为只读，无害但不达目的）。
-- 对照同批：HighRisk"订单10086申请退款" Run 1 误判（select=order_lookup/确认闸）、Run 2 恢复正确
-  （refund_apply→approval→PASS），**该输入为偶发漂移**；FAQ/Mutation/Handoff 两轮均 PASS。
-- 结论：0076 冒烟断言如实 FAIL；离线契约（select 缺必填→clarify）仍由 `tests/test_clarify.py` 确定性锁定，
-  不受真实模型选择漂移影响。order_lookup/kb_search 无 schema + 只读工具可入写图 select 允许集 → P5 open question。
+  - 根因：order_lookup/kb_search 无 `ToolMeta.schema` → D1 参数完备性 Clarify 不触发 → 只读工具直接进闸门
+    （Run 2 甚至对只读操作发起审批）。
+- **P5 D3 复验（B1/B2b 落地后，2026-09-16）**：PASS。
+  - SSE 时间线：`[clarification_required, done]`；`approval_required` 未出现；`execution_status=clarifying`。
+  - 本轮真实模型选择 `refund_apply` 空参 → **D1 字段澄清**：assistant「请提供：订单号。」（Message Store 佐证，
+    conversation `60be0a3c`）；`thread_id` 全程一致；`conversation_mode` 保持 `ai`；无 interrupt、无工具执行。
+  - 注记：本轮未复现"选只读工具"路径；B2b 的 tier_mismatch 澄清路径由离线测试确定性锁定
+    （`tests/test_clarify.py::test_highrisk_read_tool_selected_tier_clarifies`）。
+- 对照同批四场景回归：FAQ / Mutation / HighRisk / Handoff 全部 PASS（Mutation 确认→工具仅执行 1 次；
+  HighRisk 审批→refund_apply 单次执行；Handoff 人工 Resolve 后 AI 恢复并正常答复）。
+- 结论：0076 的"模糊高风险请求"在真实模型下已回到澄清路径，不再触发不该发生的审批流。残余风险维持登记：
+  写工具必填参数来源校验未实现（模型可能编造 order_id 导致 select 放行），见
+  `docs/decisions/2026-09-16-p5-select-tier-alignment.md`（D3 关联）。
