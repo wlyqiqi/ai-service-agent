@@ -28,21 +28,89 @@ def _extract_script(html: str) -> str:
     return m.group(1)
 
 
+def _wrap_completion(code: str) -> str:
+    """把表达式包装为 async IIFE，用 return 捕获最后一个顶层表达式的完成值。
+
+    Node 的 eval 把代码解析为 Script，顶层 await 在 Script 中是非法的
+    （即使在 async 函数内调用 eval 也一样），因此测试表达式里的顶层 await
+    需要先包进 async 函数体。表达式约定：最后一个顶层表达式即结果。
+    """
+    depth = 0
+    mode = 0  # 0=代码 1=单引号 2=双引号 3=模板串
+    stmt_start = 0
+    i, n = 0, len(code)
+    while i < n:
+        c = code[i]
+        if mode == 1:
+            i += 2 if c == "\\" else 1
+            if c != "\\" and c == "'":
+                mode = 0
+            continue
+        if mode == 2:
+            i += 2 if c == "\\" else 1
+            if c != "\\" and c == '"':
+                mode = 0
+            continue
+        if mode == 3:
+            i += 2 if c == "\\" else 1
+            if c != "\\" and c == "`":
+                mode = 0
+            continue
+        if c in "'\"`":
+            mode = {"'": 1, '"': 2, "`": 3}[c]
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and code[i + 1] == "/":
+            while i < n and code[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and code[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (code[i] == "*" and code[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        if c in "([{":
+            depth += 1
+            i += 1
+            continue
+        if c in ")]":
+            depth -= 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                stmt_start = i  # 顶层块语句（try/catch、function 声明等）到此结束
+            continue
+        if c == ";" and depth == 0:
+            stmt_start = i + 1
+        i += 1
+    head = code[:stmt_start].rstrip()
+    last = code[stmt_start:].strip()
+    if last.endswith(";"):
+        last = last[:-1].rstrip()
+    return "(async()=>{" + head + " return (" + last + ");})()"
+
+
 def _run_js(expr: str, tmp_path: Path):
     """在 Node vm 沙箱中执行 expr（作用域内 UserPage = window.UserPage），返回 JSON 解析结果。"""
     if shutil.which("node") is None:
         pytest.skip("node 不可用，跳过前端逻辑测试（需要 Node >= 18）")
     script = _extract_script(HTML_PATH.read_text(encoding="utf-8"))
     (tmp_path / "site.js").write_text(script, encoding="utf-8")
-    (tmp_path / "expr.js").write_text(expr, encoding="utf-8")
+    (tmp_path / "expr.js").write_text(_wrap_completion(expr), encoding="utf-8")
     runner = tmp_path / "runner.js"
     runner.write_text(
         "const fs=require('fs');const vm=require('vm');\n"
-        "const sandbox={window:{},console};\n"
+        "const sandbox={window:{},console,setTimeout,clearTimeout,setInterval,clearInterval,\n"
+        "ReadableStream,TextEncoder,TextDecoder};\n"
         "vm.runInNewContext(fs.readFileSync(__dirname+'/site.js','utf8'),sandbox);\n"
         "const {UserPage}=sandbox.window;\n"
         "const expr=fs.readFileSync(__dirname+'/expr.js','utf8');\n"
-        "console.log(JSON.stringify(eval(expr)));\n",
+        "(async()=>{console.log(JSON.stringify(await eval(expr)));})()"
+        ".catch(e=>{console.error(e);process.exit(1);});\n",
         encoding="utf-8",
     )
     proc = subprocess.run(["node", str(runner)], capture_output=True, text=True, timeout=30)
@@ -291,3 +359,63 @@ def test_build_view_full_event_stream(tmp_path):
     assert out["classes"] == [
         "msg assistant", "card tool-card", "card", "card", "notice", "error-bar",
     ]
+
+
+def test_mock_stream_covers_all_event_types(tmp_path):
+    out = _run_js(
+        "Array.from(new Set(UserPage.mockStream().map(function(e){return e.type;}))).sort()",
+        tmp_path,
+    )
+    assert out == sorted([
+        "token", "tool_call", "tool_result", "clarification_required",
+        "confirmation_required", "confirmation_updated", "approval_required",
+        "approval_updated", "safety_rejected", "handoff_created",
+        "handoff_resolved", "error", "done",
+    ])
+
+
+def test_mock_api_login_returns_token(tmp_path):
+    out = _run_js("(await UserPage.createMockApi().login('u1', 'p1')).token", tmp_path)
+    assert out == "mock-token"
+
+
+def test_api_login_posts_credentials(tmp_path):
+    expr = (
+        "var sent=null;"
+        "var fake={ok:true,status:200,json:async function(){return {token:'t'};}};"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,opts:opts};return fake;},baseUrl:'http://x'});"
+        "var r=await api.login('a','b');"
+        "({token:r.token,url:sent.url,body:sent.opts.body})"
+    )
+    out = _run_js(expr, tmp_path)
+    assert out["token"] == "t"
+    assert out["url"] == "http://x/auth/login"
+    assert json.loads(out["body"]) == {"account": "a", "password": "b"}
+
+
+def test_api_send_message_parses_sse(tmp_path):
+    expr = (
+        "var enc=new TextEncoder();"
+        "var stream=new ReadableStream({start:function(c){"
+        "c.enqueue(enc.encode('data: {\"type\":\"token\",\"data\":{\"text\":\"你\"}}\\n\\n'));"
+        "c.enqueue(enc.encode('data: {\"type\":\"done\",\"data\":{}}\\n\\n'));"
+        "c.close();}});"
+        "var fake={ok:true,status:200,body:stream,json:async function(){return {};}};"
+        "var api=UserPage.createApi({fetchImpl:async function(){return fake;},baseUrl:'http://x'});"
+        "var got=[];"
+        "await api.sendMessage('c1','hi',function(e){got.push(e.type);});"
+        "got"
+    )
+    out = _run_js(expr, tmp_path)
+    assert out == ["token", "done"]
+
+
+def test_api_create_session_throws_on_401(tmp_path):
+    expr = (
+        "var api=UserPage.createApi({fetchImpl:async function(){"
+        "return {ok:false,status:401,json:async function(){return {};}};},baseUrl:'http://x'});"
+        "var err=null;try{await api.createSession();}catch(e){err=e.message;}"
+        "err"
+    )
+    out = _run_js(expr, tmp_path)
+    assert out == "SESSION_FAILED 401"

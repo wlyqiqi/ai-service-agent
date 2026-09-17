@@ -294,7 +294,133 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       inputDisabled: store.conn.status === 'streaming' || store.conn.status === 'reconnecting',
     };
   }
-  /* __API_LAYER__ */
+  function createApi(config) {
+    var base = (config && config.baseUrl) || '';
+    var token = (config && config.token) || null;
+    var fetchImpl = (config && config.fetchImpl) || (typeof fetch !== 'undefined' ? fetch : null);
+
+    function headers() {
+      var h = { 'Content-Type': 'application/json' };
+      if (token) h['Authorization'] = 'Bearer ' + token;
+      return h;
+    }
+
+    // TODO(后端契约): 路径为占位，真实对接时与后端对齐（spec §10）。
+    async function login(account, password) {
+      var r = await fetchImpl(base + '/auth/login', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ account: account, password: password }),
+      });
+      if (!r.ok) throw new Error('LOGIN_FAILED ' + r.status);
+      return await r.json();
+    }
+
+    async function createSession() {
+      var r = await fetchImpl(base + '/sessions', { method: 'POST', headers: headers() });
+      if (!r.ok) throw new Error('SESSION_FAILED ' + r.status);
+      return await r.json();
+    }
+
+    async function getMessages(conversationId) {
+      var r = await fetchImpl(base + '/conversations/' + encodeURIComponent(conversationId) + '/messages', { headers: headers() });
+      if (!r.ok) throw new Error('MESSAGES_FAILED ' + r.status);
+      return await r.json();
+    }
+
+    async function sendMessage(conversationId, text, onEvent) {
+      var r = await fetchImpl(base + '/chat', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ conversation_id: conversationId, text: text }),
+      });
+      if (!r.ok || !r.body) throw new Error('SEND_FAILED ' + r.status);
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var idx;
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          var block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          block.split('\n').forEach(function (line) {
+            if (line.indexOf('data: ') === 0) onEvent(JSON.parse(line.slice(6)));
+          });
+        }
+      }
+      return { ok: true };
+    }
+
+    // TODO(后端契约): 动作接口为占位路径。
+    async function confirm(conversationId, action) {
+      var r = await fetchImpl(base + '/actions/confirm', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ conversation_id: conversationId, action: action }),
+      });
+      if (!r.ok) throw new Error('CONFIRM_FAILED ' + r.status);
+      return await r.json();
+    }
+
+    async function approve(approvalId, verdict) {
+      var r = await fetchImpl(base + '/approvals/' + encodeURIComponent(approvalId), {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ verdict: verdict }),
+      });
+      if (!r.ok) throw new Error('APPROVE_FAILED ' + r.status);
+      return await r.json();
+    }
+
+    return {
+      login: login, createSession: createSession, getMessages: getMessages,
+      sendMessage: sendMessage, confirm: confirm, approve: approve,
+    };
+  }
+
+  function createMockApi() {
+    var seatReplied = false;
+    return {
+      async login(account) {
+        return { token: 'mock-token', user: { name: account || '演示用户' } };
+      },
+      async createSession() {
+        return { conversation_id: 'mock-1', mode: 'ai' };
+      },
+      async getMessages() {
+        if (!seatReplied) {
+          seatReplied = true;
+          return { messages: [{ id: 'seat-1', role: 'assistant', text: '人工客服：您好，您的退款申请已加急处理，预计 24 小时内到账。' }], mode: 'human' };
+        }
+        return { messages: [], mode: 'ai' };
+      },
+      async sendMessage(conversationId, text, onEvent) {
+        // mock 演示流去掉 handoff_resolved：让转人工后的轮询真实跑起来（getMessages 第二次返回 mode=ai 模拟人工解决）
+        var events = mockStream().filter(function (e) { return e.type !== 'handoff_resolved'; });
+        for (var i = 0; i < events.length; i++) onEvent(events[i]);
+        return { ok: true };
+      },
+      async confirm() { return { ok: true }; },
+      async approve() { return { ok: true }; },
+    };
+  }
+
+  function mockStream() {
+    return [
+      { type: 'token', data: { text: '您好，我是智家小助手，请问有什么可以帮您？\n可以查订单、改收货信息、申请售后。' } },
+      { type: 'tool_call', data: { name: 'order_lookup', args: { order_id: 'A1001' } } },
+      { type: 'tool_result', data: { name: 'order_lookup', ok: true, summary: '订单 A1001：已发货，预计明天送达。' } },
+      { type: 'clarification_required', data: { missing: ['order_id'] } },
+      { type: 'confirmation_required', data: { summary: '修改订单 A1001 收货地址为：北京市朝阳区 xx 路 1 号' } },
+      { type: 'confirmation_updated', data: { action: 'confirmed' } },
+      { type: 'approval_required', data: { approval_id: 'ap-1', summary: '取消订单 A1001（金额 ¥1,299.00）', expires_at: '2026-09-17T23:59:59Z' } },
+      { type: 'approval_updated', data: { approval_id: 'ap-1', status: 'approved' } },
+      { type: 'safety_rejected', data: { rule: 'refund_blacklist', reason: '该订单已超出 7 天无理由退款期限' } },
+      { type: 'handoff_created', data: { reason: '用户情绪升级', summary: '用户多次要求人工介入' } },
+      { type: 'handoff_resolved', data: {} },
+      { type: 'error', data: { code: 'E_TIMEOUT', message: '服务响应超时，请重试' } },
+      { type: 'done', data: { final: true } },
+    ];
+  }
   /* __POLL_LAYER__ */
   /* __WIRING__ */
 
@@ -305,6 +431,9 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       applyEvent: applyEvent,
       EVENT_TYPES: EVENT_TYPES,
       buildView: buildView,
+      createApi: createApi,
+      createMockApi: createMockApi,
+      mockStream: mockStream,
     };
   }
 
@@ -388,7 +517,116 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     showView(store.view);
   });
 
-  /* __WIRING_RUNTIME__ */
+  function getConfig() {
+    var mock = false;
+    try {
+      mock = new URLSearchParams(window.location.search).get('mock') === 'true' ||
+        window.localStorage.getItem('mock') === 'true';
+    } catch (e) { /* ignore */ }
+    return { mock: mock, baseUrl: '' };
+  }
+
+  store.config = getConfig();
+  var api = store.config.mock
+    ? createMockApi()
+    : createApi({ fetchImpl: window.fetch ? window.fetch.bind(window) : null, baseUrl: store.config.baseUrl });
+
+  function pushUserMessage(text) {
+    store.messages.push({ id: msgId(), role: 'user', kind: 'text', content: text, meta: {} });
+    store.conn.status = 'streaming';
+    applyView();
+  }
+
+  function pushHistory(messages) {
+    messages.forEach(function (m) {
+      store.messages.push({
+        id: m.id || msgId(),
+        role: m.role === 'user' ? 'user' : 'assistant',
+        kind: 'text',
+        content: m.text || m.content || '',
+        meta: {},
+      });
+    });
+    applyView();
+  }
+
+  async function loadHistory() {
+    try {
+      var data = await api.getMessages(store.conversation.conversation_id);
+      if (data && data.messages) pushHistory(data.messages);
+    } catch (e) { /* 历史加载失败不阻塞对话 */ }
+  }
+
+  function doSend() {
+    var input = document.getElementById('msg-input');
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    pushUserMessage(text);
+    api.sendMessage(store.conversation.conversation_id, text, function (event) {
+      store = applyEvent(store, event);
+      applyView();
+    }).catch(function (e) {
+      store = applyEvent(store, { type: 'error', data: { code: 'E_SEND', message: e.message } });
+      applyView();
+    }).then(function () {
+      if (store.conversation.mode === 'human' && typeof startPolling === 'function') startPolling();
+    });
+  }
+
+  async function doLogin() {
+    var account = document.getElementById('login-account').value;
+    var password = document.getElementById('login-password').value;
+    var errEl = document.getElementById('login-error');
+    errEl.hidden = true;
+    try {
+      var auth = await api.login(account, password);
+      saveAuth(auth);
+      store.auth = auth;
+      var session = await api.createSession();
+      store.conversation.conversation_id = session.conversation_id || session.session_id;
+      store.conversation.mode = session.mode || 'ai';
+      window.location.hash = '#/chat';
+      store.view = resolveView('#/chat', true);
+      showView(store.view);
+      applyView();
+      loadHistory();
+    } catch (e) {
+      errEl.textContent = '登录失败：' + e.message;
+      errEl.hidden = false;
+    }
+  }
+
+  document.getElementById('btn-login').addEventListener('click', doLogin);
+  document.getElementById('btn-send').addEventListener('click', doSend);
+  document.getElementById('msg-input').addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); doSend(); }
+  });
+
+  document.getElementById('chips').addEventListener('click', function (ev) {
+    var chip = ev.target.closest('button.chip');
+    if (!chip) return;
+    document.getElementById('msg-input').value = chip.getAttribute('data-cmd');
+    doSend();
+  });
+
+  document.getElementById('msg-list').addEventListener('click', function (ev) {
+    var btn = ev.target.closest('button[data-action]');
+    if (!btn) return;
+    var action = btn.getAttribute('data-action') === 'confirm' ? 'confirmed' : 'canceled';
+    if (!store.pendingAction || store.pendingAction.kind !== 'confirm') return;
+    api.confirm(store.conversation.conversation_id, action)
+      .then(function () {
+        store = applyEvent(store, { type: 'confirmation_updated', data: { action: action } });
+        applyView();
+      })
+      .catch(function (e) {
+        store = applyEvent(store, { type: 'error', data: { code: 'E_CONFIRM', message: e.message } });
+        applyView();
+      });
+  });
+
+  if (store.view === 'chat') applyView();
   applyView();
 })();
 </script>
