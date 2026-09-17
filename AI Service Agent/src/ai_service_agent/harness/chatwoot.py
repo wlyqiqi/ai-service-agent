@@ -69,3 +69,11 @@ class ChatwootMappingStore:
             "contact_id": row[2],
             "created_at": row[3],
         }
+
+
+def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str) -> bool:
+    """Chatwoot webhook 签名：X-Chatwoot-Signature: sha256=<hex>；HMAC-SHA256(secret, raw body)。"""
+    if not signature or not signature.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature[len("sha256="):], expected)
