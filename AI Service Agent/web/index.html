@@ -133,6 +133,34 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     return 'm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
+  function resetConversation(store) {
+    var s = JSON.parse(JSON.stringify(store));
+    s.conversation = { conversation_id: null, mode: 'ai' };
+    s.messages = [];
+    s.conn = { status: 'idle', lastError: null };
+    s.pendingAction = null;
+    return s;
+  }
+
+  function mergeHistory(existing, incoming) {
+    var seen = {};
+    var out = [];
+    existing.forEach(function (m) { if (m.id) seen[m.id] = true; out.push(m); });
+    (incoming || []).forEach(function (m) {
+      var id = m.id || msgId();
+      if (seen[id]) return;
+      seen[id] = true;
+      out.push({
+        id: id,
+        role: m.role === 'user' ? 'user' : 'assistant',
+        kind: 'text',
+        content: m.text || m.content || '',
+        meta: m.meta || {},
+      });
+    });
+    return out;
+  }
+
   function applyEvent(store, event) {
     var type = event.type;
     var data = event.data || {};
@@ -247,10 +275,19 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
             : '执行中…'] },
         ] };
       case 'clarify':
-        return { tag: 'div', attrs: { class: 'card' }, children: [
+        var missing = m.content.missing || [];
+        var kids = [
           { tag: 'h4', children: ['需要补充信息'] },
-          { tag: 'p', children: ['请提供：' + m.content.missing.join('、')] },
-        ] };
+          { tag: 'p', children: ['请提供：' + missing.join('、')] },
+        ];
+        if (missing.length) {
+          kids.push({
+            tag: 'div', attrs: { class: 'row' }, children: missing.map(function (field) {
+              return { tag: 'button', attrs: { class: 'btn ghost chip', 'data-action': 'clarify', 'data-field': field }, children: ['补充 ' + field] };
+            }),
+          });
+        }
+        return { tag: 'div', attrs: { class: 'card' }, children: kids };
       case 'confirm':
         return { tag: 'div', attrs: { class: 'card' }, children: [
           { tag: 'h4', children: ['请确认操作'] },
@@ -305,25 +342,32 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       return h;
     }
 
+    function apiError(label, r) {
+      var err = new Error(label + ' ' + r.status);
+      err.status = r.status;
+      err.code = r.status === 401 ? 'AUTH_EXPIRED' : label;
+      return err;
+    }
+
     // TODO(后端契约): 路径为占位，真实对接时与后端对齐（spec §10）。
     async function login(account, password) {
       var r = await fetchImpl(base + '/auth/login', {
         method: 'POST', headers: headers(),
         body: JSON.stringify({ account: account, password: password }),
       });
-      if (!r.ok) throw new Error('LOGIN_FAILED ' + r.status);
+      if (!r.ok) throw apiError('LOGIN_FAILED', r);
       return await r.json();
     }
 
     async function createSession() {
       var r = await fetchImpl(base + '/sessions', { method: 'POST', headers: headers() });
-      if (!r.ok) throw new Error('SESSION_FAILED ' + r.status);
+      if (!r.ok) throw apiError('SESSION_FAILED', r);
       return await r.json();
     }
 
     async function getMessages(conversationId) {
       var r = await fetchImpl(base + '/conversations/' + encodeURIComponent(conversationId) + '/messages', { headers: headers() });
-      if (!r.ok) throw new Error('MESSAGES_FAILED ' + r.status);
+      if (!r.ok) throw apiError('MESSAGES_FAILED', r);
       return await r.json();
     }
 
@@ -332,7 +376,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         method: 'POST', headers: headers(),
         body: JSON.stringify({ conversation_id: conversationId, text: text }),
       });
-      if (!r.ok || !r.body) throw new Error('SEND_FAILED ' + r.status);
+      if (!r.ok || !r.body) throw apiError('SEND_FAILED', r);
       var reader = r.body.getReader();
       var decoder = new TextDecoder();
       var buf = '';
@@ -358,7 +402,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         method: 'POST', headers: headers(),
         body: JSON.stringify({ conversation_id: conversationId, action: action }),
       });
-      if (!r.ok) throw new Error('CONFIRM_FAILED ' + r.status);
+      if (!r.ok) throw apiError('CONFIRM_FAILED', r);
       return await r.json();
     }
 
@@ -367,13 +411,23 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         method: 'POST', headers: headers(),
         body: JSON.stringify({ verdict: verdict }),
       });
-      if (!r.ok) throw new Error('APPROVE_FAILED ' + r.status);
+      if (!r.ok) throw apiError('APPROVE_FAILED', r);
+      return await r.json();
+    }
+
+    // TODO(后端契约): 动作接口为占位路径。
+    async function clarify(conversationId, fields) {
+      var r = await fetchImpl(base + '/actions/clarify', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ conversation_id: conversationId, fields: fields || [] }),
+      });
+      if (!r.ok) throw apiError('CLARIFY_FAILED', r);
       return await r.json();
     }
 
     return {
       login: login, createSession: createSession, getMessages: getMessages,
-      sendMessage: sendMessage, confirm: confirm, approve: approve,
+      sendMessage: sendMessage, confirm: confirm, approve: approve, clarify: clarify,
     };
   }
 
@@ -401,6 +455,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       },
       async confirm() { return { ok: true }; },
       async approve() { return { ok: true }; },
+      async clarify() { return { ok: true }; },
     };
   }
 
@@ -429,7 +484,17 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   }
 
   function canRetry(store) {
-    return !!store.auth;
+    return !!(store.auth && !store.auth.expired);
+  }
+
+  function isAuthExpiredError(err) {
+    return !!(err && (err.status === 401 || err.code === 'AUTH_EXPIRED'));
+  }
+
+  function markAuthExpired(store) {
+    var s = resetConversation(store);
+    s.auth = { token: null, user: null, expired: true };
+    return s;
   }
 
   function markReconnecting(store, message) {
@@ -441,15 +506,14 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
 
   function applyPollResult(store, data) {
     var s = JSON.parse(JSON.stringify(store));
-    (data.messages || []).forEach(function (m) {
-      s.messages.push({
-        id: m.id || msgId(),
-        role: m.role === 'user' ? 'user' : 'assistant',
-        kind: 'text',
-        content: m.text || m.content || '',
-        meta: { seat: true },
-      });
+    var incoming = (data.messages || []).filter(function (m) {
+      return m && typeof m === 'object';
+    }).map(function (m) {
+      var copy = JSON.parse(JSON.stringify(m));
+      copy.meta = { seat: true };
+      return copy;
     });
+    s.messages = mergeHistory(s.messages, incoming);
     if (data.mode === 'ai' && s.conversation.mode === 'human') {
       s.conversation.mode = 'ai';
       s.conn.status = 'idle';
@@ -459,11 +523,25 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     }
     return s;
   }
+
+  async function bootstrapSession(store, api, savedConversationId) {
+    var s = resetConversation(store);
+    if (savedConversationId) {
+      s.conversation.conversation_id = savedConversationId;
+      return { store: s, created: false };
+    }
+    var session = await api.createSession();
+    s.conversation.conversation_id = session.conversation_id || session.session_id;
+    s.conversation.mode = session.mode || 'ai';
+    return { store: s, created: true };
+  }
   /* __WIRING__ */
 
   if (typeof window !== 'undefined') {
     window.UserPage = {
       createInitialStore: createInitialStore,
+      resetConversation: resetConversation,
+      mergeHistory: mergeHistory,
       resolveView: resolveView,
       applyEvent: applyEvent,
       EVENT_TYPES: EVENT_TYPES,
@@ -475,6 +553,9 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       markReconnecting: markReconnecting,
       applyPollResult: applyPollResult,
       canRetry: canRetry,
+      isAuthExpiredError: isAuthExpiredError,
+      markAuthExpired: markAuthExpired,
+      bootstrapSession: bootstrapSession,
     };
   }
 
@@ -510,6 +591,22 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   }
 
   var AUTH_KEY = 'user_page_auth';
+  var CONV_KEY = 'user_page_conversation';
+
+  function loadConversationId() {
+    try { return window.sessionStorage.getItem(CONV_KEY) || null; } catch (e) { return null; }
+  }
+
+  function saveConversationId(id) {
+    try {
+      if (id) window.sessionStorage.setItem(CONV_KEY, id);
+      else window.sessionStorage.removeItem(CONV_KEY);
+    } catch (e) { /* ignore */ }
+  }
+
+  function clearConversationId() {
+    try { window.sessionStorage.removeItem(CONV_KEY); } catch (e) { /* ignore */ }
+  }
 
   function loadAuth() {
     try {
@@ -542,18 +639,21 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
 
   var store = createInitialStore();
   store.auth = loadAuth();
-  store.view = resolveView(window.location.hash, !!store.auth);
+  store.view = resolveView(window.location.hash, !!(store.auth && store.auth.token));
   showView(store.view);
 
   window.addEventListener('hashchange', function () {
-    store.view = resolveView(window.location.hash, !!store.auth);
+    store.view = resolveView(window.location.hash, !!(store.auth && store.auth.token));
     showView(store.view);
+    if (store.view === 'chat' && !store.conversation.conversation_id) bootstrapChat();
   });
 
   document.getElementById('btn-logout').addEventListener('click', function () {
     stopPolling();
     if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     clearAuth();
+    clearConversationId();
+    store = resetConversation(store);
     store.auth = null;
     window.location.hash = '#/login';
     store.view = resolveView(window.location.hash, false);
@@ -574,6 +674,36 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     ? createMockApi()
     : createApi({ fetchImpl: window.fetch ? window.fetch.bind(window) : null, baseUrl: store.config.baseUrl });
 
+  function handleAuthExpired() {
+    stopPolling();
+    if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    clearAuth();
+    store = markAuthExpired(store);
+    window.location.hash = '#/login';
+    store.view = resolveView(window.location.hash, false);
+    showView(store.view);
+    var errEl = document.getElementById('login-error');
+    if (errEl) { errEl.textContent = '登录已过期，请重新登录'; errEl.hidden = false; }
+  }
+
+  async function bootstrapChat() {
+    if (!store.auth || !store.auth.token) return false;
+    stopPolling();
+    try {
+      var result = await bootstrapSession(store, api, loadConversationId());
+      store = result.store;
+      if (result.created) saveConversationId(store.conversation.conversation_id);
+    } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
+      return false; // 会话启动失败不阻塞对话视图
+    }
+    var loaded = await loadHistory();
+    if (!loaded) return false; // 401 已由 handleAuthExpired 处理
+    applyView();
+    if (store.conversation.mode === 'human') startPolling();
+    return true;
+  }
+
   function pushUserMessage(text) {
     store.messages.push({ id: msgId(), role: 'user', kind: 'text', content: text, meta: {} });
     store.conn.status = 'streaming';
@@ -581,23 +711,27 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   }
 
   function pushHistory(messages) {
-    messages.forEach(function (m) {
-      store.messages.push({
-        id: m.id || msgId(),
-        role: m.role === 'user' ? 'user' : 'assistant',
-        kind: 'text',
-        content: m.text || m.content || '',
-        meta: {},
-      });
-    });
+    store.messages = mergeHistory(store.messages, messages);
     applyView();
   }
 
   async function loadHistory() {
     try {
       var data = await api.getMessages(store.conversation.conversation_id);
-      if (data && data.messages) pushHistory(data.messages);
-    } catch (e) { /* 历史加载失败不阻塞对话 */ }
+      if (data) {
+        if (data.messages) pushHistory(data.messages);
+        if (data.mode) {
+          store.conversation.mode = data.mode;
+          store.conn.status = data.mode === 'human' ? 'polling' : 'idle';
+        }
+        applyView();
+      }
+      return true;
+    } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
+      /* 历史加载失败不阻塞对话 */
+      return true;
+    }
   }
 
   function doSend() {
@@ -609,7 +743,8 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     api.sendMessage(store.conversation.conversation_id, text, function (event) {
       store = applyEvent(store, event);
       applyView();
-    }).catch(function () {
+    }).catch(function (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return; }
       store = markReconnecting(store, '连接中断，正在重连…');
       applyView();
       scheduleReconnect(text, 0);
@@ -627,14 +762,17 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       var auth = await api.login(account, password);
       saveAuth(auth);
       store.auth = auth;
-      var session = await api.createSession();
-      store.conversation.conversation_id = session.conversation_id || session.session_id;
-      store.conversation.mode = session.mode || 'ai';
+      var ok = await bootstrapChat();
+      if (!ok) {
+        if (store.auth && store.auth.token) {
+          errEl.textContent = '会话创建失败，请重试';
+          errEl.hidden = false;
+        }
+        return;
+      }
       window.location.hash = '#/chat';
       store.view = resolveView('#/chat', true);
       showView(store.view);
-      applyView();
-      loadHistory();
     } catch (e) {
       errEl.textContent = '登录失败：' + e.message;
       errEl.hidden = false;
@@ -657,11 +795,20 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   document.getElementById('msg-list').addEventListener('click', function (ev) {
     var btn = ev.target.closest('button[data-action]');
     if (!btn) return;
-    var action = btn.getAttribute('data-action') === 'confirm' ? 'confirmed' : 'canceled';
+    var action = btn.getAttribute('data-action');
+    if (action === 'clarify') {
+      // 澄清快捷补全：把字段名带入输入框并发送占位文本（前端不编造值，用户填写后回车）
+      var field = btn.getAttribute('data-field') || '';
+      var input = document.getElementById('msg-input');
+      input.value = field + ': ';
+      doSend();
+      return;
+    }
+    var verdict = action === 'confirm' ? 'confirmed' : 'canceled';
     if (!store.pendingAction || store.pendingAction.kind !== 'confirm') return;
-    api.confirm(store.conversation.conversation_id, action)
+    api.confirm(store.conversation.conversation_id, verdict)
       .then(function () {
-        store = applyEvent(store, { type: 'confirmation_updated', data: { action: action } });
+        store = applyEvent(store, { type: 'confirmation_updated', data: { action: verdict } });
         applyView();
       })
       .catch(function (e) {
@@ -698,6 +845,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       applyView();
       if (store.conversation.mode === 'ai') { pollTimer = null; return; }
     } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return; }
       pollAttempt = Math.min(pollAttempt + 1, 10);
     }
     schedulePoll();
@@ -713,7 +861,8 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         applyView();
       }).then(function () {
         if (store.conversation.mode === 'human') startPolling();
-      }).catch(function () {
+      }).catch(function (e) {
+        if (isAuthExpiredError(e)) { handleAuthExpired(); return; }
         store = markReconnecting(store, '连接中断，' + nextPollDelay(attempt + 1) + 'ms 后重试');
         applyView();
         scheduleReconnect(text, attempt + 1);
@@ -721,8 +870,8 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     }, nextPollDelay(attempt));
   }
 
-  if (store.view === 'chat') applyView();
   applyView();
+  if (store.view === 'chat') bootstrapChat();
 })();
 </script>
 </body>

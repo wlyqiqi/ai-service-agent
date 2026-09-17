@@ -472,3 +472,139 @@ def test_can_retry_false_after_logout(tmp_path):
         tmp_path,
     )
     assert out == {"none": False, "authed": True}
+
+
+def test_reset_conversation_clears_session_state(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "a.auth={token:'t',user:{name:'u'}};"
+        "a=UserPage.applyEvent(a,{type:'token',data:{text:'x'}});"
+        "a.pendingAction={kind:'confirm',status:'pending',summary:'x'};"
+        "a.conversation={conversation_id:'c1',mode:'human'};"
+        "a.conn={status:'reconnecting',lastError:{code:'E'}};"
+        "var b=UserPage.resetConversation(a);"
+        "({auth:b.auth,conversation:b.conversation,messages:b.messages,conn:b.conn,pendingAction:b.pendingAction})",
+        tmp_path,
+    )
+    assert out["auth"] == {"token": "t", "user": {"name": "u"}}
+    assert out["conversation"] == {"conversation_id": None, "mode": "ai"}
+    assert out["messages"] == []
+    assert out["conn"] == {"status": "idle", "lastError": None}
+    assert out["pendingAction"] is None
+
+
+def test_bootstrap_session_creates_or_reuses_conversation(tmp_path):
+    out = _run_js(
+        "var calls=0;"
+        "var api={createSession:async function(){calls++;return {conversation_id:'c9',mode:'ai'};}};"
+        "var r1=await UserPage.bootstrapSession(UserPage.createInitialStore(),api,null);"
+        "var r2=await UserPage.bootstrapSession(UserPage.createInitialStore(),api,'c-old');"
+        "({calls:calls,c1:r1.store.conversation.conversation_id,created1:r1.created,"
+        "c2:r2.store.conversation.conversation_id,created2:r2.created})",
+        tmp_path,
+    )
+    assert out == {
+        "calls": 1, "c1": "c9", "created1": True,
+        "c2": "c-old", "created2": False,
+    }
+
+
+def test_api_401_error_normalized(tmp_path):
+    out = _run_js(
+        "var api=UserPage.createApi({fetchImpl:async function(){"
+        "return {ok:false,status:401,json:async function(){return {};}};},baseUrl:'http://x'});"
+        "var err=null;"
+        "try{await api.getMessages('c1');}catch(e){err={message:e.message,status:e.status,code:e.code};}"
+        "err",
+        tmp_path,
+    )
+    assert out == {"message": "MESSAGES_FAILED 401", "status": 401, "code": "AUTH_EXPIRED"}
+
+
+def test_mark_auth_expired_clears_session(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "a.auth={token:'t',user:{name:'u'}};"
+        "a.conversation={conversation_id:'c1',mode:'human'};"
+        "a.messages=[{id:'m1',role:'user',kind:'text',content:'hi',meta:{}}];"
+        "var b=UserPage.markAuthExpired(a);"
+        "({expired:b.auth.expired,token:b.auth.token,conversation:b.conversation,"
+        "messages:b.messages,retry:UserPage.canRetry(b)})",
+        tmp_path,
+    )
+    assert out["expired"] is True
+    assert out["token"] is None
+    assert out["conversation"] == {"conversation_id": None, "mode": "ai"}
+    assert out["messages"] == []
+    assert out["retry"] is False
+
+
+def test_can_retry_false_after_expired(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "a.auth={token:'t',user:{name:'u'}};"
+        "({ok:UserPage.canRetry(a),after:UserPage.canRetry(UserPage.markAuthExpired(a))})",
+        tmp_path,
+    )
+    assert out == {"ok": True, "after": False}
+
+
+def test_apply_poll_result_dedupes_by_id(tmp_path):
+    out = _run_js(
+        "var a=UserPage.applyEvent(UserPage.createInitialStore(),{type:'handoff_created',data:{}});"
+        "var b=UserPage.applyPollResult(a,{messages:[{id:'s1',role:'assistant',text:'A'}],mode:'human'});"
+        "var c=UserPage.applyPollResult(b,{messages:[{id:'s1',role:'assistant',text:'A'}],mode:'human'});"
+        "({count:c.messages.filter(function(m){return m.id==='s1';}).length,total:c.messages.length})",
+        tmp_path,
+    )
+    assert out == {"count": 1, "total": 2}
+
+
+def test_merge_history_dedupes_and_appends_legacy(tmp_path):
+    out = _run_js(
+        "var r=UserPage.mergeHistory("
+        "[{id:'m1',role:'user',kind:'text',content:'hi',meta:{}}],"
+        "[{id:'m1',role:'assistant',text:'dup'},{role:'assistant',text:'legacy'}]);"
+        "({length:r.length,ids:r.map(function(m){return m.id;}),contents:r.map(function(m){return m.content;})})",
+        tmp_path,
+    )
+    assert out["length"] == 2
+    assert out["ids"][0] == "m1"
+    assert out["ids"][1].startswith("m-")
+    assert out["contents"] == ["hi", "legacy"]
+
+
+def test_build_view_clarify_quick_fill_buttons(tmp_path):
+    out = _run_js(
+        "var a=UserPage.applyEvent(UserPage.createInitialStore(),"
+        "{type:'clarification_required',data:{missing:['order_id','address']}});"
+        "var v=UserPage.buildView(a);"
+        "var fields=[];"
+        "function scan(n){if(n&&n.tag==='button')fields.push({field:n.attrs['data-field'],action:n.attrs['data-action']});"
+        "if(n&&n.children)(n.children||[]).forEach(scan);}"
+        "scan(v.messages[0]);"
+        "fields",
+        tmp_path,
+    )
+    assert out == [
+        {"field": "order_id", "action": "clarify"},
+        {"field": "address", "action": "clarify"},
+    ]
+
+
+def test_api_clarify_placeholder_both_layers(tmp_path):
+    out = _run_js(
+        "var sent=null;"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,body:opts.body};"
+        "return {ok:true,status:200,json:async function(){return {};}};},baseUrl:'http://x'});"
+        "await api.clarify('c1',['order_id']);"
+        "var m=await UserPage.createMockApi().clarify('c1',['order_id']);"
+        "({url:sent.url,body:sent.body,mockOk:m.ok,"
+        "real:typeof api.clarify==='function',mockFn:typeof UserPage.createMockApi().clarify==='function'})",
+        tmp_path,
+    )
+    assert out["url"] == "http://x/actions/clarify"
+    assert json.loads(out["body"]) == {"conversation_id": "c1", "fields": ["order_id"]}
+    assert out["mockOk"] is True
+    assert out["real"] is True
+    assert out["mockFn"] is True
