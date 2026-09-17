@@ -185,3 +185,43 @@
   登记为 Open Question：是否在 select high_risk 档示例强化"售后工单 vs 退款申请"边界（如补充
   `售后工单≠退款` 对照示例），或将"售后+退货"歧义纳入澄清触发。维持平级排队，暂不实现。
 - 离线基线：`SMOKE_MODEL=fake` 命中 10/10 + 观察 2/2（探针逻辑与 fake 分支同步扩展）。
+
+
+## 10. Chatwoot 坐席端真机联调（2026-09-17 实测：6 步骤全 PASS）
+
+- 目的：验证「FastAPI Transport → Chatwoot API inbox（坐席 UI/输入层）→ 人工车道推送 →
+  webhook 回写 Message Store → handoff resolve 恢复 AI」全链路；Chatwoot 故障不影响 Runtime 主链路。
+- 环境：Chatwoot v4.17.1 自托管（Docker；inbox 2「澄元AI客服」，Channel::Api，account_id=3）；
+  Runtime 需绑定 `0.0.0.0:8000`（容器经宿主机 LAN IP `172.99.46.165:8000` 访问；
+  `host.docker.internal` 在本机 Docker 环境不可达，改用手动配置的 LAN IP）。
+- 前置：`.env` 配置 `CHATWOOT_*`；Chatwoot UI 中 inbox webhook URL =
+  `http://172.99.46.165:8000/webhooks/chatwoot`（inbox 级 webhook 只能 UI 配置，API 无法更新）。
+
+| 步骤 | 输入/动作 | 实测 | 结果 |
+|---|---|---|---|
+| 1 建会话 | POST /sessions | mode=ai | PASS |
+| 2 转人工 | POST /chat "我要转人工" | SSE: token(转接文案) → handoff_created → error(ModeChanged) → done（error 为 mode 守卫设计内行为）；Chatwoot 新建 conversation（sender=user-<conv8>，首条=转人工提示） | PASS |
+| 3 人工消息推送 | POST /chat "在吗"（mode=human） | Message Store 落 user+自动回复；Chatwoot conversation 出现 "在吗"（sender_type=contact） | PASS |
+| 4 坐席回复 | Chatwoot 侧发 outgoing 消息 | webhook 送达 Runtime（HMAC 校验通过）→ Message Store 追加 assistant 回复 | PASS |
+| 5 resolve | POST /handoffs/{id}/resolve | mode=ai；record resolved | PASS |
+| 6 AI 恢复 | POST /chat 正常问题 | AI 车道 token×N → done，真实 ARK 回复；无残留中断 | PASS |
+
+- 核验项：HTTP 均 200；thread_id 全程一致；interrupt/resume 无残留；工具无重复执行；
+  Message Store 无重复落库（转人工提示仅 1 条）；Chatwoot 消息状态 sent（投递成功）。
+- **真机发现并修复的 v4.17.1 契约缺陷**（离线测试曾全绿，真机暴露）：
+  1. contact 创建响应为 `payload.contact.id`（非 `payload.id`）→ `ChatwootClient._create_contact` 修正；
+  2. 消息端点 `content` 必须在顶层（`message.content` 会建空消息）→ `send_as_contact` body 修正；
+  3. webhook 签名 = `HMAC(secret, "<ts>.<raw body>")`，需 `X-Chatwoot-Timestamp` 头（非旧版
+     `HMAC(body)`）→ `verify_chatwoot_signature` 增加 timestamp 参数，端点读取该头；
+  4. webhook 载荷坐席 `sender.type = "user"`（非 "Agent"；Contact 无 type）→ 过滤器改为 `!= "user"`；
+  5. 回显重复：Runtime 经 ensure_conversation 创建的首条消息（转人工提示）会触发
+     `message_created` webhook 回显导致二次落库 → 新增 `chatwoot_runtime_message` 表登记
+     Runtime 自建消息 id，webhook 命中即跳过（方案 A）。
+- 已知观察（非失败，登记后续关注项）：
+  1. **Router 真实模型波动**：`我要转人工` 需 Router 分类到 unknown→Fallback 才触发 handoff；
+     实测 3 次中 1 次被分到其它能力直接 AI 回复（重试新会话后触发）。handoff 触发依赖
+     Router 分类路径，非纯关键词直连——后续可评估在 Router/入口层增加显式 handoff 意图识别。
+  2. Chatwoot 消息 webhook 会收到 incoming（Contact）与 conversation_created 等事件，
+     端点按 message_type/event 过滤，不落库；账户级 webhook 与本链路无关（投递走 inbox
+     channel.webhook_url）。
+- 回归：全量 pytest 204 passed + `langgraph validate` valid。

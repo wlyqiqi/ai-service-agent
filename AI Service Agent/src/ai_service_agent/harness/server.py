@@ -339,6 +339,10 @@ def create_app(
         if status.get_mode(conv_id) != "human":
             # 坐席回复只接受人工车道（AI 车道由图负责）
             return {"ok": True}
+        msg_id = data.get("id")
+        if msg_id is not None and mapping.is_runtime_message(int(msg_id)):
+            # Runtime 自己创建的 Chatwoot 消息（如转人工提示首条）回显，跳过防重复落库
+            return {"ok": True}
         messages_store.append(conv_id, "assistant", content)
         return {"ok": True}
 

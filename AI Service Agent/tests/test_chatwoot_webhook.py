@@ -95,3 +95,34 @@ def test_webhook_ignores_unknown_conversation_and_ai_mode(tmp_path):
     assert r2.status_code == 200
     rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(info["conversation_id"])
     assert rows == []
+
+
+
+def test_webhook_skips_runtime_echo(tmp_path):
+    """Runtime 自己创建的 Chatwoot 消息回显（message_created webhook）不应重复落库。"""
+    conn = sqlite3.connect(tmp_path / "s.db")
+    status = ConversationStatusStore(conn)
+    info = status.create_session("u1")
+    status.set_mode(info["conversation_id"], "human")
+    mapping = ChatwootMappingStore(conn)
+    mapping.put(info["conversation_id"], 555)
+    mapping.put_runtime_message(88, info["conversation_id"])
+    conn.close()
+
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    body = {
+        "id": 88,
+        "event": "message_created",
+        "message_type": "outgoing",
+        "content": "已为你转接人工客服，坐席将尽快回复。",
+        "private": False,
+        "sender": {"type": "user"},
+        "conversation": {"id": 555},
+    }
+    raw = json.dumps(body).encode()
+    r = client.post("/webhooks/chatwoot", content=raw,
+                    headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(info["conversation_id"])
+    assert rows == []

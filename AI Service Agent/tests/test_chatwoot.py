@@ -75,13 +75,14 @@ async def test_ensure_conversation_creates_contact_then_conversation(tmp_path):
         if request.url.path.endswith("/contacts"):
             return Response(200, json={"payload": {"contact": {"id": 7}}})
         if request.url.path.endswith("/conversations"):
-            return Response(200, json={"id": 555})
+            return Response(200, json={"id": 555, "messages": [{"id": 777, "content": "首条"}]})
         return Response(404)
 
     cw, mapping, calls = _client_with(handler, tmp_path)
     cw_id = await cw.ensure_conversation("c1", "用户已转人工")
     assert cw_id == 555
     assert mapping.get("c1")["chatwoot_conversation_id"] == 555
+    assert mapping.is_runtime_message(777) is True  # 首条消息 id 记录（webhook 回显去重用）
     # 第二次 ensure 不再发 HTTP 请求
     cw_id2 = await cw.ensure_conversation("c1", "again")
     assert cw_id2 == 555
@@ -120,3 +121,14 @@ async def test_send_as_contact_posts_content_and_skips_without_mapping(tmp_path)
     mapping.put("c1", 555)
     await cw.send_as_contact("c1", "在吗")
     assert len(calls) == 1
+    assert mapping.is_runtime_message(1) is True  # 推送消息 id 记录（webhook 回显去重用）
+
+
+
+def test_mapping_runtime_message(tmp_path):
+    conn = sqlite3.connect(tmp_path / "m.db")
+    m = ChatwootMappingStore(conn)
+    assert m.is_runtime_message(88) is False
+    m.put_runtime_message(88, "c1")
+    assert m.is_runtime_message(88) is True
+    assert m.is_runtime_message(99) is False

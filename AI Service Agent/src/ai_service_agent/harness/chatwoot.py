@@ -24,12 +24,21 @@ CREATE TABLE IF NOT EXISTS chatwoot_conversation (
 """
 
 
+RUNTIME_MESSAGE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chatwoot_runtime_message (
+    chatwoot_message_id INTEGER PRIMARY KEY,
+    conversation_id TEXT NOT NULL
+);
+"""
+
+
 class ChatwootMappingStore:
     """conversation_id（Runtime 侧）<-> chatwoot_conversation_id（Chatwoot 侧）映射。"""
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.conn.execute(MAPPING_SCHEMA)
+        self.conn.execute(RUNTIME_MESSAGE_SCHEMA)
         self.conn.commit()
 
     def put(self, conversation_id: str, chatwoot_conversation_id: int, contact_id: int | None = None) -> None:
@@ -69,6 +78,21 @@ class ChatwootMappingStore:
             "contact_id": row[2],
             "created_at": row[3],
         }
+
+    def put_runtime_message(self, chatwoot_message_id: int, conversation_id: str) -> None:
+        """登记 Runtime 自己创建的 Chatwoot 消息 id（webhook 回显去重，防重复落库）。"""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO chatwoot_runtime_message (chatwoot_message_id, conversation_id) VALUES (?, ?)",
+            (chatwoot_message_id, conversation_id),
+        )
+        self.conn.commit()
+
+    def is_runtime_message(self, chatwoot_message_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM chatwoot_runtime_message WHERE chatwoot_message_id = ?",
+            (chatwoot_message_id,),
+        ).fetchone()
+        return row is not None
 
 
 def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str, timestamp: str | None) -> bool:
@@ -118,7 +142,7 @@ class ChatwootClient:
         r.raise_for_status()
         return r.json()["payload"]["contact"]["id"]  # v4.x: contact 实体在 payload.contact
 
-    async def create_conversation(self, contact_name: str, first_message: str) -> int:
+    async def create_conversation(self, contact_name: str, first_message: str) -> tuple[int, int | None]:
         contact_id = await self._create_contact(contact_name)
         r = await self.client.post(
             f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations",
@@ -130,13 +154,18 @@ class ChatwootClient:
             },
         )
         r.raise_for_status()
-        return r.json()["id"]
+        data = r.json()
+        first_message_id = (data.get("messages") or [{}])[0].get("id")
+        return data["id"], first_message_id
 
     async def ensure_conversation(self, conversation_id: str, summary: str) -> int | None:
         rec = self.mapping.get(conversation_id)
         if rec is not None:
             return rec["chatwoot_conversation_id"]
-        cw_id = await self.create_conversation(f"user-{conversation_id[:8]}", summary)
+        cw_id, first_message_id = await self.create_conversation(f"user-{conversation_id[:8]}", summary)
+        if first_message_id is not None:
+            # 先登记回显去重，再写映射：任何 webhook 到达时序都不会重复落库
+            self.mapping.put_runtime_message(first_message_id, conversation_id)
         self.mapping.put(conversation_id, cw_id)
         return cw_id
 
@@ -150,3 +179,6 @@ class ChatwootClient:
             json={"content": content, "sender_type": "Contact", "message_type": "incoming"},  # v4.x: content 在顶层
         )
         r.raise_for_status()
+        msg_id = r.json().get("id")
+        if msg_id is not None:
+            self.mapping.put_runtime_message(msg_id, conversation_id)
