@@ -28,29 +28,55 @@ def _describe_args_schema(meta) -> str:
         parts.append(f"{name}({'必填' if info.is_required() else '可选'})")
     return "，".join(parts)
 
+_EXAMPLE_TEXTS = {
+    # 真实业务话术 + 严格对应 schema 的参数（示例生成用；args 不得含 schema 之外字段）
+    "update_address": ("收货地址改成北京市朝阳区望京SOHO", {"address": "北京市朝阳区望京SOHO"}),
+    "update_phone": ("帮我换个手机号，新号 13800138000", {"phone": "13800138000"}),
+    "update_order_note": ("给订单 10086 加个备注：放驿站就行", {"note": "放驿站就行"}),
+    "create_invoice": ("订单 10086 开票，抬头星辰科技有限公司，税号 91110108MA01AB12CD",
+                       {"order_id": "10086", "amount": 199.0, "company": "星辰科技有限公司", "tax_no": "91110108MA01AB12CD"}),
+    "create_service_ticket": ("订单 10086 申请售后，屏幕有裂痕", {"order_id": "10086", "reason": "屏幕有裂痕"}),
+    "cancel_order": ("订单 10086 不要了，帮我取消", {"order_id": "10086", "reason": "不想要了"}),
+    "refund_apply": ("订单 10086 申请退款，金额 199 元", {"order_id": "10086", "amount": 199.0, "reason": "质量问题"}),
+}
+
+_EXAMPLE_MISSING_USER_TEXTS = {
+    "update_address": "我想改个收货地址",
+    "update_phone": "我要换绑手机号",
+    "update_order_note": "给订单加个备注",
+    "create_invoice": "给我开一张发票",
+    "create_service_ticket": "我要申请售后",
+    "cancel_order": "我要取消订单",
+    "refund_apply": "我要申请退款",
+}
+
+
 def _build_examples(tier_tools: list, registry: ToolRegistry) -> str:
-    """按档位生成 select 示例：每工具一个真实示例（必填字段占位）+ 一个缺参示例。"""
+    """按档位生成 select 示例：每工具一个真实业务示例（话术+参数对齐 schema）+ 一个缺参示例。"""
     parts = []
     for t in tier_tools:
-        meta = registry.meta_for(t.name)
-        if meta is None or meta.schema is None:
-            continue
-        required = [
-            n for n in meta.schema.model_fields
-            if n != "request_id" and meta.schema.model_fields[n].is_required()
-        ]
-        if not required:
-            continue
-        args = {n: f"{n}示例" for n in required}
+        example = _EXAMPLE_TEXTS.get(t.name)
+        if example is None:
+            meta = registry.meta_for(t.name)
+            if meta is None or meta.schema is None:
+                continue
+            required = [
+                n for n in meta.schema.model_fields
+                if n != "request_id" and meta.schema.model_fields[n].is_required()
+            ]
+            if not required:
+                continue
+            example = (t.description, {n: f"{n}示例" for n in required})
+        user_text, args = example
         parts.append(
-            f"用户：{t.description}，请执行\n"
+            f"用户：{user_text}\n"
             f"输出：{{\"tool\": \"{t.name}\", \"args\": {json.dumps(args, ensure_ascii=False)}}}"
         )
     if tier_tools:
         first = tier_tools[0]
-        first_meta = registry.meta_for(first.name)
+        missing_text = _EXAMPLE_MISSING_USER_TEXTS.get(first.name, f"我要使用{first.name}")
         parts.append(
-            f"用户：{first_meta.description}，但参数不完整\n"
+            f"用户：{missing_text}（参数不完整）\n"
             f"输出：{{\"tool\": \"{first.name}\", \"args\": {{}}}}"
         )
     return "\n\n".join(parts)
