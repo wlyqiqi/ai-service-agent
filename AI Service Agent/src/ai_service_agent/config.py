@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     simulate_approval: bool = False
     # P4（D1）：Clarify 最大澄清轮次，超限转 fallback
     clarify_max_turns: int = 2
+    # Chatwoot 坐席端（API inbox；仅人工车道启用；未配置则 chatwoot_enabled=False）
+    chatwoot_enabled: bool = False
+    chatwoot_base_url: str | None = Field(default=None, validation_alias="CHATWOOT_BASE_URL")
+    chatwoot_account_id: int | None = Field(default=None, validation_alias="CHATWOOT_ACCOUNT_ID")
+    chatwoot_inbox_id: int | None = Field(default=None, validation_alias="CHATWOOT_INBOX_ID")
+    chatwoot_api_token: str | None = Field(default=None, validation_alias="CHATWOOT_API_TOKEN")
+    chatwoot_webhook_secret: str | None = Field(default=None, validation_alias="CHATWOOT_WEBHOOK_SECRET")
 
 
 @lru_cache
