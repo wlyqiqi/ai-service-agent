@@ -84,3 +84,115 @@ def test_initial_store_shape(tmp_path):
     assert out["messages"] == []
     assert out["conn"]["status"] == "idle"
     assert out["pendingAction"] is None
+
+
+def test_apply_token_appends_streaming_text(tmp_path):
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'token',data:{text:'您'}}), {type:'token',data:{text:'好'}})",
+        tmp_path,
+    )
+    assert out["messages"][-1]["kind"] == "text"
+    assert out["messages"][-1]["content"] == "您好"
+    assert out["conn"]["status"] == "streaming"
+
+
+def test_apply_done_ends_turn(tmp_path):
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'token',data:{text:'x'}}), {type:'done',data:{final:true}})",
+        tmp_path,
+    )
+    assert out["conn"]["status"] == "idle"
+
+
+def test_apply_tool_call_then_result(tmp_path):
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'tool_call',data:{name:'order_lookup',args:{order_id:'A1001'}}}), "
+        "{type:'tool_result',data:{name:'order_lookup',ok:true,summary:'已发货'}}), "
+        "{type:'done',data:{}})",
+        tmp_path,
+    )
+    tool = [m for m in out["messages"] if m["kind"] == "tool"][0]
+    assert tool["content"]["name"] == "order_lookup"
+    assert tool["meta"] == {"phase": "result", "ok": True, "summary": "已发货"}
+
+
+def test_apply_clarify_and_safety(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'clarification_required',data:{missing:['order_id']}});"
+        "var c=UserPage.applyEvent(b,{type:'safety_rejected',data:{rule:'refund_blacklist',reason:'超期'}});"
+        "({kinds:c.messages.map(function(m){return m.kind;})})",
+        tmp_path,
+    )
+    assert out["kinds"] == ["clarify", "notice"]
+
+
+def test_apply_confirm_and_update(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'confirmation_required',data:{summary:'修改收货地址'}});"
+        "var c=UserPage.applyEvent(b,{type:'confirmation_updated',data:{action:'confirmed'}});"
+        "({pa:c.pendingAction,meta:c.messages[0].meta})",
+        tmp_path,
+    )
+    assert out["pa"]["kind"] == "confirm" and out["pa"]["status"] == "confirmed"
+    assert out["meta"]["status"] == "confirmed"
+
+
+def test_apply_approval_and_update(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'approval_required',data:{approval_id:'ap-1',summary:'取消订单',expires_at:'2026-09-17T23:59:59Z'}});"
+        "var c=UserPage.applyEvent(b,{type:'approval_updated',data:{approval_id:'ap-1',status:'approved'}});"
+        "({pa:c.pendingAction,meta:c.messages[0].meta})",
+        tmp_path,
+    )
+    assert out["pa"] == {
+        "kind": "approval", "id": "ap-1", "status": "approved",
+        "summary": "取消订单", "expires_at": "2026-09-17T23:59:59Z",
+    }
+    assert out["meta"]["status"] == "approved"
+
+
+def test_apply_handoff_cycle(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'handoff_created',data:{reason:'情绪升级'}});"
+        "var c=UserPage.applyEvent(b,{type:'handoff_resolved',data:{}});"
+        "({mode:c.conversation.mode,status:c.conn.status,states:c.messages.map(function(m){return m.meta.state;})})",
+        tmp_path,
+    )
+    assert out == {"mode": "ai", "status": "idle", "states": ["created", "resolved"]}
+
+
+def test_apply_error_sets_lasterror(tmp_path):
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.createInitialStore(),"
+        "{type:'error',data:{code:'E_TIMEOUT',message:'超时'}})",
+        tmp_path,
+    )
+    assert out["conn"]["lastError"] == {"code": "E_TIMEOUT", "message": "超时"}
+    assert out["messages"][-1]["kind"] == "error"
+
+
+def test_apply_event_immutable(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'handoff_created',data:{}});"
+        "({before:a.conversation.mode,after:b.conversation.mode,msgs:b.messages.length})",
+        tmp_path,
+    )
+    assert out == {"before": "ai", "after": "human", "msgs": 1}
+
+
+def test_event_types_cover_spec(tmp_path):
+    out = _run_js("UserPage.EVENT_TYPES", tmp_path)
+    assert sorted(out) == sorted([
+        "token", "tool_call", "tool_result", "clarification_required",
+        "confirmation_required", "confirmation_updated", "approval_required",
+        "approval_updated", "safety_rejected", "handoff_created",
+        "handoff_resolved", "error", "done",
+    ])

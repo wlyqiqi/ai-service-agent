@@ -122,14 +122,116 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     return hash === '#/login' ? 'login' : 'chat';
   }
 
-  /* __APPLY_EVENT__ */
+  var EVENT_TYPES = [
+    'token', 'tool_call', 'tool_result', 'clarification_required',
+    'confirmation_required', 'confirmation_updated', 'approval_required',
+    'approval_updated', 'safety_rejected', 'handoff_created',
+    'handoff_resolved', 'error', 'done',
+  ];
+
+  function msgId() {
+    return 'm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function applyEvent(store, event) {
+    var type = event.type;
+    var data = event.data || {};
+    var s = JSON.parse(JSON.stringify(store));
+    s.conn.lastError = null;
+
+    switch (type) {
+      case 'token':
+        s.conn.status = 'streaming';
+        var last = s.messages[s.messages.length - 1];
+        if (last && last.role === 'assistant' && last.kind === 'text') {
+          last.content += data.text || '';
+        } else {
+          s.messages.push({ id: msgId(), role: 'assistant', kind: 'text', content: data.text || '', meta: {} });
+        }
+        break;
+      case 'tool_call':
+        s.conn.status = 'streaming';
+        s.messages.push({ id: msgId(), role: 'assistant', kind: 'tool',
+          content: { name: data.name, args: data.args || {} }, meta: { phase: 'call' } });
+        break;
+      case 'tool_result':
+        for (var i = s.messages.length - 1; i >= 0; i--) {
+          if (s.messages[i].kind === 'tool' && s.messages[i].meta.phase === 'call') {
+            s.messages[i].meta = { phase: 'result', ok: !!data.ok, summary: data.summary || '' };
+            break;
+          }
+        }
+        break;
+      case 'clarification_required':
+        s.messages.push({ id: msgId(), role: 'assistant', kind: 'clarify',
+          content: { missing: data.missing || [], reason: data.reason || null }, meta: {} });
+        break;
+      case 'confirmation_required':
+        s.pendingAction = { kind: 'confirm', status: 'pending', summary: data.summary || '' };
+        s.messages.push({ id: msgId(), role: 'assistant', kind: 'confirm',
+          content: { summary: data.summary || '' }, meta: { status: 'pending' } });
+        break;
+      case 'confirmation_updated':
+        var confirmStatus = data.action === 'confirmed' ? 'confirmed' : 'canceled';
+        if (s.pendingAction && s.pendingAction.kind === 'confirm') s.pendingAction.status = confirmStatus;
+        for (var j = s.messages.length - 1; j >= 0; j--) {
+          if (s.messages[j].kind === 'confirm') { s.messages[j].meta.status = confirmStatus; break; }
+        }
+        break;
+      case 'approval_required':
+        s.pendingAction = { kind: 'approval', id: data.approval_id, status: 'pending',
+          summary: data.summary || '', expires_at: data.expires_at || null };
+        s.messages.push({ id: msgId(), role: 'assistant', kind: 'approval',
+          content: { approval_id: data.approval_id, summary: data.summary || '', expires_at: data.expires_at || null },
+          meta: { status: 'pending' } });
+        break;
+      case 'approval_updated':
+        var approvalStatus = data.status || 'pending';
+        if (s.pendingAction && s.pendingAction.kind === 'approval' && s.pendingAction.id === data.approval_id) {
+          s.pendingAction.status = approvalStatus;
+        }
+        for (var k = s.messages.length - 1; k >= 0; k--) {
+          if (s.messages[k].kind === 'approval') { s.messages[k].meta.status = approvalStatus; break; }
+        }
+        break;
+      case 'safety_rejected':
+        s.messages.push({ id: msgId(), role: 'assistant', kind: 'notice',
+          content: { rule: data.rule || '', reason: data.reason || '' }, meta: {} });
+        break;
+      case 'handoff_created':
+        s.conversation.mode = 'human';
+        s.conn.status = 'polling';
+        s.messages.push({ id: msgId(), role: 'system', kind: 'handoff',
+          content: { reason: data.reason || '', summary: data.summary || '' }, meta: { state: 'created' } });
+        break;
+      case 'handoff_resolved':
+        s.conversation.mode = 'ai';
+        s.conn.status = 'idle';
+        s.messages.push({ id: msgId(), role: 'system', kind: 'handoff', content: {}, meta: { state: 'resolved' } });
+        break;
+      case 'error':
+        s.conn.lastError = { code: data.code || 'E_UNKNOWN', message: data.message || '未知错误' };
+        s.messages.push({ id: msgId(), role: 'system', kind: 'error',
+          content: { code: data.code || 'E_UNKNOWN', message: data.message || '未知错误' }, meta: {} });
+        break;
+      case 'done':
+        s.conn.status = s.conversation.mode === 'human' ? 'polling' : 'idle';
+        break;
+    }
+    return s;
+  }
   /* __BUILD_VIEW__ */
   /* __API_LAYER__ */
   /* __POLL_LAYER__ */
   /* __WIRING__ */
 
   if (typeof window !== 'undefined') {
-    window.UserPage = { createInitialStore: createInitialStore, resolveView: resolveView };
+    window.UserPage = {
+      createInitialStore: createInitialStore,
+      resolveView: resolveView,
+      applyEvent: applyEvent,
+      EVENT_TYPES: EVENT_TYPES,
+    };
   }
 
   /* ============ DOM 装配层（仅浏览器） ============ */
