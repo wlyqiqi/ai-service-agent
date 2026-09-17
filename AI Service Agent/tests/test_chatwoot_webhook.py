@@ -1,0 +1,94 @@
+import hashlib
+import hmac
+import json
+import sqlite3
+
+from fastapi.testclient import TestClient
+
+from ai_service_agent.harness.chatwoot import ChatwootMappingStore
+from ai_service_agent.harness.messages import MessageStore
+from ai_service_agent.harness.server import create_app
+from ai_service_agent.harness.session import ConversationStatusStore
+
+
+def _sig(payload: bytes, secret: str = "sec") -> str:
+    return "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def _human_session(tmp_path) -> str:
+    conn = sqlite3.connect(tmp_path / "s.db")
+    status = ConversationStatusStore(conn)
+    info = status.create_session("u1")
+    status.set_mode(info["conversation_id"], "human")
+    ChatwootMappingStore(conn).put(info["conversation_id"], 555)
+    conn.close()
+    return info["conversation_id"]
+
+
+def test_webhook_bad_signature_401(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    r = client.post("/webhooks/chatwoot", content=b'{"event":"message_created"}',
+                    headers={"X-Chatwoot-Signature": "sha256=deadbeef"})
+    assert r.status_code == 401
+
+
+def test_webhook_agent_reply_persists(tmp_path):
+    conv_id = _human_session(tmp_path)
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    body = {
+        "event": "message_created",
+        "message_type": "outgoing",
+        "content": "您好，订单问题请提供订单号",
+        "private": False,
+        "sender": {"type": "Agent"},
+        "conversation": {"id": 555},
+    }
+    raw = json.dumps(body).encode()
+    r = client.post("/webhooks/chatwoot", content=raw,
+                    headers={"X-Chatwoot-Signature": _sig(raw)})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(conv_id)
+    assert rows[-1]["role"] == "assistant"
+    assert rows[-1]["content"] == "您好，订单问题请提供订单号"
+
+
+def test_webhook_ignores_non_agent_and_private(tmp_path):
+    conv_id = _human_session(tmp_path)
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    for body in [
+        {"event": "message_created", "message_type": "incoming", "content": "hi",
+         "private": False, "sender": {"type": "Contact"}, "conversation": {"id": 555}},
+        {"event": "message_created", "message_type": "outgoing", "content": "内部备注",
+         "private": True, "sender": {"type": "Agent"}, "conversation": {"id": 555}},
+        {"event": "conversation.created", "message_type": "outgoing", "content": "x",
+         "private": False, "sender": {"type": "Agent"}, "conversation": {"id": 555}},
+    ]:
+        raw = json.dumps(body).encode()
+        r = client.post("/webhooks/chatwoot", content=raw, headers={"X-Chatwoot-Signature": _sig(raw)})
+        assert r.status_code == 200
+    rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(conv_id)
+    assert rows == []
+
+
+def test_webhook_ignores_unknown_conversation_and_ai_mode(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    body = {"event": "message_created", "message_type": "outgoing", "content": "hi",
+            "private": False, "sender": {"type": "Agent"}, "conversation": {"id": 99999}}
+    raw = json.dumps(body).encode()
+    r = client.post("/webhooks/chatwoot", content=raw, headers={"X-Chatwoot-Signature": _sig(raw)})
+    assert r.status_code == 200
+
+    conn = sqlite3.connect(tmp_path / "s.db")
+    status = ConversationStatusStore(conn)
+    info = status.create_session("u1")
+    ChatwootMappingStore(conn).put(info["conversation_id"], 777)
+    conn.close()
+    client2 = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    body2 = {"event": "message_created", "message_type": "outgoing", "content": "ai 车道不应收到",
+             "private": False, "sender": {"type": "Agent"}, "conversation": {"id": 777}}
+    raw2 = json.dumps(body2).encode()
+    r2 = client2.post("/webhooks/chatwoot", content=raw2, headers={"X-Chatwoot-Signature": _sig(raw2)})
+    assert r2.status_code == 200
+    rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(info["conversation_id"])
+    assert rows == []

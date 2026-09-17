@@ -3,7 +3,7 @@ import json
 import logging
 import sqlite3
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -17,6 +17,11 @@ from ai_service_agent.harness.approvals import (
     ApprovalExpired,
     ApprovalNotFound,
     ApprovalService,
+)
+from ai_service_agent.harness.chatwoot import (
+    ChatwootClient,
+    ChatwootMappingStore,
+    verify_chatwoot_signature,
 )
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import HANDOFF_NOTICE, HandoffService
@@ -84,7 +89,13 @@ async def _approval_pending_events(it: dict):
     yield {"type": "done", "data": {"final": None, "message_id": None}}
 
 
-def create_app(db_path: str, model=None, simulate_approval: bool | None = None):
+def create_app(
+    db_path: str,
+    model=None,
+    simulate_approval: bool | None = None,
+    chatwoot: object | None = None,
+    chatwoot_webhook_secret: str | None = None,
+):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
     入口层例外：conversation_mode 轻量判断（handoff-spec.md §2）与 Message Store
@@ -95,6 +106,19 @@ def create_app(db_path: str, model=None, simulate_approval: bool | None = None):
     status = ConversationStatusStore(conn)
     handoff = HandoffService(conn, status)
     messages_store = MessageStore(conn)
+    mapping = ChatwootMappingStore(conn)
+    settings_chatwoot = get_settings()
+    if chatwoot is None and settings_chatwoot.chatwoot_enabled and settings_chatwoot.chatwoot_base_url \
+            and settings_chatwoot.chatwoot_account_id and settings_chatwoot.chatwoot_inbox_id \
+            and settings_chatwoot.chatwoot_api_token:
+        chatwoot = ChatwootClient(
+            base_url=settings_chatwoot.chatwoot_base_url,
+            account_id=settings_chatwoot.chatwoot_account_id,
+            inbox_id=settings_chatwoot.chatwoot_inbox_id,
+            api_token=settings_chatwoot.chatwoot_api_token,
+            mapping=mapping,
+        )
+    webhook_secret = chatwoot_webhook_secret or settings_chatwoot.chatwoot_webhook_secret
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
@@ -268,6 +292,37 @@ def create_app(db_path: str, model=None, simulate_approval: bool | None = None):
     @app.get("/approvals")
     def list_approvals(status: str | None = None):
         return {"items": approvals.list_pending() if status == "pending" else approvals.all()}
+
+    @app.post("/webhooks/chatwoot")
+    async def chatwoot_webhook(request: Request):
+        payload = await request.body()
+        signature = request.headers.get("X-Chatwoot-Signature")
+        if not webhook_secret or not verify_chatwoot_signature(payload, signature, webhook_secret):
+            raise HTTPException(status_code=401, detail="invalid signature")
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            return {"ok": True}
+        if data.get("event") != "message_created":
+            return {"ok": True}
+        if data.get("message_type") != "outgoing" or data.get("private"):
+            return {"ok": True}
+        sender = data.get("sender") or {}
+        if sender.get("type") != "Agent":
+            return {"ok": True}
+        cw_id = (data.get("conversation") or {}).get("id")
+        content = data.get("content")
+        if not cw_id or not content:
+            return {"ok": True}
+        rec = mapping.find(int(cw_id))
+        if rec is None:
+            return {"ok": True}
+        conv_id = rec["conversation_id"]
+        if status.get_mode(conv_id) != "human":
+            # 坐席回复只接受人工车道（AI 车道由图负责）
+            return {"ok": True}
+        messages_store.append(conv_id, "assistant", content)
+        return {"ok": True}
 
     return app
 
