@@ -797,11 +797,11 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     if (!btn) return;
     var action = btn.getAttribute('data-action');
     if (action === 'clarify') {
-      // 澄清快捷补全：把字段名带入输入框并发送占位文本（前端不编造值，用户填写后回车）
+      // 澄清快捷补全：点击把字段名带入输入框并聚焦，用户补值后回车发送
       var field = btn.getAttribute('data-field') || '';
       var input = document.getElementById('msg-input');
       input.value = field + ': ';
-      doSend();
+      input.focus();
       return;
     }
     var verdict = action === 'confirm' ? 'confirmed' : 'canceled';
