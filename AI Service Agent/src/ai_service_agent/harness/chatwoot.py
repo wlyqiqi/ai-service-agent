@@ -17,7 +17,7 @@ logger = logging.getLogger("ai_service_agent")
 MAPPING_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chatwoot_conversation (
     conversation_id TEXT PRIMARY KEY,
-    chatwoot_conversation_id INTEGER NOT NULL,
+    chatwoot_conversation_id INTEGER NOT NULL UNIQUE,
     contact_id INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
 );
