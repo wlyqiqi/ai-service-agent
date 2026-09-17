@@ -462,3 +462,13 @@ def test_mark_reconnecting(tmp_path):
     )
     assert out["status"] == "reconnecting"
     assert out["err"]["code"] == "E_RECONNECT"
+
+
+def test_can_retry_false_after_logout(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=JSON.parse(JSON.stringify(a));b.auth={token:'t',user:{name:'u'}};"
+        "({none:UserPage.canRetry(a),authed:UserPage.canRetry(b)})",
+        tmp_path,
+    )
+    assert out == {"none": False, "authed": True}

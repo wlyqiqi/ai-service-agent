@@ -428,6 +428,10 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     return ms > 15000 ? 15000 : ms;
   }
 
+  function canRetry(store) {
+    return !!store.auth;
+  }
+
   function markReconnecting(store, message) {
     var s = JSON.parse(JSON.stringify(store));
     s.conn.status = 'reconnecting';
@@ -470,6 +474,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       nextPollDelay: nextPollDelay,
       markReconnecting: markReconnecting,
       applyPollResult: applyPollResult,
+      canRetry: canRetry,
     };
   }
 
@@ -702,6 +707,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
+      if (!canRetry(store)) return; // 已退出登录：停止重连
       api.sendMessage(store.conversation.conversation_id, text, function (event) {
         store = applyEvent(store, event);
         applyView();
