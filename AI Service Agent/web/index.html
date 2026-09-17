@@ -299,17 +299,17 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   /* __WIRING__ */
 
   if (typeof window !== 'undefined') {
-   window.UserPage = {
-     createInitialStore: createInitialStore,
-     resolveView: resolveView,
-     applyEvent: applyEvent,
-     EVENT_TYPES: EVENT_TYPES,
+    window.UserPage = {
+      createInitialStore: createInitialStore,
+      resolveView: resolveView,
+      applyEvent: applyEvent,
+      EVENT_TYPES: EVENT_TYPES,
       buildView: buildView,
-   };
- }
+    };
+  }
 
- /* ============ DOM 装配层（仅浏览器） ============ */
- if (typeof document === 'undefined') return;
+  /* ============ DOM 装配层（仅浏览器） ============ */
+  if (typeof document === 'undefined') return;
 
   function mountNode(node) {
     if (typeof node === 'string') return document.createTextNode(node);
@@ -339,7 +339,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     list.scrollTop = list.scrollHeight;
   }
 
- var AUTH_KEY = 'user_page_auth';
+  var AUTH_KEY = 'user_page_auth';
 
   function loadAuth() {
     try {
@@ -388,7 +388,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     showView(store.view);
   });
 
- /* __WIRING_RUNTIME__ */
+  /* __WIRING_RUNTIME__ */
   applyView();
 })();
 </script>
