@@ -138,3 +138,27 @@
   4. `thread_id` 全程一致；无异常/超时/竞态/状态不一致。
 - 注记：本文档 §2/§3 的 `account_update` 为 2026-09-15 历史记录（工具集重构前）；当前工具集权威清单
   见 `docs/specs/tool-spec.md` §4。
+
+
+## 9. 新工具矩阵真机探针（2026-09-17 实测：判定修正后 7/7 命中）
+
+- 目的：真实 ARK 模型对 7 个写工具（`update_address` / `update_phone` / `update_order_note` /
+  `create_invoice` / `create_service_ticket` / `cancel_order` / `refund_apply`）的
+  **工具选择命中率 + 参数提取成功率**——工具集重构验收的最后一环。
+- 实现：`scripts/real_model_http_smoke.py` 新增 `scenario_tool_matrix`（`TOOL_MATRIX` 7 case，
+  每 case 一条完整参数话术走 `/chat` 链路，从 confirmation/approval interrupt 的 summary
+  解析模型所选工具与 args；`reason` 等可选字段只要求存在非空——值来自用户原话，探针不做精确比较）。
+- 实测（ARK 真实模型）：
+  - **Run 1（判定修正前）5/7**：`cancel_order` 判为 args mismatch（模型提取 `reason="不要了"`，
+    忠实原话，探针期望值 `"不想要了"` 过严）；`create_service_ticket` 漂移到 `refund_apply`
+    （"申请售后"被映射为退款申请，走 approval 审批流）。
+  - **Run 2（判定修正后）7/7 全命中**：7 个工具名全部正确；参数提取正确
+    （`create_invoice` 四必填 order_id/amount/company/tax_no 全命中；`create_service_ticket`
+    reason="屏幕有裂痕"；`cancel_order` reason="不要了"；`refund_apply` amount=199.0）；
+    全部落到 confirmation/approval 闸，无编造工具名、无缺参澄清。
+- 登记观察项（非稳定失败，与 CT-RL-0076 同类）：`申请售后` 与 `退款申请` 意图边界在真实模型下
+  存在**偶发漂移**——Run 1 中 `create_service_ticket` 被判为 `refund_apply`，触发不必要的审批流；
+  Run 2 恢复正确。后续如需收敛，可评估 select high_risk 档示例强化"售后工单 vs 退款"边界，
+  或将该歧义纳入 Router/select 澄清触发。维持平级排队，暂不实现。
+- 结论：新工具集在真实模型下工具名选择稳定（修正后 7/7）、参数来自用户原话、缺参不编造；
+  工具矩阵探针纳入冒烟脚本可重复执行（`SMOKE_MODEL=fake` 离线基线 7/7）。

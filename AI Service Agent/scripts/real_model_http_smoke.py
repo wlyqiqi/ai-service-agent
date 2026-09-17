@@ -1,4 +1,4 @@
-"""真实模型端到端 HTTP+SSE 冒烟（6 场景：FAQ/Read · Clarify0076 · MutationClarifyMultiTurn · Mutation · HighRisk · Handoff）。
+"""真实模型端到端 HTTP+SSE 冒烟（7 场景：FAQ/Read · Clarify0076 · MutationClarifyMultiTurn · Mutation · HighRisk · Handoff · ToolMatrix）。
 
 - 前置：.env 已配置 ARK_MODEL / ARK_BASE_URL / ARK_API_KEY；离线全量测试全绿。
 - 每次运行使用全新临时 SQLite DB，可重复执行。
@@ -6,8 +6,10 @@
 """
 
 import asyncio
+import ast
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -37,21 +39,33 @@ class SmokeFakeModel(ToolCallingFakeModel):
         if "路由器" in system:
             if "转人工" in user:
                 payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
-            elif "退了吧" in user or "退款" in user:
+            elif "退了吧" in user or "取消" in user or "退款" in user:
                 payload = '{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'
-            elif "地址" in user:
+            elif "手机号" in user or "地址" in user:
                 payload = '{"capability": "account", "risk_level": "mutation", "confidence": 0.9}'
+            elif "开票" in user or "售后" in user or "备注" in user:
+                payload = '{"capability": "order", "risk_level": "mutation", "confidence": 0.9}'
             else:
                 payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
         elif "选择器" in system:
             if "退了吧" in user:
                 payload = '{"tool": "refund_apply", "args": {}}'
+            elif "换手机号" in user or "新号" in user:
+                payload = '{"tool": "update_phone", "args": {"phone": "13800138000"}}'
+            elif "开票" in user:
+                payload = '{"tool": "create_invoice", "args": {"order_id": "10086", "amount": 199.0, "company": "星辰科技有限公司", "tax_no": "91110108MA01AB12CD"}}'
+            elif "售后" in user or "工单" in user:
+                payload = '{"tool": "create_service_ticket", "args": {"order_id": "10086", "reason": "屏幕有裂痕"}}'
+            elif "备注" in user:
+                payload = '{"tool": "update_order_note", "args": {"note": "放驿站就行"}}'
+            elif "取消" in user:
+                payload = '{"tool": "cancel_order", "args": {"order_id": "10086", "reason": "不想要了"}}'
             elif "退款" in user:
-                payload = '{"tool": "refund_apply", "args": {"order_id": "10086"}}'
+                payload = '{"tool": "refund_apply", "args": {"order_id": "10086", "amount": 199.0}}'
             elif "我要改个地址" in user:
                 payload = '{"tool": "update_address", "args": {}}'
             else:
-                payload = '{"tool": "update_address", "args": {"address": "北京市朝阳区"}}'
+                payload = '{"tool": "update_address", "args": {"address": "北京市朝阳区望京SOHO"}}'
         else:
             payload = "离线冒烟回复"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
@@ -414,6 +428,103 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
     }
 
 
+TOOL_MATRIX = [
+    {"tool": "update_address", "input": "收货地址改成北京市朝阳区望京SOHO",
+     "args": {"address": "北京市朝阳区望京SOHO"}},
+    {"tool": "update_phone", "input": "帮我换个手机号，新号 13800138000",
+     "args": {"phone": "13800138000"}},
+    {"tool": "update_order_note", "input": "给订单 10086 加个备注：放驿站就行",
+     "args": {"note": "放驿站就行"}},
+    {"tool": "create_invoice", "input": "订单 10086 开票，金额 199 元，抬头星辰科技有限公司，税号 91110108MA01AB12CD",
+     "args": {"order_id": "10086", "amount": 199.0, "company": "星辰科技有限公司", "tax_no": "91110108MA01AB12CD"}},
+    {"tool": "create_service_ticket", "input": "订单 10086 申请售后，屏幕有裂痕",
+     "args": {"order_id": "10086", "reason": "屏幕有裂痕"}},
+    {"tool": "cancel_order", "input": "订单 10086 不要了，帮我取消",
+     "args": {"order_id": "10086", "reason": "不想要了"}},
+    {"tool": "refund_apply", "input": "订单 10086 申请退款，金额 199 元",
+     "args": {"order_id": "10086", "amount": 199.0}},
+]
+
+
+def _summary_parts(summary: str):
+    """解析 confirmation/approval summary：'即将执行「tool」，参数：{dict}' -> (tool, args)。"""
+    m = re.search(r"「(.*?)」", summary or "")
+    tool = m.group(1) if m else None
+    args = None
+    am = re.search(r"参数：(\{.*\})", summary or "")
+    if am:
+        try:
+            args = ast.literal_eval(am.group(1))
+        except Exception:
+            args = None
+    return tool, args
+
+
+def _matrix_args_ok(args, expected: dict) -> bool:
+    """期望参数逐项匹配：amount 数值近似（±0.01）；reason 等可选字段只要求存在非空
+    （值来自用户原话，探针不做精确比较）；其余字段原值精确比较。"""
+    if not isinstance(args, dict):
+        return False
+    for k, v in expected.items():
+        if k not in args or args[k] is None:
+            return False
+        if k == "reason":
+            continue
+        if k == "amount":
+            try:
+                if abs(float(args[k]) - float(v)) > 0.01:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif str(args[k]) != str(v):
+            return False
+    return True
+
+
+def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
+    """新工具矩阵探针（2026-09-17）：真实模型对 7 个写工具的选择命中率 + 参数提取成功率。
+
+    每个 case 走完整 /chat 链路，从 confirmation/approval interrupt 的 summary 解析模型所选
+    工具与 args，统计：hit（工具+参数全对）/ tool_ok_args_mismatch / wrong_tool / clarify /
+    rejected。探针为信息性统计，pass 恒 True（命中率见 hit_rate），不阻断其它场景退出码。
+    """
+    rows = []
+    hit = 0
+    for case in TOOL_MATRIX:
+        sid, _ = new_session(client)
+        code, events = chat_sse(client, sid, case["input"])
+        types = event_types(events)
+        interrupt = next(
+            (e for e in events if e.get("type") in ("confirmation_required", "approval_required")), None
+        )
+        clarify = any(e.get("type") == "clarification_required" for e in events)
+        rejected = any(e.get("type") == "safety_rejected" for e in events)
+        status, tool_name, args = "other", None, None
+        if interrupt is not None:
+            tool_name, args = _summary_parts((interrupt.get("data") or {}).get("summary"))
+            if tool_name == case["tool"]:
+                if _matrix_args_ok(args, case["args"]):
+                    status = "hit"
+                    hit += 1
+                else:
+                    status = "tool_ok_args_mismatch"
+            else:
+                status = "wrong_tool"
+        elif clarify:
+            status = "clarify"
+        elif rejected:
+            status = "rejected"
+        done = next((e for e in reversed(events) if e.get("type") == "done"), None)
+        rows.append({
+            "case": case["tool"], "input": case["input"], "http": code, "timeline": types,
+            "status": status, "selected_tool": tool_name, "selected_args": args,
+            "done_final": (done or {}).get("data", {}).get("final"),
+        })
+    return {
+        "name": "ToolMatrix", "pass": True, "hit_rate": f"{hit}/{len(TOOL_MATRIX)}", "rows": rows,
+    }
+
+
 def scenario_handoff(client: httpx.Client, db_path: str) -> dict:
     sid, sess = new_session(client)
     code1, ev1 = chat_sse(client, sid, "我要转人工")
@@ -495,6 +606,7 @@ def main() -> int:
                 scenario_mutation(client, db_path),
                 scenario_highrisk(client, db_path),
                 scenario_handoff(client, db_path),
+                scenario_tool_matrix(client, db_path),
             ]
         report(results, db_path)
         return 0 if all(r["pass"] for r in results) else 2
