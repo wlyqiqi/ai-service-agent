@@ -129,7 +129,7 @@ def create_app(
         return {"session_id": info["conversation_id"], "mode": info["mode"]}
 
     @app.post("/chat")
-    def chat(body: ChatBody):
+    async def chat(body: ChatBody):
         conv_id = body.session_id
         thread_id = status.get_thread_id(conv_id)
         if thread_id is None:
@@ -141,9 +141,14 @@ def create_app(
             return _sse_response(unknown_stream())
 
         if status.get_mode(conv_id) == "human":
-            # 人工车道：只写 Message Store（唯一真相源），不触图（handoff-spec.md §1.1）
+            # 人工车道：写 Message Store（唯一真相源）+ 同步推送 Chatwoot（失败只记日志）
             messages_store.append(conv_id, "user", body.message)
             messages_store.append(conv_id, "assistant", "已转人工，坐席将尽快回复。")
+            if chatwoot is not None:
+                try:
+                    await chatwoot.send_as_contact(conv_id, body.message)
+                except Exception:
+                    logger.exception("chatwoot send failed: conv=%s", conv_id)
 
             def human_stream():
                 yield {"type": "done", "data": {"final": "已转人工，坐席将尽快回复。", "message_id": None}}
@@ -190,6 +195,11 @@ def create_app(
                         if ev["type"] == "handoff_created":
                             # 外层文案（D3）：落库 + 发 token，图内不生成
                             messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
+                            if chatwoot is not None:
+                                try:
+                                    await chatwoot.ensure_conversation(conv_id, HANDOFF_NOTICE)
+                                except Exception:
+                                    logger.exception("chatwoot ensure failed: conv=%s", conv_id)
                             yield {"type": "token", "data": {"text": HANDOFF_NOTICE}}
                             yield ev
                             continue
@@ -208,6 +218,12 @@ def create_app(
                         yield ev
 
         return _sse_response(ai_stream())
+
+    @app.get("/conversations/{conversation_id}/messages")
+    def get_messages(conversation_id: str):
+        if status.get_thread_id(conversation_id) is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        return {"items": messages_store.list(conversation_id)}
 
     @app.post("/handoffs/{handoff_id}/resolve")
     async def resolve(handoff_id: str):
