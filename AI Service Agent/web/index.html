@@ -220,24 +220,126 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     }
     return s;
   }
-  /* __BUILD_VIEW__ */
+  var QUICK_CMDS = [
+    { label: '新会话', cmd: '重新开始' },
+    { label: '查订单', cmd: '查询我的订单' },
+    { label: '改地址', cmd: '修改收货地址' },
+    { label: '申请售后', cmd: '我要申请售后' },
+    { label: '转人工', cmd: '转人工客服' },
+  ];
+
+  function statusLabel(status) {
+    if (status === 'approved') return '已通过';
+    if (status === 'rejected') return '已拒绝';
+    if (status === 'expired') return '已过期';
+    return '审批中';
+  }
+
+  function messageNode(m) {
+    switch (m.kind) {
+      case 'text':
+        return { tag: 'div', attrs: { class: 'msg ' + m.role }, children: [m.content] };
+      case 'tool':
+        return { tag: 'div', attrs: { class: 'card tool-card' }, children: [
+          { tag: 'h4', children: ['工具 · ' + m.content.name] },
+          { tag: 'p', children: [m.meta.phase === 'result'
+            ? (m.meta.ok ? '✓ ' + m.meta.summary : '✗ ' + m.meta.summary)
+            : '执行中…'] },
+        ] };
+      case 'clarify':
+        return { tag: 'div', attrs: { class: 'card' }, children: [
+          { tag: 'h4', children: ['需要补充信息'] },
+          { tag: 'p', children: ['请提供：' + m.content.missing.join('、')] },
+        ] };
+      case 'confirm':
+        return { tag: 'div', attrs: { class: 'card' }, children: [
+          { tag: 'h4', children: ['请确认操作'] },
+          { tag: 'p', children: [m.content.summary] },
+          m.meta.status === 'pending'
+            ? { tag: 'div', attrs: { class: 'row' }, children: [
+                { tag: 'button', attrs: { class: 'btn primary', 'data-action': 'confirm', 'data-msg-id': m.id }, children: ['确认'] },
+                { tag: 'button', attrs: { class: 'btn ghost', 'data-action': 'cancel', 'data-msg-id': m.id }, children: ['取消'] },
+              ] }
+            : { tag: 'p', children: [m.meta.status === 'confirmed' ? '已确认' : '已取消'] },
+        ] };
+      case 'approval':
+        return { tag: 'div', attrs: { class: 'card' }, children: [
+          { tag: 'h4', children: ['高风险操作 · 人工审批中'] },
+          { tag: 'p', children: [m.content.summary] },
+          { tag: 'p', children: ['状态：' + statusLabel(m.meta.status) +
+            (m.content.expires_at ? '（' + m.content.expires_at + ' 到期）' : '')] },
+        ] };
+      case 'notice':
+        return { tag: 'div', attrs: { class: 'notice' }, children: ['安全拦截：' + m.content.reason] };
+      case 'handoff':
+        return m.meta.state === 'created'
+          ? { tag: 'div', attrs: { class: 'handoff-banner' }, children: ['已转人工客服' + (m.content.summary ? '：' + m.content.summary : '')] }
+          : { tag: 'div', attrs: { class: 'handoff-banner' }, children: ['人工服务已结束，AI 客服继续为您服务'] };
+      case 'error':
+        return { tag: 'div', attrs: { class: 'error-bar' }, children: ['[' + m.content.code + '] ' + m.content.message] };
+    }
+  }
+
+  function buildView(store) {
+    var human = store.conversation.mode === 'human';
+    var reconnecting = store.conn.status === 'reconnecting';
+    return {
+      headerStatus: human
+        ? { text: '人工接待中', cls: 'human', connText: '当前由人工客服接待' }
+        : { text: 'AI 在线', cls: 'ai', connText: reconnecting ? '连接中断，重连中…' : '连接正常' },
+      chips: QUICK_CMDS.map(function (c) {
+        return { tag: 'button', attrs: { class: 'chip', 'data-cmd': c.cmd }, children: [c.label] };
+      }),
+      messages: store.messages.map(messageNode),
+      inputDisabled: store.conn.status === 'streaming' || store.conn.status === 'reconnecting',
+    };
+  }
   /* __API_LAYER__ */
   /* __POLL_LAYER__ */
   /* __WIRING__ */
 
   if (typeof window !== 'undefined') {
-    window.UserPage = {
-      createInitialStore: createInitialStore,
-      resolveView: resolveView,
-      applyEvent: applyEvent,
-      EVENT_TYPES: EVENT_TYPES,
-    };
+   window.UserPage = {
+     createInitialStore: createInitialStore,
+     resolveView: resolveView,
+     applyEvent: applyEvent,
+     EVENT_TYPES: EVENT_TYPES,
+      buildView: buildView,
+   };
+ }
+
+ /* ============ DOM 装配层（仅浏览器） ============ */
+ if (typeof document === 'undefined') return;
+
+  function mountNode(node) {
+    if (typeof node === 'string') return document.createTextNode(node);
+    var el = document.createElement(node.tag);
+    for (var key in node.attrs) {
+      if (key === 'class') el.className = node.attrs[key];
+      else el.setAttribute(key, node.attrs[key]);
+    }
+    node.children.forEach(function (child) { el.appendChild(mountNode(child)); });
+    return el;
   }
 
-  /* ============ DOM 装配层（仅浏览器） ============ */
-  if (typeof document === 'undefined') return;
+  function applyView() {
+    var v = UserPage.buildView(store);
+    var tag = document.getElementById('status-tag');
+    tag.textContent = v.headerStatus.text;
+    tag.className = 'status-tag ' + v.headerStatus.cls;
+    document.getElementById('conn-text').textContent = v.headerStatus.connText;
+    var chips = document.getElementById('chips');
+    chips.innerHTML = '';
+    v.chips.forEach(function (node) { chips.appendChild(mountNode(node)); });
+    var list = document.getElementById('msg-list');
+    list.innerHTML = '';
+    v.messages.forEach(function (node) { list.appendChild(mountNode(node)); });
+    document.getElementById('msg-input').disabled = v.inputDisabled;
+    document.getElementById('btn-send').disabled = v.inputDisabled;
+    list.scrollTop = list.scrollHeight;
+  }
 
-  var AUTH_KEY = 'user_page_auth';
+ var AUTH_KEY = 'user_page_auth';
 
   function loadAuth() {
     try {
@@ -286,7 +388,8 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     showView(store.view);
   });
 
-  /* __WIRING_RUNTIME__ */
+ /* __WIRING_RUNTIME__ */
+  applyView();
 })();
 </script>
 </body>

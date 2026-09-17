@@ -196,3 +196,98 @@ def test_event_types_cover_spec(tmp_path):
         "approval_updated", "safety_rejected", "handoff_created",
         "handoff_resolved", "error", "done",
     ])
+
+
+def test_build_view_header_status(tmp_path):
+    out = _run_js("UserPage.buildView(UserPage.createInitialStore()).headerStatus", tmp_path)
+    assert out == {"text": "AI 在线", "cls": "ai", "connText": "连接正常"}
+
+
+def test_build_view_header_human_after_handoff(tmp_path):
+    out = _run_js(
+        "UserPage.buildView(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'handoff_created',data:{}})).headerStatus",
+        tmp_path,
+    )
+    assert out == {"text": "人工接待中", "cls": "human", "connText": "当前由人工客服接待"}
+
+
+def test_build_view_input_disabled_on_streaming(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'token',data:{text:'x'}});"
+        "var c=UserPage.applyEvent(b,{type:'done',data:{}});"
+        "({streaming:UserPage.buildView(b).inputDisabled,idle:UserPage.buildView(c).inputDisabled})",
+        tmp_path,
+    )
+    assert out == {"streaming": True, "idle": False}
+
+
+def test_build_view_chips_and_cmds(tmp_path):
+    out = _run_js(
+        "UserPage.buildView(UserPage.createInitialStore()).chips.map(function(n){return n.attrs['data-cmd'];})",
+        tmp_path,
+    )
+    assert out == ["重新开始", "查询我的订单", "修改收货地址", "我要申请售后", "转人工客服"]
+
+
+def test_build_view_confirm_card_buttons(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'confirmation_required',data:{summary:'修改收货地址'}});"
+        "var c=UserPage.buildView(b);"
+        "({kind:c.messages[0].tag,actions:c.messages[0].children[2].children.map(function(x){return x.attrs['data-action'];})})",
+        tmp_path,
+    )
+    assert out == {"kind": "div", "actions": ["confirm", "cancel"]}
+
+
+def test_build_view_confirm_card_settled(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'confirmation_required',data:{summary:'x'}});"
+        "var c=UserPage.applyEvent(b,{type:'confirmation_updated',data:{action:'confirmed'}});"
+        "var v=UserPage.buildView(c);"
+        "var hasButton=false;"
+        "function scan(n){if(n&&n.tag==='button')hasButton=true;if(n&&n.children)(n.children||[]).forEach(scan);}"
+        "scan(v.messages[0]);"
+        "({hasButton:hasButton,last:v.messages[0].children[2].children[0]})",
+        tmp_path,
+    )
+    assert out["hasButton"] is False
+    assert out["last"] == "已确认"
+
+
+def test_build_view_approval_no_buttons(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "var b=UserPage.applyEvent(a,{type:'approval_required',data:{approval_id:'ap-1',summary:'取消订单',expires_at:'2026-09-17T23:59:59Z'}});"
+        "var v=UserPage.buildView(b);"
+        "({title:v.messages[0].children[0].children[0],status:v.messages[0].children[2].children[0]})",
+        tmp_path,
+    )
+    assert out["title"] == "高风险操作 · 人工审批中"
+    assert "审批中" in out["status"]
+    assert "2026-09-17T23:59:59Z" in out["status"]
+
+
+def test_build_view_full_event_stream(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "var events=[{type:'token',data:{text:'您好'}},"
+        "{type:'tool_call',data:{name:'order_lookup',args:{order_id:'A1'}}},"
+        "{type:'tool_result',data:{name:'order_lookup',ok:true,summary:'已发货'}},"
+        "{type:'clarification_required',data:{missing:['order_id']}},"
+        "{type:'confirmation_required',data:{summary:'修改地址'}},"
+        "{type:'safety_rejected',data:{rule:'r',reason:'超期'}},"
+        "{type:'error',data:{code:'E_1',message:'超时'}},"
+        "{type:'done',data:{}}];"
+        "for(var i=0;i<events.length;i++){s=UserPage.applyEvent(s,events[i]);}"
+        "var v=UserPage.buildView(s);"
+        "({count:v.messages.length,classes:v.messages.map(function(m){return m.attrs['class'];})})",
+        tmp_path,
+    )
+    assert out["count"] == 6
+    assert out["classes"] == [
+        "msg assistant", "card tool-card", "card", "card", "notice", "error-bar",
+    ]
