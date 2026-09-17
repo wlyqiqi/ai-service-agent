@@ -77,3 +77,69 @@ def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str
         return False
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(signature[len("sha256="):], expected)
+
+
+
+class ChatwootClient:
+    """Chatwoot API inbox 客户端（httpx）。调用方负责 try/except 降级。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        account_id: int,
+        inbox_id: int,
+        api_token: str,
+        mapping: ChatwootMappingStore,
+        client: httpx.AsyncClient | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.account_id = account_id
+        self.inbox_id = inbox_id
+        self.api_token = api_token
+        self.mapping = mapping
+        self.client = client or httpx.AsyncClient()
+
+    def _headers(self) -> dict:
+        return {"api_access_token": self.api_token}
+
+    async def _create_contact(self, name: str) -> int:
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/contacts",
+            headers=self._headers(),
+            json={"inbox_id": self.inbox_id, "name": name},
+        )
+        r.raise_for_status()
+        return r.json()["payload"]["id"]
+
+    async def create_conversation(self, contact_name: str, first_message: str) -> int:
+        contact_id = await self._create_contact(contact_name)
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations",
+            headers=self._headers(),
+            json={
+                "inbox_id": self.inbox_id,
+                "contact_id": contact_id,
+                "message": {"content": first_message},
+            },
+        )
+        r.raise_for_status()
+        return r.json()["id"]
+
+    async def ensure_conversation(self, conversation_id: str, summary: str) -> int | None:
+        rec = self.mapping.get(conversation_id)
+        if rec is not None:
+            return rec["chatwoot_conversation_id"]
+        cw_id = await self.create_conversation(f"user-{conversation_id[:8]}", summary)
+        self.mapping.put(conversation_id, cw_id)
+        return cw_id
+
+    async def send_as_contact(self, conversation_id: str, content: str) -> None:
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return  # 未建立 Chatwoot conversation：跳过，不阻塞 Runtime
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}/messages",
+            headers=self._headers(),
+            json={"message": {"content": content}, "sender_type": "Contact", "message_type": "incoming"},
+        )
+        r.raise_for_status()
