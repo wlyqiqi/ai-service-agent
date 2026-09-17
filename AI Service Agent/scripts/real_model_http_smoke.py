@@ -26,6 +26,38 @@ from ai_service_agent.testing import ToolCallingFakeModel
 from ai_service_agent.config import make_model
 from ai_service_agent.harness.server import create_app
 
+TOOL_MATRIX = [
+    # ---- 命中组（expect=hit 计入命中率统计）----
+    {"tool": "update_address", "input": "收货地址想改一下，改成上海市浦东新区张江高科",
+     "args": {"address": "上海市浦东新区张江高科"}, "expect": "hit"},
+    {"tool": "update_phone", "input": "手机号换成 18600001111 吧",
+     "args": {"phone": "18600001111"}, "expect": "hit"},
+    {"tool": "update_order_note", "input": "帮我在订单上写句话：工作日晚上六点后配送",
+     "args": {"note": "工作日晚上六点后配送"}, "expect": "hit"},
+    {"tool": "create_invoice", "input": "给订单 88888 开张发票，金额 350 元，公司是蓝海贸易有限公司，税号 91310115MA1K4XXXXX",
+     "args": {"order_id": "88888", "amount": 350.0, "company": "蓝海贸易有限公司", "tax_no": "91310115MA1K4XXXXX"}, "expect": "hit"},
+    {"tool": "create_service_ticket", "input": "我要提交售后，订单 77777，问题是想退货但包装丢了",
+     "args": {"order_id": "77777", "reason": "想退货但包装丢了"}, "expect": "hit"},
+    {"tool": "cancel_order", "input": "帮我退掉订单 66666，不想要了",
+     "args": {"order_id": "66666", "reason": "不想要了"}, "expect": "hit"},
+    {"tool": "refund_apply", "input": "订单 55555 我要退款 88 元，商品有质量问题",
+     "args": {"order_id": "55555", "amount": 88.0}, "expect": "hit"},
+    # ---- 边界/歧义组（expect 决定统计口径；工具名相似不跨选、售后/退款漂移、中文数字金额）----
+    {"tool": "update_phone", "input": "把收货手机号改成 13900002222",
+     "args": {"phone": "13900002222"}, "expect": "hit"},
+    {"tool": "create_service_ticket", "input": "订单 44444 坏了，申请售后处理",
+     "args": {"order_id": "44444", "reason": "坏了"}, "expect": "hit"},
+    {"tool": "refund_apply", "input": "订单 33333 申请退款一百五十块",
+     "args": {"order_id": "33333", "amount": 150.0}, "expect": "hit"},
+    # ---- 观察组（不计入命中率）----
+    {"tool": "create_invoice", "input": "我要开发票", "args": {}, "expect": "clarify"},
+    {"tool": None, "input": "帮我把订单改成已发货", "args": {}, "expect": "rejected"},
+]
+
+# fake 精确匹配：矩阵输入 -> 期望 case（离线基线验证探针逻辑）
+_MATRIX_BY_INPUT = {c["input"]: c for c in TOOL_MATRIX}
+
+
 class SmokeFakeModel(ToolCallingFakeModel):
     """离线冒烟用（SMOKE_MODEL=fake）：按用户输入路由 + select 固定输出。"""
 
@@ -37,7 +69,15 @@ class SmokeFakeModel(ToolCallingFakeModel):
                 user = m.content or ""
                 break
         if "路由器" in system:
-            if "转人工" in user:
+            _case = _MATRIX_BY_INPUT.get(user)
+            if _case is not None:
+                if _case["tool"] is None:
+                    payload = '{"capability": "order", "risk_level": "mutation", "confidence": 0.9}'
+                else:
+                    risk = "high_risk" if _case["tool"] in ("cancel_order", "refund_apply") else "mutation"
+                    cap = "account" if _case["tool"] in ("update_address", "update_phone") else "order"
+                    payload = json.dumps({"capability": cap, "risk_level": risk, "confidence": 0.9}, ensure_ascii=False)
+            elif "转人工" in user:
                 payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
             elif "退了吧" in user or "取消" in user or "退款" in user:
                 payload = '{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'
@@ -48,7 +88,13 @@ class SmokeFakeModel(ToolCallingFakeModel):
             else:
                 payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
         elif "选择器" in system:
-            if "退了吧" in user:
+            _case = _MATRIX_BY_INPUT.get(user)
+            if _case is not None:
+                if _case.get("expect") == "rejected":
+                    payload = '{"tool": "order_set_status", "args": {"order_id": "10086", "status": "shipped"}}'
+                else:
+                    payload = json.dumps({"tool": _case["tool"], "args": dict(_case["args"])}, ensure_ascii=False)
+            elif "退了吧" in user:
                 payload = '{"tool": "refund_apply", "args": {}}'
             elif "换手机号" in user or "新号" in user:
                 payload = '{"tool": "update_phone", "args": {"phone": "13800138000"}}'
@@ -428,24 +474,6 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
     }
 
 
-TOOL_MATRIX = [
-    {"tool": "update_address", "input": "收货地址改成北京市朝阳区望京SOHO",
-     "args": {"address": "北京市朝阳区望京SOHO"}},
-    {"tool": "update_phone", "input": "帮我换个手机号，新号 13800138000",
-     "args": {"phone": "13800138000"}},
-    {"tool": "update_order_note", "input": "给订单 10086 加个备注：放驿站就行",
-     "args": {"note": "放驿站就行"}},
-    {"tool": "create_invoice", "input": "订单 10086 开票，金额 199 元，抬头星辰科技有限公司，税号 91110108MA01AB12CD",
-     "args": {"order_id": "10086", "amount": 199.0, "company": "星辰科技有限公司", "tax_no": "91110108MA01AB12CD"}},
-    {"tool": "create_service_ticket", "input": "订单 10086 申请售后，屏幕有裂痕",
-     "args": {"order_id": "10086", "reason": "屏幕有裂痕"}},
-    {"tool": "cancel_order", "input": "订单 10086 不要了，帮我取消",
-     "args": {"order_id": "10086", "reason": "不想要了"}},
-    {"tool": "refund_apply", "input": "订单 10086 申请退款，金额 199 元",
-     "args": {"order_id": "10086", "amount": 199.0}},
-]
-
-
 def _summary_parts(summary: str):
     """解析 confirmation/approval summary：'即将执行「tool」，参数：{dict}' -> (tool, args)。"""
     m = re.search(r"「(.*?)」", summary or "")
@@ -490,6 +518,7 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
     """
     rows = []
     hit = 0
+    normal = 0
     for case in TOOL_MATRIX:
         sid, _ = new_session(client)
         code, events = chat_sse(client, sid, case["input"])
@@ -503,11 +532,7 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
         if interrupt is not None:
             tool_name, args = _summary_parts((interrupt.get("data") or {}).get("summary"))
             if tool_name == case["tool"]:
-                if _matrix_args_ok(args, case["args"]):
-                    status = "hit"
-                    hit += 1
-                else:
-                    status = "tool_ok_args_mismatch"
+                status = "hit" if _matrix_args_ok(args, case["args"]) else "tool_ok_args_mismatch"
             else:
                 status = "wrong_tool"
         elif clarify:
@@ -515,13 +540,21 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
         elif rejected:
             status = "rejected"
         done = next((e for e in reversed(events) if e.get("type") == "done"), None)
+        if case.get("expect", "hit") == "hit":
+            normal += 1
+            if status == "hit":
+                hit += 1
         rows.append({
-            "case": case["tool"], "input": case["input"], "http": code, "timeline": types,
+            "case": case["tool"], "input": case["input"], "expect": case.get("expect", "hit"),
+            "http": code, "timeline": types,
             "status": status, "selected_tool": tool_name, "selected_args": args,
             "done_final": (done or {}).get("data", {}).get("final"),
         })
     return {
-        "name": "ToolMatrix", "pass": True, "hit_rate": f"{hit}/{len(TOOL_MATRIX)}", "rows": rows,
+        "name": "ToolMatrix", "pass": True,
+        "hit_rate": f"{hit}/{normal}",
+        "observe": [r for r in rows if r["expect"] != "hit"],
+        "rows": rows,
     }
 
 
