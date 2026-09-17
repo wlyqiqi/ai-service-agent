@@ -109,3 +109,32 @@
 - 结论：0076 的"模糊高风险请求"在真实模型下已回到澄清路径，不再触发不该发生的审批流。残余风险维持登记：
   写工具必填参数来源校验未实现（模型可能编造 order_id 导致 select 放行），见
   `docs/decisions/2026-09-16-p5-select-tier-alignment.md`（D3 关联）。
+
+
+## 8. Mutation 工具集重构 + select 提示词升级 真机复验（2026-09-17 实测，6 场景全 PASS）
+
+- 触发：MutationGraph 写工具集从单一 `account_update` 重构为 5 个聚焦工具
+  （`update_address` / `update_phone` / `update_order_note` / `create_invoice` / `create_service_ticket`），
+  `order_cancel` 重命名为 `cancel_order` 并留在 high_risk 档；select 提示词升级为 5 规则版 + 真实业务示例
+  （相似工具不跨选、集合外不强行映射、缺参不编造）。离线全量 153 passed 后做本次真机复验。
+- 运行：`uv run --no-sync python scripts/real_model_http_smoke.py`（`.env` 真实 ARK 模型）。
+- 判据与实测（ARK 真实模型）：
+
+| 场景 | 输入 | SSE timeline / 实测 | 结果 |
+|---|---|---|---|
+| FAQ/Read | 你好，有什么商品推荐吗？ | token×N → tool_call → tool_result → done；read agent 实际调用 kb_search；done.final 非空 | PASS |
+| Mutation | 把收货地址改成北京市朝阳区 → 确认 | turn1 confirmation_required → done；turn2 确认 → confirmation_updated → tool_call → tool_result → done。真实模型选 `update_address`、`args.address=北京市朝阳区`；工具恰执行 1 次；`done.final="操作已完成。"` + Message Store 落库 | PASS |
+| MutationClarifyMultiTurn | 我要改个地址 → 新地址是北京市朝阳区 → 确认 | turn1 clarification_required（缺参澄清，未编造地址）、clarify_count=1；turn2 confirmation_required；turn3 确认 → 工具恰执行 1 次 → completed、clarify_count 清零 | PASS |
+| Clarify0076 | 退了吧 | clarification_required、无 approval_required；`done.final="请提供：订单号。"`（缺参不编造 order_id） | PASS |
+| HighRisk | 订单10086申请退款 → /approvals/{id}/approve | approval_required → approve → refund_apply 恰执行 1 次；审批通过文案落 Message Store | PASS |
+| Handoff | 我要转人工 → /handoffs/{id}/resolve → 你好，还在吗？ | mode human→ai；AI 恢复自然回复（"在的呢，我一直都在～"） | PASS |
+
+- 关键结论：
+  1. 新 select 提示词在真实模型下工具名选择准确——未出现旧名 `account_update`、未编造工具名，
+     `update_address` 等新工具被正确命中；
+  2. 参数来自用户原话（`address=北京市朝阳区`）；缺参不编造——两个澄清场景均正确进入 clarify，
+     D3 残余风险（模型编造必填参数）本次未复现；
+  3. 工具仍恰执行 1 次；resume 轮 `done.final` 与 Message Store 双入口落库（P4 D7 行为延续）；
+  4. `thread_id` 全程一致；无异常/超时/竞态/状态不一致。
+- 注记：本文档 §2/§3 的 `account_update` 为 2026-09-15 历史记录（工具集重构前）；当前工具集权威清单
+  见 `docs/specs/tool-spec.md` §4。
