@@ -419,3 +419,46 @@ def test_api_create_session_throws_on_401(tmp_path):
     )
     out = _run_js(expr, tmp_path)
     assert out == "SESSION_FAILED 401"
+
+
+def test_next_poll_delay_exponential_cap(tmp_path):
+    out = _run_js(
+        "[0,1,2,3,4,5,20].map(function(a){return UserPage.nextPollDelay(a);})",
+        tmp_path,
+    )
+    assert out == [1000, 2000, 4000, 8000, 15000, 15000, 15000]
+
+
+def test_apply_poll_result_appends_seat_message(tmp_path):
+    out = _run_js(
+        "var a=UserPage.applyEvent(UserPage.createInitialStore(),{type:'handoff_created',data:{}});"
+        "var b=UserPage.applyPollResult(a,{messages:[{id:'s1',role:'assistant',text:'人工客服：您好'}],mode:'human'});"
+        "({mode:b.conversation.mode,status:b.conn.status,last:b.messages[b.messages.length-1]})",
+        tmp_path,
+    )
+    assert out["mode"] == "human"
+    assert out["status"] == "polling"
+    assert out["last"]["role"] == "assistant"
+    assert out["last"]["meta"]["seat"] is True
+
+
+def test_apply_poll_result_resolves_handoff(tmp_path):
+    out = _run_js(
+        "var a=UserPage.applyEvent(UserPage.createInitialStore(),{type:'handoff_created',data:{}});"
+        "var b=UserPage.applyPollResult(a,{messages:[],mode:'ai'});"
+        "({mode:b.conversation.mode,status:b.conn.status,last:b.messages[b.messages.length-1]})",
+        tmp_path,
+    )
+    assert out["mode"] == "ai"
+    assert out["status"] == "idle"
+    assert out["last"]["meta"]["state"] == "resolved"
+
+
+def test_mark_reconnecting(tmp_path):
+    out = _run_js(
+        "var s=UserPage.markReconnecting(UserPage.createInitialStore(),'连接中断');"
+        "({status:s.conn.status,err:s.conn.lastError})",
+        tmp_path,
+    )
+    assert out["status"] == "reconnecting"
+    assert out["err"]["code"] == "E_RECONNECT"

@@ -422,6 +422,39 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     ];
   }
   /* __POLL_LAYER__ */
+
+  function nextPollDelay(attempt) {
+    var ms = 1000 * Math.pow(2, attempt);
+    return ms > 15000 ? 15000 : ms;
+  }
+
+  function markReconnecting(store, message) {
+    var s = JSON.parse(JSON.stringify(store));
+    s.conn.status = 'reconnecting';
+    s.conn.lastError = { code: 'E_RECONNECT', message: message || '连接中断，重连中…' };
+    return s;
+  }
+
+  function applyPollResult(store, data) {
+    var s = JSON.parse(JSON.stringify(store));
+    (data.messages || []).forEach(function (m) {
+      s.messages.push({
+        id: m.id || msgId(),
+        role: m.role === 'user' ? 'user' : 'assistant',
+        kind: 'text',
+        content: m.text || m.content || '',
+        meta: { seat: true },
+      });
+    });
+    if (data.mode === 'ai' && s.conversation.mode === 'human') {
+      s.conversation.mode = 'ai';
+      s.conn.status = 'idle';
+      s.messages.push({ id: msgId(), role: 'system', kind: 'handoff', content: {}, meta: { state: 'resolved' } });
+    } else {
+      s.conn.status = 'polling';
+    }
+    return s;
+  }
   /* __WIRING__ */
 
   if (typeof window !== 'undefined') {
@@ -434,6 +467,9 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       createApi: createApi,
       createMockApi: createMockApi,
       mockStream: mockStream,
+      nextPollDelay: nextPollDelay,
+      markReconnecting: markReconnecting,
+      applyPollResult: applyPollResult,
     };
   }
 
@@ -510,6 +546,8 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   });
 
   document.getElementById('btn-logout').addEventListener('click', function () {
+    stopPolling();
+    if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     clearAuth();
     store.auth = null;
     window.location.hash = '#/login';
@@ -566,9 +604,10 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     api.sendMessage(store.conversation.conversation_id, text, function (event) {
       store = applyEvent(store, event);
       applyView();
-    }).catch(function (e) {
-      store = applyEvent(store, { type: 'error', data: { code: 'E_SEND', message: e.message } });
+    }).catch(function () {
+      store = markReconnecting(store, '连接中断，正在重连…');
       applyView();
+      scheduleReconnect(text, 0);
     }).then(function () {
       if (store.conversation.mode === 'human' && typeof startPolling === 'function') startPolling();
     });
@@ -625,6 +664,56 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         applyView();
       });
   });
+
+  var pollTimer = null;
+  var pollAttempt = 0;
+  var reconnectTimer = null;
+
+  function startPolling() {
+    if (pollTimer !== null || store.conversation.mode !== 'human') return;
+    pollAttempt = 0;
+    schedulePoll();
+  }
+
+  function stopPolling() {
+    if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  function schedulePoll() {
+    if (store.conversation.mode !== 'human') { pollTimer = null; return; }
+    pollTimer = setTimeout(pollOnce, nextPollDelay(pollAttempt));
+  }
+
+  async function pollOnce() {
+    if (store.conversation.mode !== 'human') { pollTimer = null; return; }
+    try {
+      var data = await api.getMessages(store.conversation.conversation_id);
+      pollAttempt = 0;
+      store = applyPollResult(store, data);
+      applyView();
+      if (store.conversation.mode === 'ai') { pollTimer = null; return; }
+    } catch (e) {
+      pollAttempt = Math.min(pollAttempt + 1, 10);
+    }
+    schedulePoll();
+  }
+
+  function scheduleReconnect(text, attempt) {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      api.sendMessage(store.conversation.conversation_id, text, function (event) {
+        store = applyEvent(store, event);
+        applyView();
+      }).then(function () {
+        if (store.conversation.mode === 'human') startPolling();
+      }).catch(function () {
+        store = markReconnecting(store, '连接中断，' + nextPollDelay(attempt + 1) + 'ms 后重试');
+        applyView();
+        scheduleReconnect(text, attempt + 1);
+      });
+    }, nextPollDelay(attempt));
+  }
 
   if (store.view === 'chat') applyView();
   applyView();
