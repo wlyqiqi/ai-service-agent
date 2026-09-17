@@ -15,6 +15,7 @@
 | `safety-spec.md` | 安全预检 + handoff 触发规则 | 安全相关改动 |
 | `handoff-spec.md` | conversation_mode 状态机 + Handoff 生命周期 + 轻量判断 | 做会话入口 / handoff 的人 |
 | `mvp-first-mile.md` | MVP 第一公里实现范围与里程碑（brainstorming 定稿） | 做 MVP 实现 / 执行计划的人 |
+| `user-page-spec.md` | 用户侧 AI 客服页面（布局 / 组件 / 事件映射 / 数据流） | 做用户页面的人 |
 
 ## 任务 → 阅读组合
 
@@ -28,6 +29,7 @@
 | 接前端流式 | `event-spec.md` + `architecture.md`（可观测性章节） |
 | 会话/记忆持久化 | `architecture.md`（持久化章节）+ `state-spec.md` |
 | 会话入口 / conversation_mode 判断 | `handoff-spec.md` + `architecture.md` + `event-spec.md` |
+| 做用户页面（前端） | `user-page-spec.md` + `event-spec.md` |
 
 - 决策记录见 `docs/decisions/`（架构决策留痕）。
 
