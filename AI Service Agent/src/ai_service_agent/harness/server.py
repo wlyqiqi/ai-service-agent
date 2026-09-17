@@ -313,7 +313,8 @@ def create_app(
     async def chatwoot_webhook(request: Request):
         payload = await request.body()
         signature = request.headers.get("X-Chatwoot-Signature")
-        if not webhook_secret or not verify_chatwoot_signature(payload, signature, webhook_secret):
+        timestamp = request.headers.get("X-Chatwoot-Timestamp")
+        if not webhook_secret or not verify_chatwoot_signature(payload, signature, webhook_secret, timestamp):
             raise HTTPException(status_code=401, detail="invalid signature")
         try:
             data = json.loads(payload)
@@ -324,7 +325,8 @@ def create_app(
         if data.get("message_type") != "outgoing" or data.get("private"):
             return {"ok": True}
         sender = data.get("sender") or {}
-        if sender.get("type") != "Agent":
+        # v4.17.1 契约：坐席(User).webhook_data.type = "user"；Contact 无 type 字段
+        if sender.get("type") != "user":
             return {"ok": True}
         cw_id = (data.get("conversation") or {}).get("id")
         content = data.get("content")

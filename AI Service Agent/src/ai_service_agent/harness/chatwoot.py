@@ -71,11 +71,18 @@ class ChatwootMappingStore:
         }
 
 
-def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str) -> bool:
-    """Chatwoot webhook 签名：X-Chatwoot-Signature: sha256=<hex>；HMAC-SHA256(secret, raw body)。"""
+def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str, timestamp: str | None) -> bool:
+    """Chatwoot v4.x webhook 签名：X-Chatwoot-Signature: sha256=<hex>。
+
+    v4.17.1 实测契约（Webhooks::Trigger#request_headers）：HMAC-SHA256(secret, "<ts>.<raw body>")，
+    ts 来自 X-Chatwoot-Timestamp 头；非 sha256= 前缀 / 缺时间戳一律 False。
+    """
     if not signature or not signature.startswith("sha256="):
         return False
-    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    if not timestamp:
+        return False
+    msg = timestamp.encode() + b"." + payload
+    expected = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
     return hmac.compare_digest(signature[len("sha256="):], expected)
 
 
@@ -109,7 +116,7 @@ class ChatwootClient:
             json={"inbox_id": self.inbox_id, "name": name},
         )
         r.raise_for_status()
-        return r.json()["payload"]["id"]
+        return r.json()["payload"]["contact"]["id"]  # v4.x: contact 实体在 payload.contact
 
     async def create_conversation(self, contact_name: str, first_message: str) -> int:
         contact_id = await self._create_contact(contact_name)
@@ -140,6 +147,6 @@ class ChatwootClient:
         r = await self.client.post(
             f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}/messages",
             headers=self._headers(),
-            json={"message": {"content": content}, "sender_type": "Contact", "message_type": "incoming"},
+            json={"content": content, "sender_type": "Contact", "message_type": "incoming"},  # v4.x: content 在顶层
         )
         r.raise_for_status()
