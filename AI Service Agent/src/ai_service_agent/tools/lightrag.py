@@ -2,7 +2,8 @@
 
 只做「检索取上下文 + 引用来源」，不做生成：POST /query 参数
 mode=naive、only_need_context=true、include_references=true、
-include_chunk_content=true、enable_rerank=false、top_k=5（实测 ~1s）。
+include_chunk_content=true、enable_rerank=false、top_k=5
+（实测检索 0.35–0.66s/case，2026-09-18 复跑）。
 httpx 同步 Client 模块级单例（线程安全、连接复用）。离线测试用
 transport=httpx.MockTransport(...) 注入。
 """
@@ -56,19 +57,31 @@ class LightRagClient:
             )
             resp.raise_for_status()
             payload = resp.json()
+            refs = payload.get("references") or []
+            contexts = []
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    continue
+                content = ref.get("content")
+                if not content:
+                    continue
+                if isinstance(content, list):
+                    chunks = [str(c) for c in content if c not in (None, "")]
+                    if not chunks:
+                        continue
+                    contexts.append("\n".join(chunks))
+                else:
+                    contexts.append(str(content))
+            references = [
+                {"file_path": ref.get("file_path", ""), "reference_id": ref.get("reference_id", "")}
+                for ref in refs
+                if isinstance(ref, dict)
+            ]
         except Exception:
             return {"error": "kb_unavailable"}
-        refs = payload.get("references") or []
-        contexts = [str(r["content"]) for r in refs if r.get("content")]
         if not contexts:
             return {"context": "", "references": []}
-        return {
-            "context": "\n".join(contexts),
-            "references": [
-                {"file_path": r.get("file_path", ""), "reference_id": r.get("reference_id", "")}
-                for r in refs
-            ],
-        }
+        return {"context": "\n".join(contexts), "references": references}
 
 
 _client: Optional[LightRagClient] = None

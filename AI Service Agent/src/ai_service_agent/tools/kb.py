@@ -37,4 +37,6 @@ def kb_search(text: Annotated[str, "用户的完整问题原文，保留原始�
     if not result.get("context"):
         return "未查询到相关知识，请换个说法或联系人工客服。"
     sources = "、".join(r["file_path"] for r in (result.get("references") or []) if r.get("file_path"))
-    return f"检索结果：\n{result['context']}\n\n参考来源：{sources}"
+    if sources:
+        return f"检索结果：\n{result['context']}\n\n参考来源：{sources}"
+    return f"检索结果：\n{result['context']}"

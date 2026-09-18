@@ -22,14 +22,42 @@ def test_query_context_parses_references_and_context():
             "response": "",
             "references": [
                 {"reference_id": "1", "file_path": "JoyAir_A1智能空气炸锅.md",
-                 "content": "['document_id: YX-PRODUCT-A1-001 炸篮 4.5L']"},
+                 "content": ["document_id: YX-PRODUCT-A1-001 炸篮 4.5L",
+                             "document_id: YX-PRODUCT-A1-002 适用机型 A1"]},
             ],
         })
 
     out = _client_with(handler).query_context("JoyAir A1 的炸篮容量是多少？")
     assert "炸篮 4.5L" in out["context"]
+    assert "document_id: YX-PRODUCT-A1-002" in out["context"]
+    assert "\n" in out["context"]
     assert out["references"] == [
         {"file_path": "JoyAir_A1智能空气炸锅.md", "reference_id": "1"},
+    ]
+
+
+def test_query_context_malformed_references_dict_degrades():
+    def handler(request):
+        return httpx.Response(200, json={"response": "", "references": {"foo": "bar"}})
+
+    # references 为 dict（畸形形状）：确定性降级，不抛异常
+    assert _client_with(handler).query_context("x") == {"context": "", "references": []}
+
+
+def test_query_context_skips_non_dict_entries():
+    def handler(request):
+        return httpx.Response(200, json={"response": "", "references": [
+            {"reference_id": "1", "file_path": "a.md", "content": ["ok chunk"]},
+            "not-a-dict",
+            None,
+            {"reference_id": "2", "file_path": "b.md", "content": ""},
+        ]})
+
+    out = _client_with(handler).query_context("x")
+    assert out["context"] == "ok chunk"
+    assert out["references"] == [
+        {"file_path": "a.md", "reference_id": "1"},
+        {"file_path": "b.md", "reference_id": "2"},
     ]
 
 
