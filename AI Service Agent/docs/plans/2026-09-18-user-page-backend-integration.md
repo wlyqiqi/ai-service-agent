@@ -50,11 +50,11 @@
 - `POST /auth/login`（body `{account, password}`）→ `{"token", "user": {id, name}}`（占位；user-page-spec §10）
 - `GET /conversations/{id}/messages` → `{"items": [...], "mode": "ai"|"human"}`
 
-- [ ] **Step 1: 写失败测试**（`tests/test_server_auth.py`）
-- [ ] **Step 2: 运行确认失败**
-- [ ] **Step 3: 实现**（server.py：`LoginBody` + `@app.post("/auth/login")`；`get_messages` 返回体加 `mode`）
-- [ ] **Step 4: 运行确认通过**（含既有 chatwoot/messages 测试不回归）
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**（`tests/test_server_auth.py`）
+- [x] **Step 2: 运行确认失败**
+- [x] **Step 3: 实现**（server.py：`LoginBody` + `@app.post("/auth/login")`；`get_messages` 返回体加 `mode`）
+- [x] **Step 4: 运行确认通过**（含既有 chatwoot/messages 测试不回归）
+- [x] **Step 5: Commit**
 
 ```bash
 cd "D:\AI_Project\AI Service Agent"
@@ -74,11 +74,11 @@ git commit -m "feat: Transport 占位契约——POST /auth/login（user-page-sp
 - `getMessages(conversationId)` → 归一化 `{messages: data.items, mode: data.mode}`
 - mock api 形状不变（向后兼容）
 
-- [ ] **Step 1: 写失败测试**（api 层契约断言：body 形状 / items→messages 归一化 / user_id 传递）
-- [ ] **Step 2: 运行确认失败**
-- [ ] **Step 3: 实现**
-- [ ] **Step 4: 运行确认通过**（`tests/test_user_page.py` 全绿）
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**（api 层契约断言：body 形状 / items→messages 归一化 / user_id 传递）
+- [x] **Step 2: 运行确认失败**
+- [x] **Step 3: 实现**
+- [x] **Step 4: 运行确认通过**（`tests/test_user_page.py` 全绿）
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/index.html tests/test_user_page.py
@@ -99,11 +99,11 @@ git commit -m "feat: 用户页面 api 层契约对齐——createSession/sendMes
 6. `POST /handoffs/{id}/resolve` → `mode=ai` + handoff record resolved；下一条 `/chat` 正常走 AI
 - 负向：坏签名 401、非 agent、私信、未知会话、AI mode 的 webhook 一律忽略不落库；Chatwoot 抛错时人工车道仍 200 + `done`
 
-- [ ] **Step 1: 写失败测试**
-- [ ] **Step 2: 运行确认失败**
-- [ ] **Step 3: 实现（仅测试代码；如暴露后端 bug 则最小修复）**
-- [ ] **Step 4: 运行确认通过**
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**
+- [x] **Step 2: 运行确认失败**
+- [x] **Step 3: 实现（仅测试代码；如暴露后端 bug 则最小修复）**
+- [x] **Step 4: 运行确认通过**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_e2e_human_lane.py
@@ -112,10 +112,10 @@ git commit -m "test: 人工车道端到端单链路——用户→Runtime→Chat
 
 ### Task 4: 全量回归 + 文档登记
 
-- [ ] **Step 1: 全量回归**（`uv run --no-sync pytest tests/ -q`，含 test_user_page / server / chatwoot / e2e）
-- [ ] **Step 2: 更新 `docs/specs/user-page-spec.md` §10/§11**（已对齐项移除占位标注；login/messages 记录真实契约；动作接口保留占位说明）
-- [ ] **Step 3: `docs/plans/README.md` 登记本计划**
-- [ ] **Step 4: Commit**
+- [x] **Step 1: 全量回归**（`uv run --no-sync pytest tests/ -q`，含 test_user_page / server / chatwoot / e2e）
+- [x] **Step 2: 更新 `docs/specs/user-page-spec.md` §10/§11**（已对齐项移除占位标注；login/messages 记录真实契约；动作接口保留占位说明）
+- [x] **Step 3: `docs/plans/README.md` 登记本计划**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/specs/user-page-spec.md docs/plans/README.md
@@ -136,3 +136,16 @@ git commit -m "docs: 用户页面↔后端契约对齐登记（user-page-spec §
 ### 阶段 3：用户端页面真机 E2E（契约对齐后）
 - 页面去掉 `?mock=true` 对真实 Runtime 打开：登录（占位）→ 对话 → 转人工 → 页面轮询刷出坐席回复 → 人工结束 → AI 恢复；复用 Chrome headless + CDP 驱动
 - 判定：页面无 console 报错、人工车道消息/回复/状态标签全链路正确
+
+
+## 完成状态（2026-09-18）
+
+- **Task 1–4 全部完成并已提交**：`55c5bc1`（login 占位 + messages.mode）、`553ba56`（页面 api 契约对齐）、
+  `1968ce5`（离线人工车道 E2E）、`0a5e5e8`（文档登记）、`fadff66`（真机 10 步复验脚本 + Chatwoot 代理修复）、
+  `d1cae7c`（Stage3 页面真机 E2E）。
+- **阶段 2（真机坐席端链路）**：人工车道 + 页面契约真机复验 10 步全 PASS（`scripts/real_human_lane_smoke.py`，
+  real-model-smoke.md §11）；`ChatwootClient` 修复本机代理拦截（trust_env=False）。
+- **阶段 3（用户端页面真机 E2E）**：Chrome headless + CDP 7 步全 PASS（`scripts/page_e2e_smoke.mjs`，
+  real-model-smoke.md §12）；配套 `server.py` 静态同源托管 + `GET /handoffs?conversation_id=`、`main.py` host 可配。
+- 全量回归：**225 passed**；已推送远端（`d1cae7c`）。
+- 仍在占位（计划 D5）：页面 `confirm / clarify / approve` 动作接口属 AI 车道业务操作，留待后续任务。
