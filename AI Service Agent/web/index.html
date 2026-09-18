@@ -655,8 +655,13 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return await r.json();
     }
 
-    async function createSession() {
-      var r = await fetchImpl(base + '/sessions', { method: 'POST', headers: headers() });
+    async function createSession(user) {
+      // D2：后端 CreateSessionBody{user_id}（user-page-spec §10）；user 缺失兜底 anonymous
+      var uid = (user && (user.id || user.name)) || 'anonymous';
+      var r = await fetchImpl(base + '/sessions', {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ user_id: uid }),
+      });
       if (!r.ok) throw apiError('SESSION_FAILED', r);
       return await r.json();
     }
@@ -664,13 +669,15 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     async function getMessages(conversationId) {
       var r = await fetchImpl(base + '/conversations/' + encodeURIComponent(conversationId) + '/messages', { headers: headers() });
       if (!r.ok) throw apiError('MESSAGES_FAILED', r);
-      return await r.json();
+      var data = await r.json();
+      // D4：后端 {items, mode} -> 页面消费形状 {messages, mode}（loadHistory / applyPollResult）
+      return { messages: (data && data.items) || [], mode: data && data.mode };
     }
 
     async function sendMessage(conversationId, text, onEvent) {
       var r = await fetchImpl(base + '/chat', {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ conversation_id: conversationId, text: text }),
+        body: JSON.stringify({ session_id: conversationId, message: text }),
       });
       if (!r.ok || !r.body) throw apiError('SEND_FAILED', r);
       var reader = r.body.getReader();
@@ -843,7 +850,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       s.conversation.conversation_id = savedConversationId;
       return { store: s, created: false };
     }
-    var session = await api.createSession();
+    var session = await api.createSession(store.auth && store.auth.user);
     s.conversation.conversation_id = session.conversation_id || session.session_id;
     s.conversation.mode = session.mode || 'ai';
     return { store: s, created: true };

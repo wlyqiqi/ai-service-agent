@@ -652,3 +652,41 @@ def test_mock_send_message_events_spaced_by_delay(tmp_path):
     )
     assert out["n"] == 12  # mockStream 13 种事件去掉 handoff_resolved
     assert out["gap"] >= 25
+
+def test_api_create_session_sends_user_id(tmp_path):
+    out = _run_js(
+        "var sent=null;"
+        "var fake={ok:true,status:200,json:async function(){return {session_id:'s1',mode:'ai'};}};"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,body:opts.body};return fake;},baseUrl:'http://x'});"
+        "var r=await api.createSession({id:'alice',name:'Alice'});"
+        "({sid:r.session_id,url:sent.url,body:sent.body})",
+        tmp_path,
+    )
+    assert out["sid"] == "s1"
+    assert out["url"] == "http://x/sessions"
+    assert json.loads(out["body"]) == {"user_id": "alice"}
+
+
+def test_api_send_message_uses_session_id_message(tmp_path):
+    out = _run_js(
+        "var sent=null;"
+        "var stream=new ReadableStream({start:function(c){c.close();}});"
+        "var fake={ok:true,status:200,body:stream,json:async function(){return {};}};"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,body:opts.body};return fake;},baseUrl:'http://x'});"
+        "await api.sendMessage('c1','你好',function(){});"
+        "({url:sent.url,body:sent.body})",
+        tmp_path,
+    )
+    assert out["url"] == "http://x/chat"
+    assert json.loads(out["body"]) == {"session_id": "c1", "message": "你好"}
+
+
+def test_api_get_messages_normalizes_items_and_mode(tmp_path):
+    out = _run_js(
+        "var fake={ok:true,status:200,json:async function(){return {items:[{id:1,role:'user',content:'在吗'}],mode:'human'};}};"
+        "var api=UserPage.createApi({fetchImpl:async function(url){return fake;},baseUrl:'http://x'});"
+        "var d=await api.getMessages('c1');"
+        "({n:d.messages.length,mode:d.mode,content:d.messages[0].content})",
+        tmp_path,
+    )
+    assert out == {"n": 1, "mode": "human", "content": "在吗"}
