@@ -11,3 +11,10 @@ def test_read_graph_answers_and_completes():
     out = graph.invoke({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["execution_status"] == "completed"
     assert "发货" in out["messages"][-1].content
+
+
+def test_read_system_prompt_requires_source_citation():
+    from ai_service_agent.prompts import READ_SYSTEM_PROMPT
+    assert "来源" in READ_SYSTEM_PROMPT
+    assert "（来源：" in READ_SYSTEM_PROMPT
+    assert "未查询到" in READ_SYSTEM_PROMPT
