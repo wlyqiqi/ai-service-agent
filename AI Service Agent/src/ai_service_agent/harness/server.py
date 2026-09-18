@@ -50,6 +50,11 @@ class ChatBody(BaseModel):
     message: str
 
 
+class LoginBody(BaseModel):
+    account: str
+    password: str
+
+
 class RejectBody(BaseModel):
     note: str | None = None
 
@@ -122,6 +127,14 @@ def create_app(
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
+
+    @app.post("/auth/login")
+    def auth_login(body: LoginBody):
+        # 占位认证（user-page-spec.md §10）：待真实认证方案定案；返回 dev token，页面据此携带 Bearer
+        return {
+            "token": "dev-" + body.account,
+            "user": {"id": body.account, "name": body.account},
+        }
 
     @app.post("/sessions")
     def create_session(body: CreateSessionBody):
@@ -223,7 +236,7 @@ def create_app(
     def get_messages(conversation_id: str):
         if status.get_thread_id(conversation_id) is None:
             raise HTTPException(status_code=404, detail="conversation not found")
-        return {"items": messages_store.list(conversation_id)}
+        return {"items": messages_store.list(conversation_id), "mode": status.get_mode(conversation_id)}
 
     @app.post("/handoffs/{handoff_id}/resolve")
     async def resolve(handoff_id: str):
