@@ -105,7 +105,7 @@ UX 规则：
 ## 8. 实现结构
 
 - `web/index.html` 单文件内部分层：
-  - `api`（占位层）：`login / createSession / sendMessage(SSE) / getMessages(轮询) / confirm / approve`，每个函数标注待对接后端契约（TODO）。
+  - `api`（Transport 层）：`login / createSession / sendMessage(SSE) / getMessages(轮询) / confirm / approve`；login / createSession / sendMessage / getMessages 已对接真实后端（§10.1），confirm / approve 仍为占位（§10.2）。
   - `events` 层：SSE 事件 → store 更新。
   - `render` 层：store → DOM 纯函数。
   - `router`：hash 切视图 + 鉴权守卫。
@@ -117,19 +117,27 @@ UX 规则：
 - 刷新页面会话不丢（历史从 Message Store 重建）。
 - 浏览器控制台无报错。
 
-## 10. 占位接口（待后端契约对齐）
+## 10. 接口契约（对齐状态 2026-09-18）
 
-| 函数 | 接口（占位） | 说明 |
+### 10.1 已对齐（页面 api 层 ↔ 真实后端）
+
+| 函数 | 接口 | 说明 |
 |---|---|---|
-| `login` | `POST /auth/login` | 返回 token（待认证方案定案） |
-| `createSession` | `POST /sessions` | 返回 `conversation_id`，显式 `mode=ai` |
-| `sendMessage` | `POST /chat`（SSE） | 事件流 |
-| `getMessages` | `GET /conversations/{id}/messages` | 历史 / 人工车道轮询 |
-| `confirm` | `POST /chat` 动作（resume 语义） | TODO：与后端对齐确认 / 取消接口 |
-| `approve` / `reject` | `POST /approvals/{id}/...` | TODO：与后端对齐审批接口 |
+| `login` | `POST /auth/login`（占位端点） | 后端新增占位端点返回 `{token, user:{id,name}}`；认证方案定案后替换 |
+| `createSession` | `POST /sessions` `{user_id}` | 返回 `{session_id, mode}`（显式 `mode=ai`）；页面读 `session_id` |
+| `sendMessage` | `POST /chat` `{session_id, message}`（SSE） | 事件流逐条渲染 |
+| `getMessages` | `GET /conversations/{id}/messages` | 返回 `{items, mode}`；页面归一化为 `{messages, mode}` |
+
+### 10.2 仍为占位（D5：AI 车道动作，后续任务对接）
+
+| 函数 | 真实后端契约 | 说明 |
+|---|---|---|
+| `confirm` / `clarify` | 经 `/chat` resume（`resolve_resume_payload`） | 页面动作接口待对齐；不属于「用户 ↔ 坐席」链路 |
+| `approve` / `reject` | `POST /approvals/{id}/approve` 或 `/reject` | 页面 approve 端点待对齐 |
 
 ## 11. 变更纪律
 
 - 新增事件类型：同步更新 `event-spec.md` 与本文件 §5 映射表。
 - 改页面结构 / 路由 / 数据流：更新本文件。
 - 对接真实后端后：移除 §10 占位标注并更新对应契约。
+
