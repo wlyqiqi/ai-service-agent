@@ -117,7 +117,12 @@ class ResolveProactiveFakeModel(ToolCallingFakeModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 
-def test_resolve_proactively_resumes_then_next_chat_is_answered(tmp_path):
+def test_resolve_entrance_handoff_then_next_chat_is_answered(tmp_path):
+    """P0：入口层显式转人工无图内中断；resolve 切回 ai 后下一条消息走正常 Router 并完成。
+
+    显式转人工在入口层被 detector 拦截（不进图），本 turn 不产生 checkpoint 的
+    execution_status；resolve 仅标记 resolved + 切 ai，无图内 resume。
+    """
     db = str(tmp_path / "p.db")
     client = TestClient(create_app(db, model=ResolveProactiveFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
@@ -133,21 +138,27 @@ def test_resolve_proactively_resumes_then_next_chat_is_answered(tmp_path):
     r = client.post(f"/handoffs/{handoff_id}/resolve")
     assert r.json()["mode"] == "ai"
 
-    # resolve 后 checkpoint 应已无挂起中断（主动 resume 完成）
+    # 入口层转人工不产生图内 checkpoint 中断（无子图可 resume）
     async def check_no_interrupt():
         async with AsyncSqliteSaver.from_conn_string(db) as saver:
             graph = make_ai_graph(make_fake_model(), saver)
             st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-            return st.interrupts, st.values.get("execution_status")
-    interrupts, status = asyncio.run(check_no_interrupt())
-    assert not interrupts
-    assert status == "completed"
+            return st.interrupts
+    assert not asyncio.run(check_no_interrupt())
 
     # resolve 后第一条消息走正常 Router 并得到回复（echo-2，两条 user）
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "你好"}) as r:
         text2 = "".join(r.iter_text())
     assert "echo-2" in text2
     assert '"error"' not in text2
+
+    # 该轮图执行正常完成
+    async def check_completed():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(make_fake_model(), saver)
+            st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return st.values.get("execution_status")
+    assert asyncio.run(check_completed()) == "completed"
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):

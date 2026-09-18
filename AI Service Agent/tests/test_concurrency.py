@@ -23,7 +23,13 @@ class RaceKeywordModel(ToolCallingFakeModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 
-def test_resolve_and_chat_race_no_double_resume(tmp_path):
+def test_resolve_and_chat_race_no_double_processing(tmp_path):
+    """P0：入口层显式转人工（无图内中断）；resolve 与 /chat 并发命中同一 thread 不破坏状态。
+
+    原「双 resume」语义随 P0 入口层拦截失效（显式转人工不再产生图内 checkpoint 中断）；
+    本测试改为验证并发下 resolve 切 ai 与 /chat 消息处理不互相破坏：mode 收敛 ai、
+    无挂起中断、外层文案只落一次、后续消息正常完成。
+    """
     db = str(tmp_path / "race.db")
     app = create_app(db, model=RaceKeywordModel(responses=[]))
 
@@ -57,20 +63,17 @@ def test_resolve_and_chat_race_no_double_resume(tmp_path):
     assert '"done"' in chat_text          # /chat 正常结束
     assert '"error"' not in chat_text     # 无异常事件
 
-    # 最终一致性：无挂起中断、execution_status=completed、mode=ai
+    # 最终一致性：mode=ai、无挂起图内中断（入口层转人工本就不产生图内中断）
     conn = sqlite3.connect(db)
     assert ConversationStatusStore(conn).get_mode(session_id) == "ai"
     conn.close()
 
-    async def final_state():
+    async def final_no_interrupt():
         async with AsyncSqliteSaver.from_conn_string(db) as saver:
             graph = make_ai_graph(RaceKeywordModel(responses=[]), saver)
             st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-            return st.interrupts, st.values.get("execution_status")
-
-    interrupts, status = asyncio.run(final_state())
-    assert not interrupts
-    assert status == "completed"
+            return st.interrupts
+    assert not asyncio.run(final_no_interrupt())
 
     # 外层文案只落一次（不因并发双重持久化）
     conn = sqlite3.connect(db)
@@ -78,6 +81,17 @@ def test_resolve_and_chat_race_no_double_resume(tmp_path):
     conn.close()
     notices = [r for r in rows if r["role"] == "assistant" and "转接人工" in r["content"]]
     assert len(notices) == 1
+
+    # resolve 后正常消息继续走 AI 车道完成（execution_status=completed）
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "再问一下"}) as r:
+        assert '"done"' in "".join(r.iter_text())
+
+    async def final_completed():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(RaceKeywordModel(responses=[]), saver)
+            st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return st.values.get("execution_status")
+    assert asyncio.run(final_completed()) == "completed"
 
 
 def test_approval_double_resume_no_double_execution(tmp_path):
