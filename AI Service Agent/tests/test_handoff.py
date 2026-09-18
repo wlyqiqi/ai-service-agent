@@ -48,3 +48,28 @@ def test_callback_creates_handoff(tmp_path):
     assert ev["type"] == "handoff_created"
     assert status.get_mode(info["conversation_id"]) == "human"
     conn.close()
+
+
+def test_get_active_none_then_after_create(tmp_path):
+    svc, status, conn = _svc(tmp_path)
+    info = status.create_session("u1")
+    assert svc.get_active(info["conversation_id"]) is None
+    rec = svc.create_handoff(info["conversation_id"], "r", "s")
+    active = svc.get_active(info["conversation_id"])
+    assert active["handoff_id"] == rec["handoff_id"]
+    conn.close()
+
+
+def test_request_handoff_idempotent_reuses_active(tmp_path):
+    svc, status, conn = _svc(tmp_path)
+    info = status.create_session("u1")
+    ev1 = svc.request_handoff(info["conversation_id"], "r1", "s1")
+    ev2 = svc.request_handoff(info["conversation_id"], "r2", "s2")
+    assert ev1["type"] == ev2["type"] == "handoff_created"
+    assert ev1["data"]["handoff_id"] == ev2["data"]["handoff_id"]
+    n = conn.execute(
+        "SELECT COUNT(*) FROM handoff_record WHERE conversation_id=? AND status='active'",
+        (info["conversation_id"],),
+    ).fetchone()[0]
+    assert n == 1
+    conn.close()

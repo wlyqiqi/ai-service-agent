@@ -78,6 +78,34 @@ class HandoffService:
             "resolved_at": row[6],
         }
 
+    def get_active(self, conversation_id: str) -> dict | None:
+        """当前会话最新 active handoff（幂等复用；无则 None）。"""
+        row = self.conn.execute(
+            "SELECT handoff_id, conversation_id, reason, summary FROM handoff_record "
+            "WHERE conversation_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "handoff_id": row[0],
+            "conversation_id": row[1],
+            "reason": row[2],
+            "summary": row[3],
+        }
+
+    def request_handoff(self, conversation_id: str, reason: str, summary: str) -> dict:
+        """入口层显式转人工统一入口（P0 D3）：幂等复用 active -> create_handoff -> 返回 handoff_created 事件。
+
+        graph 动态路径经 make_interrupt_callback 复用 create_handoff；side effects
+        （NOTICE 落库 / Chatwoot ensure / 事件发送）由 server 的 _emit_handoff 统一完成。
+        """
+        active = self.get_active(conversation_id)
+        if active is not None:
+            return {"type": "handoff_created", "data": active}
+        rec = self.create_handoff(conversation_id, reason, summary)
+        return {"type": "handoff_created", "data": rec}
+
     def make_interrupt_callback(self, conversation_id: str) -> Callable:
         """包装 on_interrupt：handoff_request -> create_handoff + 产出 handoff_created 事件。"""
         async def on_interrupt(value: dict) -> dict | None:
