@@ -431,8 +431,20 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     };
   }
 
-  function createMockApi() {
-    var seatReplied = false;
+  var MOCK_EVENT_DELAY_MS = 120; // P2: mock 事件逐条推送间隔，模拟真实 SSE 流式节奏
+
+  function mockDelay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function createMockApi(opts) {
+    // P1: mock 是会话内状态（刷新即重置，真实历史由后端 Message Store 重建）。
+    // 坐席回复只在流内发出 handoff_created 之后才由 getMessages 返回，
+    // 避免登录/刷新时预置「人工客服回复 / 人工服务已结束」。
+    var delayMs = (opts && opts.delayMs != null) ? opts.delayMs : MOCK_EVENT_DELAY_MS;
+    var handoffSeen = false;
+    var seatDelivered = false;
+    var seat = { id: 'seat-1', role: 'assistant', text: '人工客服：您好，您的退款申请已加急处理，预计 24 小时内到账。' };
     return {
       async login(account) {
         return { token: 'mock-token', user: { name: account || '演示用户' } };
@@ -441,16 +453,21 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         return { conversation_id: 'mock-1', mode: 'ai' };
       },
       async getMessages() {
-        if (!seatReplied) {
-          seatReplied = true;
-          return { messages: [{ id: 'seat-1', role: 'assistant', text: '人工客服：您好，您的退款申请已加急处理，预计 24 小时内到账。' }], mode: 'human' };
+        if (!handoffSeen) return { messages: [], mode: 'ai' };
+        if (!seatDelivered) {
+          seatDelivered = true;
+          return { messages: [seat], mode: 'human' };
         }
-        return { messages: [], mode: 'ai' };
+        return { messages: [], mode: 'ai' }; // 模拟人工已解决
       },
       async sendMessage(conversationId, text, onEvent) {
-        // mock 演示流去掉 handoff_resolved：让转人工后的轮询真实跑起来（getMessages 第二次返回 mode=ai 模拟人工解决）
+        // mock 演示流去掉 handoff_resolved：让转人工后的轮询真实跑起来（getMessages 返回 mode=ai 模拟人工解决）
         var events = mockStream().filter(function (e) { return e.type !== 'handoff_resolved'; });
-        for (var i = 0; i < events.length; i++) onEvent(events[i]);
+        for (var i = 0; i < events.length; i++) {
+          if (events[i].type === 'handoff_created') { handoffSeen = true; seatDelivered = false; }
+          onEvent(events[i]);
+          if (i < events.length - 1) await mockDelay(delayMs);
+        }
         return { ok: true };
       },
       async confirm() { return { ok: true }; },
@@ -738,6 +755,8 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     var input = document.getElementById('msg-input');
     var text = input.value.trim();
     if (!text) return;
+    // P2: 流式/重连期间禁止重复发送（chips 点击也走 doSend）
+    if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
     input.value = '';
     pushUserMessage(text);
     api.sendMessage(store.conversation.conversation_id, text, function (event) {

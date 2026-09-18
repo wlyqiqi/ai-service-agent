@@ -608,3 +608,44 @@ def test_api_clarify_placeholder_both_layers(tmp_path):
     assert out["mockOk"] is True
     assert out["real"] is True
     assert out["mockFn"] is True
+
+def test_mock_get_messages_empty_before_handoff(tmp_path):
+    """P1: mock getMessages 在未发生转人工前必须为空 + mode=ai（登录/刷新不得预置坐席回复）。"""
+    out = _run_js(
+        "var api=UserPage.createMockApi({delayMs:0});"
+        "var before=await api.getMessages('c1');"
+        "({count:before.messages.length,mode:before.mode})",
+        tmp_path,
+    )
+    assert out == {"count": 0, "mode": "ai"}
+
+
+def test_mock_get_messages_seat_after_handoff_then_resolved(tmp_path):
+    """P1: 流内发出 handoff_created 后，第一次轮询返回坐席回复+human，第二次返回空+ai（人工已解决）。"""
+    out = _run_js(
+        "var api=UserPage.createMockApi({delayMs:0});"
+        "await api.sendMessage('c1','你好',function(){});"
+        "var first=await api.getMessages('c1');"
+        "var second=await api.getMessages('c1');"
+        "({firstCount:first.messages.length,firstText:first.messages.length?first.messages[0].text:'',"
+        "firstMode:first.mode,secondCount:second.messages.length,secondMode:second.mode})",
+        tmp_path,
+    )
+    assert out["firstCount"] == 1
+    assert "人工客服" in out["firstText"]
+    assert out["firstMode"] == "human"
+    assert out["secondCount"] == 0
+    assert out["secondMode"] == "ai"
+
+
+def test_mock_send_message_events_spaced_by_delay(tmp_path):
+    """P2: mock sendMessage 逐条推送事件并带延迟，streaming 状态在浏览器中可观察。"""
+    out = _run_js(
+        "var api=UserPage.createMockApi({delayMs:40});"
+        "var times=[];var t0=Date.now();"
+        "await api.sendMessage('c1','x',function(){times.push(Date.now()-t0);});"
+        "({n:times.length,gap:times[1]-times[0]})",
+        tmp_path,
+    )
+    assert out["n"] == 12  # mockStream 13 种事件去掉 handoff_resolved
+    assert out["gap"] >= 25
