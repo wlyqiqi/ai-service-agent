@@ -128,7 +128,7 @@ class ChatwootClient:
         self.inbox_id = inbox_id
         self.api_token = api_token
         self.mapping = mapping
-        self.client = client or httpx.AsyncClient()
+        self.client = client or httpx.AsyncClient(trust_env=False)  # Chatwoot 为本地基础设施，不走环境代理
 
     def _headers(self) -> dict:
         return {"api_access_token": self.api_token}
@@ -182,3 +182,4 @@ class ChatwootClient:
         msg_id = r.json().get("id")
         if msg_id is not None:
             self.mapping.put_runtime_message(msg_id, conversation_id)
+

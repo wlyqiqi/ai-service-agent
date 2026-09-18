@@ -225,3 +225,30 @@
      端点按 message_type/event 过滤，不落库；账户级 webhook 与本链路无关（投递走 inbox
      channel.webhook_url）。
 - 回归：全量 pytest 204 passed + `langgraph validate` valid。
+
+## 11. 人工车道 + 页面契约 真机复验（2026-09-18 脚本化：10 步全 PASS）
+
+- 目的：契约对齐（user-page-spec §10/§11）后，按页面 `createApi` 实际调用形状复验整条
+  「用户端页面契约 ↔ Runtime ↔ Chatwoot 坐席端 ↔ webhook 回写」人工车道；可重复执行。
+- 脚本：`scripts/real_human_lane_smoke.py`（真实 ARK 模型 + 真实 Chatwoot；Runtime 绑
+  `0.0.0.0:8000` 供 webhook 回推；每次全新临时 SQLite）。
+- 运行：`uv run --no-sync python scripts/real_human_lane_smoke.py`
+- 实测（2026-09-18，inbox 2 澄元AI客服，account_id=3）：
+  1. `POST /auth/login` → `{token, user{id,name}}` PASS
+  2. `POST /sessions {user_id}` → `{session_id, mode:ai}` PASS
+  3. `GET /conversations/{id}/messages` → `{items, mode}`（页面形状）PASS
+  4. AI 车道 `POST /chat "你好"` → `token×N → done` PASS
+  5. 转人工 `POST /chat` → `handoff_created` + `mode=human`；`error(ModeChanged)` 为
+     mode 守卫设计内行为（同 §10）PASS
+  6. 人工消息 `POST /chat "在吗"` → Message Store 落 user+自动回复；Chatwoot 侧出现
+     contact 消息（`message_type=0` incoming）PASS
+  6b. Chatwoot 收到 contact 消息 PASS（探测会话：notice / 在吗 / 坐席回复 三条齐全）
+  7. 坐席 outgoing 消息 → webhook 回写 Message Store，无重复落库 PASS
+  8. `GET messages` 含坐席回复 + `mode=human` PASS
+  9. `POST /handoffs/{id}/resolve` → `mode=ai` + record resolved PASS
+  10. AI 恢复 `POST /chat` → `token×N → done`（无残留中断）PASS
+- **真机修复**：`ChatwootClient` 默认 `httpx.AsyncClient(trust_env=False)`——本机代理会
+  拦截 `localhost:3000` 导致 `_create_contact` 400；Chatwoot 为本地基础设施，不走环境代理。
+- 已知观察：step-10 曾有 1 次 `["error","done"]`（无 token），复跑确认偶发（真实模型
+  单轮失败），非系统性 resume 故障；脚本已对 step-10 捕获 error 详情 + 换问重试一次。
+- 回归：离线 `test_server_chatwoot / test_e2e_human_lane / test_server_auth` 全绿。
