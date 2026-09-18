@@ -280,3 +280,31 @@
 - 入口行为：命中 detector 时**不进 Router / Guard / Graph**（直接 `request_handoff` + `_emit_handoff`）；
   图内 `check_handoff` 保留动态信号与兜底。决策与实现见 `docs/plans/2026-09-18-handoff-intent-gate.md`。
 - 回归：全量 pytest 258 passed；`langgraph validate` valid。
+## 14. ReadGraph RAG 真机冒烟（LightRAG-chengyuan + ARK，2026-09-18 实测）
+
+- 目的：用真实 LightRAG-chengyuan 检索 + 真实 ARK 模型验证 ReadGraph `kb_search` 链路：
+  依据知识库作答时标注来源文件名（D2）、知识缺口如实告知「未查询到」（D5）。
+- 前置：LightRAG-chengyuan 容器运行于 `http://localhost:9621`（auth disabled，已摄取 31 份文档）；
+  `.env` 配 `ARK_MODEL / ARK_BASE_URL / ARK_API_KEY`（`make_model` 读取）。
+- 脚本：`scripts/real_rag_smoke.py`（可重复执行；退出码 0=全部通过）。
+- 运行：`$env:UV_CACHE_DIR="D:\AI_Project\AI Service Agent\.uv-cache"; $env:UV_LINK_MODE="copy";
+  uv run --no-sync python scripts/real_rag_smoke.py`
+- 服务端点：`kb_search` → `LightRagClient`（httpx 单例，默认 `localhost:9621`）→ `POST /query`。
+- `/query` 参数：`mode=naive`、`only_need_context=true`、`include_references=true`、
+  `include_chunk_content=true`、`enable_rerank=false`（关 rerank）、`top_k=5`。
+- 实测延迟（2026-09-18，复跑确认）：CASE 1 6.51s / CASE 2 8.12s / CASE 3 13.95s / CASE 4 6.49s，总计 35.07s。
+  两次复跑总计分别为 41.69s / 35.07s，存在运行间波动（主要来自 ARK 模型生成 + 工具往返）。修复轮起脚本对 kb_search 单独计时：检索本身实测 0.35–0.66s/case（CASE1 0.66s / CASE2 0.35s / CASE3 0.35s / CASE4 0.57s，2026-09-18 复跑）。
+
+| CASE | 问题 | 判定 | 回复要点 |
+|---|---|---|---|
+| 1 | JoyAir A1 的炸篮容量是多少？ | PASS | 答 4.5L，注明炸篮 BA-A1-45 仅适用 A1；文末（来源：JoyAir_A1智能空气炸锅.md、配件目录.md） |
+| 2 | JoyClean V1 支持 Wi-Fi 连接吗？ | PASS | 答不支持 Wi-Fi（蓝牙 5.0 仅电量/滤网提醒），并推荐 S1；文末（来源：JoyClean_V1无线吸尘器.md、Wi-Fi与配网支持.md） |
+| 3 | 空气炸锅忘记密码怎么配网？ | PASS | 给出 App 解绑重加/2.4GHz/配网模式等步骤；文末（来源：Wi-Fi与配网支持.md、App服务与账号政策.md、JoyAir_A1智能空气炸锅.md） |
+| 4 | 你们的注册资本是多少？ | PASS | 如实告知知识库未查询到确定数据，引导以官方渠道为准（来源：知识缺口说明.md） |
+
+- 来源文件名样例（工具「参考来源」清单实际值）：`JoyAir_A1智能空气炸锅.md`、`JoyClean_V1无线吸尘器.md`、
+  `Wi-Fi与配网支持.md`、`App服务与账号政策.md`、`知识缺口说明.md`、`配件目录.md` 等（top_k=5 命中文件）。
+- unanswerable 行为：知识缺口问题（注册资本）检索到的是「知识缺口说明.md」而非空结果，模型如实告知
+  「暂未查询到已公布的确定数据」「不便推测或估算」，未编造数值 → 判定 PASS（断言按「未查询到/无法/不清楚」措辞命中）。
+- 观察项：无 FAIL，4/4 PASS。unanswerable 判定依赖 LLM 措辞（"未查询到"），若模型换说法仍可能误判，属措辞差异非功能缺陷。
+- 回归：本次未跑全量 pytest（由 Task 5 全量回归）；`kb_search` / `LightRagClient` 离线用例保持全绿。
