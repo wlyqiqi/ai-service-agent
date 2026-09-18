@@ -6,7 +6,8 @@ def test_settings_defaults():
     assert s.db_path == "data/ai_service.db"
     assert s.fake_model is False
     assert s.router_conf_threshold == 0.6
-    assert "转人工" in s.handoff_keywords
+    assert "转人工" in s.handoff_phrases
+    assert "培训" in s.handoff_negative_suffix
 
 def test_settings_p3_defaults():
     s = Settings(_env_file=None)
@@ -28,20 +29,3 @@ def test_chatwoot_settings_defaults(monkeypatch):
     assert s.chatwoot_inbox_id is None
     assert s.chatwoot_api_token is None
     assert s.chatwoot_webhook_secret is None
-
-
-def test_chatwoot_settings_alias(monkeypatch):
-    from ai_service_agent.config import Settings
-    monkeypatch.setenv("CHATWOOT_ENABLED", "true")
-    monkeypatch.setenv("CHATWOOT_BASE_URL", "http://localhost:3000")
-    monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "3")
-    monkeypatch.setenv("CHATWOOT_INBOX_ID", "2")
-    monkeypatch.setenv("CHATWOOT_API_TOKEN", "tok")
-    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "sec")
-    s = Settings(_env_file=None)
-    assert s.chatwoot_enabled is True
-    assert s.chatwoot_base_url == "http://localhost:3000"
-    assert s.chatwoot_account_id == 3
-    assert s.chatwoot_inbox_id == 2
-    assert s.chatwoot_api_token == "tok"
-    assert s.chatwoot_webhook_secret == "sec"

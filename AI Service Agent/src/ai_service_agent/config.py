@@ -15,7 +15,13 @@ class Settings(BaseSettings):
     model_endpoint: str | None = Field(default=None, validation_alias="ARK_BASE_URL")
     model_api_key: str | None = Field(default=None, validation_alias="ARK_API_KEY")
     router_conf_threshold: float = 0.6
-    handoff_keywords: list[str] = ["转人工", "人工客服", "找真人", "人工"]
+    # P0（2026-09-18）：显式转人工意图检测配置（graph/handoff_rules.py 消费）。
+    # 替代旧 handoff_keywords 裸子串匹配（"人工" 会误伤 "人工呼吸/人工智能" 等话题性表达）。
+    handoff_phrases: list[str] = ["转人工", "转接人工", "找人工", "找客服", "人工客服", "真人客服"]
+    handoff_negative_suffix: list[str] = [
+        "培训", "审核", "成本", "智能", "呼吸", "操作", "考试",
+        "招聘", "岗位", "工作", "工资", "流程", "制度", "标准",
+    ]
     # P3（D2/D4/OQ-1）：Guard v1 过渡规则（关键词/正则，非终态）；确认/取消关键词；审批有效期
     guard_patterns: list[str] = [
         r"忽略.*规则", r"绕过审批", r"不需要审批", r"不用审批", r"直接执行",
