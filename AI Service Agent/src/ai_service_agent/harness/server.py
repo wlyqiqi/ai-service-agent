@@ -15,6 +15,7 @@ from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
 
+from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
     ApprovalExpired,
@@ -131,6 +132,21 @@ def create_app(
 
     app = FastAPI()
 
+    async def _emit_handoff(conv_id: str, ev: dict):
+        """统一 handoff side-effect path（P0 D3）：落 NOTICE + ensure Chatwoot（失败只记日志）+ 事件流。
+
+        图内动态 handoff（interrupt 建 record 后）与入口显式 handoff 共用；
+        事件顺序 token(HANDOFF_NOTICE) -> handoff_created，与 event-spec / 页面 contract 一致。
+        """
+        messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
+        if chatwoot is not None:
+            try:
+                await chatwoot.ensure_conversation(conv_id, HANDOFF_NOTICE)
+            except Exception:
+                logger.exception("chatwoot ensure failed: conv=%s", conv_id)
+        yield {"type": "token", "data": {"text": HANDOFF_NOTICE}}
+        yield ev
+
     @app.post("/auth/login")
     def auth_login(body: LoginBody):
         # 占位认证（user-page-spec.md §10）：待真实认证方案定案；返回 dev token，页面据此携带 Bearer
@@ -171,6 +187,19 @@ def create_app(
 
             return _sse_response(human_stream())
 
+        if detect_handoff_intent(body.message):
+            # P0 D1：显式转人工 -> 不进 Router/Guard/Graph，直接走统一 handoff side-effect path。
+            # 先落 user 消息（Message Store 唯一真相源，handoff-spec §5.2），再 request_handoff（幂等）。
+            messages_store.append(conv_id, "user", body.message)
+            ev = handoff.request_handoff(conv_id, "用户显式请求转人工", body.message[:80])
+
+            async def explicit_handoff_stream():
+                async for out in _emit_handoff(conv_id, ev):
+                    yield out
+                yield {"type": "done", "data": {"final": HANDOFF_NOTICE, "message_id": None}}
+
+            return _sse_response(explicit_handoff_stream())
+
         async def ai_stream():
             # 先持久化用户消息（即便本 turn 失败也留痕），再水合历史作为 state.messages 输入
             messages_store.append(conv_id, "user", body.message)
@@ -209,15 +238,9 @@ def create_app(
                         extra_state={"user_id": status.get_user_id(conv_id) or ""},
                     ):
                         if ev["type"] == "handoff_created":
-                            # 外层文案（D3）：落库 + 发 token，图内不生成
-                            messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
-                            if chatwoot is not None:
-                                try:
-                                    await chatwoot.ensure_conversation(conv_id, HANDOFF_NOTICE)
-                                except Exception:
-                                    logger.exception("chatwoot ensure failed: conv=%s", conv_id)
-                            yield {"type": "token", "data": {"text": HANDOFF_NOTICE}}
-                            yield ev
+                            # 外层文案（D3）：复用统一 side-effect path（落 NOTICE + Chatwoot ensure + 事件流）
+                            async for out in _emit_handoff(conv_id, ev):
+                                yield out
                             continue
                         if ev["type"] == "done":
                             mode_now = status.get_mode(conv_id)

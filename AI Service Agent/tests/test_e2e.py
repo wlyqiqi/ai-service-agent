@@ -12,7 +12,7 @@ from ai_service_agent.testing import ToolCallingFakeModel
 
 
 class KeywordHandoffFakeModel(ToolCallingFakeModel):
-    """离线：按用户输入路由到 fallback，使 check_handoff 关键词命中 -> handoff_request interrupt。"""
+    """离线：按用户输入路由到 fallback（P0 起显式转人工已由入口层 detector 拦截，本模型不再被显式请求触发）。"""
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         user = ""
@@ -75,7 +75,7 @@ def test_chat_ai_lane_streams_token_and_done(tmp_path):
 
 
 def test_handoff_interrupt_roundtrip(tmp_path):
-    """验收 #4/#6：显式转人工 -> 图内 interrupt -> 外层建 Record + 原子切 human + handoff_created。"""
+    """验收 #4/#6（P0 起入口层）：显式转人工 -> detector 前置拦截（不进图）-> request_handoff 建 Record + 原子切 human + handoff_created。"""
     client = TestClient(create_app(str(tmp_path / "h.db"), model=KeywordHandoffFakeModel(responses=[])))
     r = client.post("/sessions", json={"user_id": "u1"})
     session_id = r.json()["session_id"]

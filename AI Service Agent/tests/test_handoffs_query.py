@@ -8,7 +8,7 @@ from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
 
 class _UnknownReadFakeModel(ToolCallingFakeModel):
-    """Router 恒 unknown/read -> Fallback -> check_handoff 关键词触发转人工。"""
+    """Router 恒 unknown/read -> Fallback（P0 起显式转人工由入口层 detector 拦截，不进图）。"""
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", "read", 0.5))])
@@ -22,7 +22,7 @@ def test_get_handoffs_by_conversation(tmp_path):
     # 无 handoff -> 404
     assert client.get(f"/handoffs?conversation_id={sid}").status_code == 404
 
-    # 触发转人工（fake model Router 恒 unknown/read -> Fallback -> check_handoff 关键词）
+    # 触发转人工（P0 起：入口层 detector 拦截显式请求 -> request_handoff，不进图）
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as r:
         r.read()
     assert client.get(f"/handoffs?conversation_id={sid}").json()["status"] == "active"

@@ -1,7 +1,8 @@
 """人工车道端到端单链路（离线）：用户 -> Runtime -> Chatwoot(坐席) -> webhook -> Message Store -> 轮询 -> resolve 恢复。
 
 用真实 ChatwootClient + httpx.MockTransport 覆盖映射表 / 回显去重；
-fake model 的 Router 恒为 unknown/read -> Fallback -> check_handoff 关键词命中转人工。
+P0 起显式转人工（我要转人工）由入口层 detector 前置拦截 -> request_handoff -> _emit_handoff
+（落 NOTICE + Chatwoot ensure）；fake model 仅作 AI 车道占位。
 """
 
 import hashlib
@@ -38,7 +39,7 @@ def parse_sse(text: str) -> list[dict]:
 
 
 class HandoffE2EFakeModel(ToolCallingFakeModel):
-    """Router 恒为 unknown/read -> Fallback；fallback explain 为硬编码，不消耗模型响应。"""
+    """Router 恒为 unknown/read -> Fallback（显式转人工由入口层 detector 拦截，不进图）。"""
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", "read", 0.5))])
