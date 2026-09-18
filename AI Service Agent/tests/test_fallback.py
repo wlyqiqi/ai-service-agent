@@ -43,3 +43,19 @@ def test_fallback_handoff_path_generates_no_in_graph_text():
     out = graph.invoke({"messages": [HumanMessage(content="我要转人工")], "context": {}, "user_id": "u1", "session_id": "s1", "handoff": False})
     assert out["execution_status"] == "waiting_handoff"
     assert [m for m in out.get("messages", []) if getattr(m, "type", "") == "ai"] == []
+
+
+def test_check_handoff_reuses_shared_detector():
+    out = check_handoff(
+        {"messages": [HumanMessage(content="叫个真人来")], "context": {}, "user_id": "u1", "session_id": "s1"}
+    )
+    assert isinstance(out, Command)
+    assert out.update["handoff"] is True
+    assert out.goto == "pause"
+
+
+def test_check_handoff_no_false_positive_on_topic():
+    out = check_handoff(
+        {"messages": [HumanMessage(content="人工客服培训需要多久")], "context": {}, "user_id": "u1", "session_id": "s1"}
+    )
+    assert out == {"handoff": False, "execution_status": "completed"}

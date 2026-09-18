@@ -4,11 +4,10 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.builder import POLICY
-from ai_service_agent.graph.workflows.fallback import check_handoff
+from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
@@ -107,25 +106,18 @@ def evaluate_guard(cases: list[dict]) -> list[dict]:
     return results
 
 
-def _handoff_triggered(node_out) -> bool:
-    if isinstance(node_out, Command):
-        return bool(node_out.update.get("handoff"))
-    return bool(node_out.get("handoff"))
-
-
 def evaluate_handoff(cases: list[dict]) -> list[dict]:
-    """handoff 维度（D13 不变）：1 条真实命中 + 9 条 skip(handoff_rule_pending)。"""
+    """handoff 维度（P0 起）：显式意图由入口层 detector 真实断言，动态信号保持 skip(handoff_rule_pending)。"""
     results = []
     for case in cases:
-        node_out = check_handoff({"messages": [HumanMessage(content=case["input"])]})
-        triggered = _handoff_triggered(node_out)
+        explicit = detect_handoff_intent(case["input"])
         if case["expected_graph"] == "handoff":
-            if triggered:
+            if explicit:
                 results.append({"id": case["id"], "status": "pass"})
             else:
                 results.append({"id": case["id"], "status": "skip", "skip_reason": HANDOFF_SKIP})
         else:
-            results.append({"id": case["id"], "status": "pass" if not triggered else "fail"})
+            results.append({"id": case["id"], "status": "pass" if not explicit else "fail"})
     return results
 
 
@@ -216,7 +208,7 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
     for case in cases:
         ep = case["expected_policy"]
         if ep == "handoff":
-            if not any(k in case["input"] for k in get_settings().handoff_keywords):
+            if not detect_handoff_intent(case["input"]):
                 results.append({"id": case["id"], "status": "skip", "skip_reason": HANDOFF_SKIP})
                 continue
             r = asyncio.run(_run_case_graph(case, _scripted_responses(case), "u1"))
@@ -296,7 +288,8 @@ def run_all(control_dir: str | Path) -> dict:
         "case_count": len(cases),
         "dimensions": dimensions,
         "settings": {
-            "handoff_keywords": get_settings().handoff_keywords,
+            "handoff_phrases": get_settings().handoff_phrases,
+            "handoff_negative_suffix": get_settings().handoff_negative_suffix,
             "router_conf_threshold": get_settings().router_conf_threshold,
             "guard_patterns": get_settings().guard_patterns,
             "confirm_keywords": get_settings().confirm_keywords,

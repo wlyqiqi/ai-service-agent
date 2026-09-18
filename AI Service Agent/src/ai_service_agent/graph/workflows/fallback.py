@@ -3,7 +3,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from ai_service_agent.config import get_settings
+from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.state import CustomerServiceState
 
 
@@ -16,13 +16,13 @@ def _last_user_content(state: dict) -> str:
 
 
 def check_handoff(state: dict) -> dict | Command:
-    """确定性规则：显式转人工关键词命中才置位（safety-spec.md §2）；LLM 无权临时决定。
+    """确定性规则：显式转人工意图（入口层 detector）命中才置位（safety-spec.md §2）；LLM 无权临时决定。
 
     命中时先置位再中断：Command(update) 保证 execution_status=waiting_handoff
     在中断时刻生效（state-spec.md §1），随后路由到 pause 节点抛 interrupt。
     """
     last_content = _last_user_content(state)
-    if any(kw in last_content for kw in get_settings().handoff_keywords):
+    if detect_handoff_intent(last_content):
         return Command(
             update={"handoff": True, "execution_status": "waiting_handoff"},
             goto="pause",

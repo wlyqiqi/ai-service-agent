@@ -86,7 +86,7 @@ def test_run_all_includes_four_dimensions(tmp_path):
     assert report["case_count"] == 2
     assert report["dimensions"]["routing"]["summary"]["pass"] == 2   # T-01 read + T-02 confirm 均为真实 pass
     assert report["dimensions"]["routing"]["summary"]["skip"] == {}
-    assert report["settings"]["handoff_keywords"]  # settings 快照存在
+    assert report["settings"]["handoff_phrases"]  # settings 快照存在（P0 detector 配置）
 
 
 def test_cli_runs_on_real_control_dataset(tmp_path):
@@ -106,8 +106,8 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     assert report["case_count"] == 100
     assert report["dimensions"]["policy"]["summary"]["pass"] == 76
     assert report["dimensions"]["guard"]["summary"]["pass"] == 100
-    assert report["dimensions"]["routing"]["summary"]["pass"] == 91  # +0087（D4）；0076 fallback→clarify 语义换断言、计数不变
-    assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 9}  # deny 全部转真实断言
+    assert report["dimensions"]["routing"]["summary"]["pass"] == 92  # +CTRL-0062（P0 显式 detector 命中，不再 skip）
+    assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 8}  # 动态信号保持 skip
 
 
 def test_policy_dimension_clarify_maps_high_risk(tmp_path):
