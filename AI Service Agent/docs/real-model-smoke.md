@@ -267,3 +267,16 @@
 - 新增 Transport：`GET /handoffs?conversation_id=`（server.py）+ `HandoffService.get_by_conversation()`；
   `main.py` host/port 可配（默认 0.0.0.0）；`server.py` 静态同源挂载 `web/`。
 - 回归：全量 pytest 225 passed。
+
+## 13. P0 显式转人工入口检测（2026-09-18）
+
+- 目的：验证「用户明确要求转人工」在入口层 `detect_handoff_intent` 阶段直接进入 Human Lane，
+  即使 Router 原本可能把文本误判成其它 capability；**关键断言是 `handoff_created` + `mode=human`，不是 Router 分类**。
+- 前置：Runtime（`ai-service-agent`，0.0.0.0:8000，真实 ARK + Chatwoot）运行中。
+- 脚本：`scripts/real_human_lane_smoke.py`（step 5 多短语按序重试兜底）。
+- 复验用例（至少两条）：
+  1. `我要转人工` → 必须出现 `handoff_created`、`mode=human`。
+  2. `我不想跟机器人聊，叫个真人来` → 同上（该句旧版依赖 Router/关键词可能漏判，P0 detector 命中「叫个真人」）。
+- 入口行为：命中 detector 时**不进 Router / Guard / Graph**（直接 `request_handoff` + `_emit_handoff`）；
+  图内 `check_handoff` 保留动态信号与兜底。决策与实现见 `docs/plans/2026-09-18-handoff-intent-gate.md`。
+- 回归：全量 pytest 258 passed；`langgraph validate` valid。

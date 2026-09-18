@@ -38,6 +38,7 @@
 - `conversation_mode` **不得**依赖完整的 `checkpointer.aget()` 读取；单独维护一个轻量的 `conversation_status` 存储（例如独立表或 Redis key），只存 `conversation_id → conversation_mode` 的映射。
 - 该判断尽量在 **FastAPI / Conversation Runtime 层、进入任何 LangGraph 逻辑之前**完成；若 `conversation_mode == human`，直接调用 Message Service 写入消息、通知坐席，**不触发 checkpointer、不触发 Graph、不触发 Guard / Router**。
 - 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在**连接级内存**，仅在 `handoff_created` / `handoff_resolved` 事件发生时主动更新，不要求每条用户消息重新查库。
+- **P0（2026-09-18）入口层显式检测**：显式转人工意图（`safety-spec.md` §2.1 第一类）由入口层 `detect_handoff_intent` 在进入 LangGraph **之前**判定；命中即直接走人工车道，**不触发 checkpointer / Graph / Guard / Router**（本小节「不触发」约束的补充，决策见 `docs/plans/2026-09-18-handoff-intent-gate.md`）。图内 `check_handoff` 保留动态信号与兜底判定。
 
 ## 3. 子图中途触发 Handoff 的机制（外层接管）
 

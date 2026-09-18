@@ -30,7 +30,7 @@ HOST = "0.0.0.0"
 PORT = 8000
 BASE = f"http://127.0.0.1:{PORT}"
 REQUEST_TIMEOUT = 180.0
-HANDOFF_PHRASES = ["我要转人工", "帮我转人工", "转人工"]
+HANDOFF_PHRASES = ["我要转人工", "帮我转人工", "转人工", "我不想跟机器人聊，叫个真人来"]
 MAX_HANDOFF_ATTEMPTS = 3
 
 
@@ -188,7 +188,9 @@ def main() -> int:
                             "types": types, "errors": error_details(ev),
                             "thread_id": (open_status(db_path, sid) or {}).get("thread_id")})
 
-            # ---- 5. 转人工（确定性 handoff 触发，容忍 Router 波动重试）----
+            # ---- 5. 转人工（P0：入口层 detector 前置拦截 -> handoff_created + mode=human）
+            # 关键断言不是 Router 分类，而是 handoff_created + mode=human——即使 Router 原本
+            # 可能误判，入口 detector 阶段已直接进入 Human Lane。多短语按序重试兜底。----
             handoff_created = None
             attempt = 0
             handoff_types = []

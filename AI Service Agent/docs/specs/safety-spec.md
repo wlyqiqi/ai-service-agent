@@ -64,6 +64,8 @@
 | 审批被拒后坚持 | HighRisk 审批被拒后用户仍要求执行 | 开关（默认开） |
 | 策略上限 | 单会话时长 / token / turn 数超限 | 阈值 |
 
+> P0（2026-09-18）：**显式请求由入口层 `detect_handoff_intent` 优先判定**——在进入 LangGraph 之前命中即直接走人工车道（不触发 Router / Guard / Graph）；动态信号（连续失败 / 情绪 / 审批被拒后坚持等）仍由图内 `check_handoff` 判定（决策见 `docs/plans/2026-09-18-handoff-intent-gate.md`）。
+
 ### 2.2 流程
 
 ```text
