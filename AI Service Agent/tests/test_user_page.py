@@ -296,7 +296,10 @@ def test_build_view_chips_and_cmds(tmp_path):
         "UserPage.buildView(UserPage.createInitialStore()).chips.map(function(n){return n.attrs['data-cmd'];})",
         tmp_path,
     )
-    assert out == ["重新开始", "查询我的订单", "修改收货地址", "我要申请售后", "转人工客服"]
+    assert out == [
+        "重新开始", "查询我的订单", "我想咨询食谱", "如何更新固件",
+        "如何配对 Chengyuan Home App", "我要申请售后", "转人工客服",
+    ]
 
 
 def test_build_view_confirm_card_buttons(tmp_path):

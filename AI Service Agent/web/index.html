@@ -3,102 +3,396 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>智家客服中心</title>
+<title>澄元智能客服</title>
 <style>
-:root{--bg:#f6f8fb;--surface:#ffffff;--primary:#2563eb;--primary-weak:#e5edfb;
---text:#1f2937;--text-2:#55617a;--text-3:#8a94a6;--border:#e2e8f0;--danger:#dc2626;--radius:10px}
+
+/* ============================================================
+   design-taste-frontend 改版 v4（2026-09-18）
+   设计读法：premium smart-home consumer chat surface（redesign
+   overhaul，保留 IA / 事件协议 / 逻辑层契约）。
+   参考 web/DESIGN-mistral.ai.md：日落暖橙（#FA520F）+ 奶油面板 +
+   墨色正文；日落条纹带为全站签名；按钮/输入 8px · 卡片 12px ·
+   面板 20px，仅徽章保留 pill；用户气泡 = 墨色深底（button-dark 语言）。
+   橙只出现在主 CTA / 激活态 / 签名条纹，不进气泡、不铺大面。
+   Dials: VARIANCE 5 / MOTION 4 / DENSITY 3
+   Shape lock（唯一半径规则）：面板 20px · 卡片/气泡 12px ·
+   按钮/输入 8px · 图标按钮圆形 · 徽章 pill
+   ============================================================ */
+:root{
+  --bg:#fafafa;
+  --topbar-bg:rgba(255,255,255,.78);
+  --surface:#ffffff;
+  --surface-2:#fafafa;
+  --surface-3:#f5f5f5;
+  --cream:#fff8e0;
+  --cream-soft:#fffaeb;
+  --beige-deep:#e6d5a8;
+  --bubble-ai:#ffffff;
+  --bubble-user:#1f1f1f;
+  --bubble-user-text:#ffffff;
+  --ink:#1f1f1f;
+  --ink-2:#4a4a4a;
+  --ink-3:#8a8a8a;
+  --line:#ededed;
+  --line-strong:#c7c7c7;
+  --accent:#fa520f;
+  --accent-strong:#cc3a05;
+  --accent-weak:rgba(250,82,15,.08);
+  --accent-text:#cc3a05;
+  --accent-line:rgba(250,82,15,.24);
+  --btn-text:#ffffff;
+  --stripe:linear-gradient(90deg,#ff8105,#ffb83e,#ffd900,#fff8e0);
+  --glow-1:rgba(255,177,16,.12);
+  --glow-2:rgba(250,82,15,.07);
+  --ok:#0ea572;
+  --warn:#c47f0e;
+  --warn-weak:#fdf3e3;
+  --warn-line:rgba(196,127,14,.22);
+  --danger:#d93b3b;
+  --danger-weak:#fdecec;
+  --danger-line:rgba(217,59,59,.22);
+  --shadow-panel:0 1px 2px rgba(31,31,31,.05),0 20px 48px -32px rgba(31,31,31,.18);
+  --shadow-card:0 1px 2px rgba(31,31,31,.04);
+  --shadow-btn:0 6px 16px -10px rgba(250,82,15,.55);
+  --r-xl:20px;
+  --r-lg:12px;
+  --r-md:8px;
+  --r-pill:999px;
+  --ease:cubic-bezier(.2,.7,.2,1);
+}
+html[data-theme="dark"]{
+  --bg:#141210;
+  --topbar-bg:rgba(20,18,16,.78);
+  --surface:#1c1917;
+  --surface-2:#211d1a;
+  --surface-3:#2a241d;
+  --cream:#2b241c;
+  --cream-soft:#241f19;
+  --beige-deep:#4a4034;
+  --bubble-ai:#211d1a;
+  --bubble-user:#f2ede6;
+  --bubble-user-text:#1f1f1f;
+  --ink:#f2ede6;
+  --ink-2:#b8b0a6;
+  --ink-3:#8a8178;
+  --line:rgba(255,255,255,.08);
+  --line-strong:rgba(255,255,255,.15);
+  --accent:#ff6b2b;
+  --accent-strong:#ff8547;
+  --accent-weak:rgba(255,107,43,.14);
+  --accent-text:#ffb289;
+  --accent-line:rgba(255,178,137,.26);
+  --btn-text:#0a0f1e;
+  --glow-1:rgba(255,129,5,.14);
+  --glow-2:rgba(255,184,62,.07);
+  --ok:#3bd68c;
+  --warn:#f0b34a;
+  --warn-weak:rgba(245,158,11,.14);
+  --warn-line:rgba(240,179,74,.26);
+  --danger:#f3706f;
+  --danger-weak:rgba(239,68,68,.14);
+  --danger-line:rgba(243,112,111,.26);
+  --shadow-panel:0 1px 0 rgba(255,255,255,.03),0 1px 2px rgba(0,0,0,.4),
+    0 30px 64px -34px rgba(0,0,0,.62);
+  --shadow-card:0 1px 2px rgba(0,0,0,.35);
+  --shadow-btn:0 8px 20px -10px rgba(109,149,255,.4);
+}
 *{box-sizing:border-box}
-body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-background:var(--bg);color:var(--text)}
-.topbar{height:56px;background:var(--surface);border-bottom:1px solid var(--border);
-display:flex;align-items:center;padding:0 24px;gap:12px}
-.brand{display:flex;align-items:center;gap:8px;font-weight:700}
-.brand-logo{background:var(--primary);color:#fff;border-radius:6px;padding:2px 8px}
-.topbar-user{margin-left:auto;display:flex;align-items:center;gap:8px}
-.view{display:none}.view.active{display:block}
-.chat-wrap{max-width:860px;margin:24px auto;background:var(--surface);
-border:1px solid var(--border);border-radius:var(--radius);
-display:flex;flex-direction:column;height:calc(100vh - 56px - 48px);min-height:480px}
-.chat-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
-.status-tag{font-size:12px;padding:2px 10px;border-radius:999px}
-.status-tag.ai{background:var(--primary-weak);color:#1d4ed8}
-.status-tag.human{background:#fef3c7;color:#b45309}
-.chips{padding:10px 20px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
-.chip{font-size:13px;border:1px solid var(--border);border-radius:999px;padding:4px 12px;
-cursor:pointer;background:#fff;color:var(--text-2)}
-.chip:hover{border-color:var(--primary);color:var(--primary)}
-.msg-list{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
-.msg{max-width:76%;padding:10px 14px;border-radius:10px;font-size:14px;line-height:1.6;white-space:pre-wrap}
-.msg.user{align-self:flex-end;background:var(--primary);color:#fff}
-.msg.assistant{align-self:flex-start;background:#fff;border:1px solid var(--border)}
-.msg.system{align-self:center;background:#eef2f7;color:var(--text-2);font-size:12px;
-border-radius:999px;padding:4px 14px}
-.card{border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:13px;
-background:#fbfcfe;align-self:flex-start;max-width:76%}
-.card h4{margin:0 0 6px;font-size:13px}
-.btn{border:none;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer}
-.btn.primary{background:var(--primary);color:#fff}
-.btn.ghost{background:#fff;border:1px solid var(--border);color:var(--text-2)}
+html{color-scheme:light}
+html[data-theme="dark"]{color-scheme:dark}
+body{margin:0;min-height:100dvh;background:var(--bg);color:var(--ink);
+  font-family:"SF Pro Display","SF Pro Text",-apple-system,BlinkMacSystemFont,
+  "Segoe UI Variable Display","Segoe UI","PingFang SC","Hiragino Sans GB",
+  "Microsoft YaHei UI","Microsoft YaHei","Helvetica Neue",sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;line-height:1.6}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(52rem 34rem at 6% -12%,var(--glow-1),transparent 62%),
+    radial-gradient(46rem 30rem at 104% 4%,var(--glow-2),transparent 60%),
+    radial-gradient(64rem 42rem at 50% 118%,var(--glow-2),transparent 64%)}
+body::after{content:"";position:fixed;top:0;left:0;right:0;height:6px;z-index:40;
+  background:var(--stripe);pointer-events:none}
+button{font-family:inherit}
+button,input{-webkit-tap-highlight-color:transparent}
+::selection{background:var(--accent-weak);color:var(--accent-text)}
+
+.topbar{position:sticky;top:0;z-index:20;height:60px;display:flex;align-items:center;
+  gap:14px;padding:0 26px;background:var(--topbar-bg);
+  backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);
+  border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-logo{flex:none;width:32px;height:32px;border-radius:var(--r-md);background:var(--accent);
+  color:var(--btn-text);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 5px 14px -8px var(--accent)}
+.brand-logo.lg{width:56px;height:56px;border-radius:var(--r-lg);font-size:26px;margin:0 auto 20px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 16px 34px -16px var(--accent)}
+.brand-text{display:flex;flex-direction:column;line-height:1.25}
+.brand-name{font-size:15px;font-weight:700;letter-spacing:.01em}
+.brand-sub{font-size:10px;color:var(--ink-3);letter-spacing:.14em;
+  font-family:Georgia,"Times New Roman",serif}
+.icon-btn{flex:none;width:36px;height:36px;border-radius:50%;border:1px solid var(--line-strong);
+  background:var(--surface);color:var(--ink-2);display:inline-flex;align-items:center;
+  justify-content:center;cursor:pointer;
+  transition:border-color .2s var(--ease),color .2s var(--ease),background .2s var(--ease),transform .15s var(--ease)}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent-text);background:var(--accent-weak)}
+.icon-btn:active{transform:scale(.94)}
+.ico-sun{display:none}
+html[data-theme="dark"] .ico-sun{display:block}
+html[data-theme="dark"] .ico-moon{display:none}
+.topbar-user{margin-left:auto;display:flex;align-items:center;gap:10px}
+.user-avatar{width:28px;height:28px;border-radius:50%;background:var(--accent-weak);
+  color:var(--accent-text);display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:700}
+.user-name{font-size:13px;color:var(--ink-2)}
+
+.view{display:none}
+.view.active{display:block;animation:view-in .32s var(--ease) both}
+@keyframes view-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.chat-wrap{position:relative;max-width:880px;margin:16px auto 22px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-xl);box-shadow:var(--shadow-panel);
+  display:flex;flex-direction:column;height:calc(100dvh - 98px);min-height:520px;overflow:hidden}
+.chat-wrap::before{content:"";position:absolute;top:0;left:22px;right:22px;height:1px;z-index:1;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.9),transparent);pointer-events:none}
+html[data-theme="dark"] .chat-wrap::before{background:linear-gradient(90deg,transparent,rgba(255,255,255,.14),transparent)}
+.chat-head{display:flex;align-items:center;gap:14px;padding:18px 24px;border-bottom:1px solid var(--line)}
+.agent-avatar{flex:none;width:42px;height:42px;border-radius:var(--r-lg);background:var(--accent);
+  color:var(--btn-text);display:flex;align-items:center;justify-content:center;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 8px 20px -12px var(--accent)}
+.chat-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
+.chat-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.chat-title{font-size:15px;font-weight:700;letter-spacing:-.01em}
+.conn-text{font-size:12px;color:var(--ink-3)}
+.status-tag{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 12px;
+  border-radius:var(--r-pill);font-size:12px;font-weight:600;letter-spacing:.02em;
+  border:1px solid transparent}
+.status-tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.status-tag.ai{background:var(--accent-weak);color:var(--accent-text);border-color:var(--accent-line)}
+.status-tag.ai::before{background:var(--accent);animation:dot-pulse 2.6s ease-in-out infinite}
+.status-tag.human{background:var(--warn-weak);color:var(--warn);border-color:var(--warn-line)}
+@keyframes dot-pulse{0%,100%{box-shadow:0 0 0 0 rgba(250,82,15,.4)}55%{box-shadow:0 0 0 5px rgba(250,82,15,0)}}
+
+.chips{display:flex;gap:8px;flex-wrap:wrap;padding:13px 24px;border-bottom:1px solid var(--line)}
+.chip{appearance:none;border:1px solid var(--line-strong);background:var(--surface);
+  color:var(--ink-2);border-radius:var(--r-md);height:32px;padding:0 15px;font-size:13px;
+  font-weight:500;cursor:pointer;display:inline-flex;align-items:center;
+  transition:border-color .2s var(--ease),color .2s var(--ease),
+  background .2s var(--ease),transform .15s var(--ease),box-shadow .2s var(--ease)}
+.chip:hover{border-color:var(--accent);color:var(--accent-text);background:var(--accent-weak);
+  box-shadow:0 4px 12px -8px var(--accent)}
+.chip:active{transform:scale(.96)}
+
+.msg-list{flex:1;overflow-y:auto;padding:26px 26px 22px;display:flex;flex-direction:column;gap:18px;
+  scroll-behavior:smooth}
+.msg-list:empty{align-items:center;justify-content:center}
+.msg-list:empty::before{content:"澄";width:48px;height:48px;border-radius:var(--r-lg);
+  display:flex;align-items:center;justify-content:center;font-size:21px;font-weight:800;
+  color:#ffffff;background:var(--accent);border:1px solid var(--accent-strong);
+  box-shadow:0 12px 28px -16px var(--accent);
+  margin-bottom:16px}
+html[data-theme="dark"] .msg-list:empty::before{box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 12px 28px -16px var(--accent)}
+.msg-list:empty::after{content:"您好，我是澄元智能客服，有问题随时问我。\A 查订单、食谱咨询、固件更新，或直接选择上方快捷指令。";
+  white-space:pre-line;text-align:center;color:var(--ink-3);font-size:14px;line-height:2;
+  display:block;max-width:420px}
+.msg-list .enter{animation:msg-in .4s var(--ease) both}
+@keyframes msg-in{from{opacity:0;transform:translateY(8px) scale(.99)}to{opacity:1;transform:none}}
+
+.msg{max-width:74%;padding:11px 16px;border-radius:var(--r-lg);font-size:14px;line-height:1.66;
+  white-space:pre-wrap;overflow-wrap:break-word;position:relative}
+.msg.user{align-self:flex-end;background:var(--bubble-user);color:var(--bubble-user-text);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-card)}
+.msg.assistant{align-self:flex-start;background:var(--bubble-ai);border:1px solid var(--line);
+  color:var(--ink);border-radius:var(--r-lg);margin-left:44px;
+  box-shadow:var(--shadow-card)}
+html[data-theme="dark"] .msg.assistant{box-shadow:inset 0 1px 0 rgba(255,255,255,.04),var(--shadow-card)}
+html[data-theme="dark"] .msg.assistant::before,html[data-theme="dark"] .card::before{box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.msg.system{align-self:center;background:var(--surface-2);border:1px solid var(--line);
+  color:var(--ink-2);font-size:12px;border-radius:var(--r-pill);padding:5px 14px;max-width:90%}
+.msg.assistant.typing::after{content:"";display:inline-block;width:2px;height:1em;margin-left:3px;
+  vertical-align:-.15em;border-radius:1px;background:var(--accent);animation:caret-blink 1.05s steps(2,start) infinite}
+@keyframes caret-blink{0%,100%{opacity:1}50%{opacity:0}}
+.msg.assistant::before,.card::before{content:"澄";position:absolute;left:-44px;top:2px;width:32px;height:32px;
+  border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;
+  color:var(--accent-text);background:var(--cream-soft);border:1px solid var(--beige-deep)}
+
+.card{position:relative;border:1px solid var(--line);background:var(--surface);
+  border-radius:var(--r-lg);padding:16px 18px;font-size:13px;max-width:74%;
+  align-self:flex-start;margin-left:44px;box-shadow:var(--shadow-card);overflow-wrap:break-word}
+.card h4{margin:0 0 8px;font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--accent-text)}
+.card p{margin:4px 0;color:var(--ink-2);line-height:1.6}
+.tool-card h4{color:var(--ink-2)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+
+.notice,.error-bar,.handoff-banner{max-width:86%;align-self:stretch;border-radius:var(--r-md);
+  padding:11px 14px;font-size:13px;line-height:1.6;overflow-wrap:break-word;
+  border:1px solid var(--line);border-left-width:3px}
+.notice{background:var(--warn-weak);border-left-color:var(--warn);color:var(--warn)}
+.error-bar{background:var(--danger-weak);border-left-color:var(--danger);color:var(--danger)}
+.handoff-banner{background:var(--accent-weak);border-left-color:var(--accent);color:var(--accent-text)}
+
+.btn{appearance:none;border:none;border-radius:var(--r-md);padding:9px 18px;font-size:13px;
+  font-weight:600;cursor:pointer;letter-spacing:.01em;display:inline-flex;align-items:center;justify-content:center;
+  transition:transform .15s var(--ease),background .2s var(--ease),
+  border-color .2s var(--ease),box-shadow .2s var(--ease),filter .2s var(--ease)}
+.btn.primary{background:var(--accent);color:var(--btn-text);
+  background-image:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,0) 55%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),var(--shadow-btn)}
+html[data-theme="dark"] .btn.primary{background-image:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,0) 55%)}
+.btn.primary:hover:not(:disabled){background:var(--accent-strong);filter:none}
+.btn.primary:active:not(:disabled){transform:translateY(1px) scale(.99)}
+.btn.ghost{background:var(--surface);border:1px solid var(--line-strong);color:var(--ink-2)}
+.btn.ghost:hover:not(:disabled){border-color:var(--accent);color:var(--accent-text)}
+.btn.ghost:active:not(:disabled){transform:translateY(1px) scale(.99)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-.error-bar{background:#fef2f2;border:1px solid #fecaca;color:var(--danger);
-border-radius:8px;padding:8px 12px;font-size:13px;align-self:stretch}
-.handoff-banner{background:var(--primary-weak);border:1px solid #bfdbfe;color:#1d4ed8;
-border-radius:8px;padding:10px 14px;font-size:13px;align-self:stretch}
-.notice{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:8px;
-padding:8px 12px;font-size:13px;align-self:stretch}
-.input-bar{display:flex;gap:10px;padding:14px 20px;border-top:1px solid var(--border)}
-.input-bar input{flex:1;border:1px solid var(--border);border-radius:8px;padding:10px 14px;
-font-size:14px;outline:none}
-.input-bar input:focus{border-color:var(--primary)}
-.send-btn{background:var(--primary);color:#fff;border:none;border-radius:8px;width:44px;cursor:pointer}
-.login-wrap{max-width:360px;margin:120px auto;background:var(--surface);
-border:1px solid var(--border);border-radius:var(--radius);padding:28px}
-.login-wrap h2{margin:0 0 16px;font-size:18px}
-.field{margin-bottom:14px}
-.field label{display:block;font-size:12px;color:var(--text-2);margin-bottom:6px}
-.field input{width:100%;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px}
-.hint{font-size:12px;color:var(--text-3);margin-top:10px}
+.btn-block{width:100%;padding:12px 18px;font-size:14px}
+.btn.chip{height:30px;padding:0 14px}
+
+.input-bar{padding:14px 22px 18px;border-top:1px solid var(--line);
+  background:linear-gradient(180deg,transparent,rgba(250,82,15,.02))}
+html[data-theme="dark"] .input-bar{background:linear-gradient(180deg,transparent,rgba(255,255,255,.02))}
+.composer{display:flex;align-items:center;gap:8px;background:var(--surface-2);
+  border:1px solid var(--line-strong);border-radius:var(--r-md);padding:6px 6px 6px 16px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55);
+  transition:border-color .18s var(--ease),box-shadow .18s var(--ease),background .18s var(--ease)}
+html[data-theme="dark"] .composer{box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.composer:focus-within{border-color:var(--accent);background:var(--surface);
+  box-shadow:0 0 0 3px var(--accent-weak),inset 0 1px 0 rgba(255,255,255,.55)}
+html[data-theme="dark"] .composer:focus-within{box-shadow:0 0 0 3px var(--accent-weak),inset 0 1px 0 rgba(255,255,255,.04)}
+.composer input{flex:1;min-width:0;border:none;background:transparent;color:var(--ink);
+  font-size:14px;outline:none;padding:9px 0;caret-color:var(--accent)}
+.composer input::placeholder{color:var(--ink-3)}
+.composer input:disabled{opacity:.6;cursor:not-allowed}
+.send-btn{flex:none;width:38px;height:38px;border:none;border-radius:var(--r-md);background:var(--accent);
+  border-radius:var(--r-md);
+  color:var(--btn-text);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 4px 12px -6px var(--accent);
+  transition:transform .15s var(--ease),box-shadow .25s var(--ease),filter .25s var(--ease),opacity .2s var(--ease)}
+.send-btn:hover:not(:disabled){filter:brightness(1.05);transform:translateY(-1px)}
+.send-btn:active:not(:disabled){transform:translateY(0) scale(.94)}
+.send-btn:disabled{opacity:.38;cursor:not-allowed;box-shadow:none}
+
+.login-wrap{position:relative;max-width:392px;margin:9vh auto 0;background:var(--cream-soft);
+  border:1px solid var(--beige-deep);border-radius:var(--r-xl);padding:46px 40px 34px;box-shadow:var(--shadow-panel);
+  overflow:hidden}
+.login-wrap::after{content:"";position:absolute;left:0;right:0;bottom:0;height:6px;
+  background:var(--stripe);pointer-events:none}
+.login-wrap::before{content:"";position:absolute;top:0;left:22px;right:22px;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.95),transparent)}
+html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,transparent,rgba(255,255,255,.12),transparent)}
+.login-wrap>*{animation:view-in .55s var(--ease) both}
+.login-wrap>*:nth-child(2){animation-delay:.04s}
+.login-wrap>*:nth-child(3){animation-delay:.08s}
+.login-wrap>*:nth-child(4){animation-delay:.12s}
+.login-wrap>*:nth-child(5){animation-delay:.16s}
+.login-wrap>*:nth-child(6){animation-delay:.2s}
+.login-wrap>*:nth-child(7){animation-delay:.24s}
+.login-wrap h2{margin:0 0 6px;font-size:21px;font-weight:700;letter-spacing:-.01em;text-align:center}
+.login-sub{margin:0 0 28px;font-size:13px;color:var(--ink-3);text-align:center}
+.field{margin-bottom:16px}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--ink-2);margin-bottom:7px}
+.field input{width:100%;border:1px solid var(--line-strong);background:var(--surface-2);
+  color:var(--ink);border-radius:var(--r-md);padding:12px 14px;font-size:14px;outline:none;caret-color:var(--accent);
+  transition:border-color .2s var(--ease),background .2s var(--ease),box-shadow .2s var(--ease)}
+.field input::placeholder{color:var(--ink-3)}
+.field input:hover{border-color:var(--line-strong)}
+.field input:focus{border-color:var(--accent);background:var(--surface);
+  box-shadow:0 0 0 3px var(--accent-weak)}
+.hint{font-size:12px;color:var(--ink-3);text-align:center;margin:14px 0 0;line-height:1.6}
+.hint.error{color:var(--danger)}
+
+.btn:focus-visible,.icon-btn:focus-visible,.chip:focus-visible,.send-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.msg-list::-webkit-scrollbar{width:8px}
+.msg-list::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:8px;
+  border:2px solid transparent;background-clip:content-box}
+.msg-list::-webkit-scrollbar-thumb:hover{background:var(--ink-3);border:2px solid transparent;background-clip:content-box}
+.msg-list::-webkit-scrollbar-track{background:transparent}
+
+@media (max-width:900px){
+  .topbar{padding:0 16px}
+  .chat-wrap{margin:8px;height:calc(100dvh - 76px);min-height:460px}
+  .msg{max-width:86%}
+  .card{max-width:86%}
+  .msg-list{padding:20px 16px}
+  .chips,.chat-head,.input-bar{padding-left:16px;padding-right:16px}
+}
+@media (max-width:560px){
+  .msg.assistant,.card{margin-left:0}
+  .msg.assistant::before,.card::before{display:none}
+  .msg.assistant,.card{border-radius:var(--r-lg)}
+  .login-wrap{margin:6vh auto 0;padding:38px 24px 30px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;
+    transition-duration:.01ms !important}
+}
+
 </style>
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="brand-logo">智家</span><span>AI 客服中心</span></div>
+  <div class="brand">
+    <span class="brand-logo" aria-hidden="true">澄</span>
+    <span class="brand-text">
+      <span class="brand-name">澄元</span>
+      <span class="brand-sub">CHENGYUAN SMART HOME</span>
+    </span>
+  </div>
+  <button class="icon-btn" id="btn-theme" type="button" aria-label="切换深色模式" title="切换深浅主题">
+    <svg class="ico-moon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"/></svg>
+    <svg class="ico-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>
+  </button>
   <div class="topbar-user" id="topbar-user" hidden>
-    <span id="user-name"></span>
+    <span class="user-avatar" id="user-avatar" aria-hidden="true">客</span>
+    <span class="user-name" id="user-name"></span>
     <button class="btn ghost" id="btn-logout">退出登录</button>
   </div>
 </header>
 
 <main id="view-login" class="view">
   <div class="login-wrap">
+    <span class="brand-logo lg" aria-hidden="true">澄</span>
     <h2>登录</h2>
-    <div class="field"><label>账号</label><input id="login-account" autocomplete="username"></div>
-    <div class="field"><label>密码</label><input id="login-password" type="password" autocomplete="current-password"></div>
-    <button class="btn primary" id="btn-login" style="width:100%">登录</button>
-    <p class="hint" id="login-error" style="color:var(--danger)" hidden></p>
-    <p class="hint">占位登录：mock 模式任意账号密码；真实认证后端待对接。</p>
+    <p class="login-sub">进入澄元智能客服，有问题随时问我</p>
+    <div class="field">
+      <label for="login-account">账号</label>
+      <input id="login-account" autocomplete="username" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="login-password">密码</label>
+      <input id="login-password" type="password" autocomplete="current-password">
+    </div>
+    <button class="btn primary btn-block" id="btn-login">登录</button>
+    <p class="hint error" id="login-error" hidden></p>
+    <p class="hint">占位登录：任意账号密码即可体验；后端未连接时自动进入 mock 演示模式。</p>
   </div>
 </main>
 
 <main id="view-chat" class="view">
   <div class="chat-wrap">
     <div class="chat-head">
-      <span class="brand-logo">智家</span>
-      <div>
-        <div style="font-weight:600">智家客服中心</div>
-        <div style="font-size:12px;color:var(--text-3)" id="conn-text">连接正常</div>
+      <div class="agent-avatar" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z"/><path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>
       </div>
-      <span class="status-tag ai" id="status-tag">AI 在线</span>
+      <div class="chat-meta">
+        <div class="chat-title-row">
+          <span class="chat-title">澄元智能客服</span>
+          <span class="status-tag" id="status-tag">AI 在线</span>
+        </div>
+        <span class="conn-text" id="conn-text">连接正常</span>
+      </div>
     </div>
-    <div class="chips" id="chips"></div>
-    <div class="msg-list" id="msg-list"></div>
+    <div class="chips" id="chips" role="group" aria-label="快捷指令"></div>
+    <div class="msg-list" id="msg-list" aria-live="polite"></div>
     <div class="input-bar">
-      <input id="msg-input" placeholder="输入消息…" disabled>
-      <button class="send-btn" id="btn-send" disabled>➤</button>
+      <div class="composer">
+        <input id="msg-input" placeholder="输入消息，Enter 发送" aria-label="消息输入框" autocomplete="off" spellcheck="false">
+        <button class="send-btn" id="btn-send" disabled aria-label="发送消息">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12h15"/><path d="M13.5 6l6 6-6 6"/></svg>
+        </button>
+      </div>
     </div>
   </div>
 </main>
-
 <script>
 (function () {
   'use strict';
@@ -251,7 +545,9 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
   var QUICK_CMDS = [
     { label: '新会话', cmd: '重新开始' },
     { label: '查订单', cmd: '查询我的订单' },
-    { label: '改地址', cmd: '修改收货地址' },
+    { label: '食谱咨询', cmd: '我想咨询食谱' },
+    { label: '固件更新', cmd: '如何更新固件' },
+    { label: 'App 配对', cmd: '如何配对 Chengyuan Home App' },
     { label: '申请售后', cmd: '我要申请售后' },
     { label: '转人工', cmd: '转人工客服' },
   ];
@@ -478,7 +774,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
 
   function mockStream() {
     return [
-      { type: 'token', data: { text: '您好，我是智家小助手，请问有什么可以帮您？\n可以查订单、改收货信息、申请售后。' } },
+      { type: 'token', data: { text: '您好，我是澄元智能客服，有问题随时问我。\n可以查订单、聊食谱、查固件更新，也可以申请售后。' } },
       { type: 'tool_call', data: { name: 'order_lookup', args: { order_id: 'A1001' } } },
       { type: 'tool_result', data: { name: 'order_lookup', ok: true, summary: '订单 A1001：已发货，预计明天送达。' } },
       { type: 'clarification_required', data: { missing: ['order_id'] } },
@@ -590,6 +886,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     return el;
   }
 
+  var prevMsgCount = 0; // 入场动画判定：仅当消息数量增加时视为新消息
   function applyView() {
     var v = UserPage.buildView(store);
     var tag = document.getElementById('status-tag');
@@ -600,8 +897,17 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     chips.innerHTML = '';
     v.chips.forEach(function (node) { chips.appendChild(mountNode(node)); });
     var list = document.getElementById('msg-list');
+    var isNewMessage = v.messages.length > prevMsgCount;
+    prevMsgCount = v.messages.length;
     list.innerHTML = '';
     v.messages.forEach(function (node) { list.appendChild(mountNode(node)); });
+    if (isNewMessage && list.lastElementChild) list.lastElementChild.classList.add('enter');
+    // 流式输入光标：仅最后一个 AI 文本气泡
+    var lastMsg = store.messages[store.messages.length - 1];
+    if (store.conn.status === 'streaming' && lastMsg &&
+        lastMsg.role === 'assistant' && lastMsg.kind === 'text' && list.lastElementChild) {
+      list.lastElementChild.classList.add('typing');
+    }
     document.getElementById('msg-input').disabled = v.inputDisabled;
     document.getElementById('btn-send').disabled = v.inputDisabled;
     list.scrollTop = list.scrollHeight;
@@ -649,8 +955,10 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     chat.classList.toggle('active', name === 'chat');
     document.getElementById('topbar-user').hidden = name === 'login';
     if (name === 'chat') {
-      document.getElementById('user-name').textContent =
-        (store.auth && store.auth.user && store.auth.user.name) || '';
+      var displayName = (store.auth && store.auth.user && store.auth.user.name) || '';
+      document.getElementById('user-name').textContent = displayName;
+      var avatar = document.getElementById('user-avatar');
+      if (avatar) avatar.textContent = displayName ? displayName.slice(0, 1) : '客';
     }
   }
 
@@ -682,6 +990,7 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     try {
       mock = new URLSearchParams(window.location.search).get('mock') === 'true' ||
         window.localStorage.getItem('mock') === 'true';
+      if (window.location.protocol === 'file:') mock = true;
     } catch (e) { /* ignore */ }
     return { mock: mock, baseUrl: '' };
   }
@@ -778,7 +1087,16 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
     var errEl = document.getElementById('login-error');
     errEl.hidden = true;
     try {
-      var auth = await api.login(account, password);
+      var auth;
+      try {
+        auth = await api.login(account, password);
+      } catch (e) {
+        if (!isNetworkFailure(e) || store.config.mock) throw e;
+        enableMockMode();
+        auth = await api.login(account, password);
+        var hint = document.querySelector('.login-wrap .hint:not(.error)');
+        if (hint) hint.textContent = '后端未连接，已进入 mock 演示模式';
+      }
       saveAuth(auth);
       store.auth = auth;
       var ok = await bootstrapChat();
@@ -796,6 +1114,16 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
       errEl.textContent = '登录失败：' + e.message;
       errEl.hidden = false;
     }
+  }
+
+  function isNetworkFailure(e) {
+    return !!(e && (e.name === 'TypeError' ||
+      /failed to fetch|networkerror|load failed/i.test(e.message || '')));
+  }
+
+  function enableMockMode() {
+    store.config.mock = true;
+    api = createMockApi();
   }
 
   document.getElementById('btn-login').addEventListener('click', doLogin);
@@ -887,6 +1215,45 @@ border:1px solid var(--border);border-radius:var(--radius);padding:28px}
         scheduleReconnect(text, attempt + 1);
       });
     }, nextPollDelay(attempt));
+  }
+
+  /* ---- 主题（深浅模式：默认跟随系统，手动选择持久化到 localStorage） ---- */
+  var THEME_KEY = 'user_page_theme';
+
+  function getInitialTheme() {
+    try {
+      var saved = window.localStorage.getItem(THEME_KEY);
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch (e) { /* ignore */ }
+    if (typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+    return 'light';
+  }
+
+  function setTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    var btn = document.getElementById('btn-theme');
+    if (btn) btn.setAttribute('aria-label', theme === 'dark' ? '切换到浅色模式' : '切换到深色模式');
+  }
+
+  var currentTheme = getInitialTheme();
+  setTheme(currentTheme);
+  var themeBtn = document.getElementById('btn-theme');
+  if (themeBtn) {
+    themeBtn.addEventListener('click', function () {
+      currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+      try { window.localStorage.setItem(THEME_KEY, currentTheme); } catch (e) { /* ignore */ }
+      setTheme(currentTheme);
+    });
+  }
+  if (typeof window.matchMedia === 'function') {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    var onSchemeChange = function (ev) {
+      var saved = null;
+      try { saved = window.localStorage.getItem(THEME_KEY); } catch (e) { /* ignore */ }
+      if (!saved) setTheme(ev.matches ? 'dark' : 'light');
+    };
+    if (mq.addEventListener) mq.addEventListener('change', onSchemeChange);
   }
 
   applyView();
