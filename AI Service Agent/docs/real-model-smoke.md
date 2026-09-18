@@ -252,3 +252,18 @@
 - 已知观察：step-10 曾有 1 次 `["error","done"]`（无 token），复跑确认偶发（真实模型
   单轮失败），非系统性 resume 故障；脚本已对 step-10 捕获 error 详情 + 换问重试一次。
 - 回归：离线 `test_server_chatwoot / test_e2e_human_lane / test_server_auth` 全绿。
+
+## 12. 用户页面真机 E2E（2026-09-18 Chrome headless + CDP：7 步全 PASS）
+
+- 目的：契约对齐 + 静态同源托管后，改版页面在真实浏览器里对真实 Runtime 全链路验证
+  （登录 → AI 对话 → 转人工 → 人工车道 → 坐席回复经 webhook 回写 + 页面轮询 → resolve → AI 恢复）。
+- 前置：Runtime（`ai-service-agent`，0.0.0.0:8000，真实 ARK + Chatwoot）运行中；
+  页面由 Runtime 同源托管于 "/"（`file://` 会强制 mock，勿用）。
+- 脚本：`scripts/page_e2e_smoke.mjs`（Chrome headless + CDP；Node ≥ 22 内置 WebSocket/fetch）。
+- 运行：`node scripts/page_e2e_smoke.mjs`
+- 实测（2026-09-18）：7 步全 PASS；`handoff_id` 经 `GET /handoffs?conversation_id=` 获取
+  （CDP `Network.getResponseBody` 对流式 SSE 不可靠，故新增该查询端点，镜像 `GET /approvals`）；
+  页面无 console 异常（仅 favicon 404 等无害资源）。
+- 新增 Transport：`GET /handoffs?conversation_id=`（server.py）+ `HandoffService.get_by_conversation()`；
+  `main.py` host/port 可配（默认 0.0.0.0）；`server.py` 静态同源挂载 `web/`。
+- 回归：全量 pytest 225 passed。

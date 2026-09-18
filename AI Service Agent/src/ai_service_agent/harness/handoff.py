@@ -59,6 +59,25 @@ class HandoffService:
             self.status.set_mode(conversation_id, "ai", commit=False)
         return {"handoff_id": handoff_id, "conversation_id": conversation_id, "mode": "ai"}
 
+    def get_by_conversation(self, conversation_id: str) -> dict | None:
+        """该会话最新一条 handoff 记录（含 active/resolved），无则 None。"""
+        row = self.conn.execute(
+            "SELECT handoff_id, conversation_id, reason, summary, status, created_at, resolved_at "
+            "FROM handoff_record WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "handoff_id": row[0],
+            "conversation_id": row[1],
+            "reason": row[2],
+            "summary": row[3],
+            "status": row[4],
+            "created_at": row[5],
+            "resolved_at": row[6],
+        }
+
     def make_interrupt_callback(self, conversation_id: str) -> Callable:
         """包装 on_interrupt：handoff_request -> create_handoff + 产出 handoff_created 事件。"""
         async def on_interrupt(value: dict) -> dict | None:

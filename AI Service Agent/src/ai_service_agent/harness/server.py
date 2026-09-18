@@ -5,7 +5,10 @@ import sqlite3
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pathlib import Path
+
 from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
@@ -322,6 +325,13 @@ def create_app(
     def list_approvals(status: str | None = None):
         return {"items": approvals.list_pending() if status == "pending" else approvals.all()}
 
+    @app.get("/handoffs")
+    def list_handoffs(conversation_id: str):
+        rec = handoff.get_by_conversation(conversation_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="handoff not found")
+        return rec
+
     @app.post("/webhooks/chatwoot")
     async def chatwoot_webhook(request: Request):
         payload = await request.body()
@@ -358,6 +368,12 @@ def create_app(
             return {"ok": True}
         messages_store.append(conv_id, "assistant", content)
         return {"ok": True}
+
+    _web_dir = Path(__file__).resolve().parents[3] / "web"
+    if _web_dir.exists():
+        # 同源托管用户页面（user-page-spec §10）：baseUrl='' 相对路径 + file:// 强制 mock，
+        # 真实模式需 Runtime 同源提供页面；API 路由已在挂载前注册，优先级不变。
+        app.mount("/", StaticFiles(directory=_web_dir, html=True), name="web")
 
     return app
 
