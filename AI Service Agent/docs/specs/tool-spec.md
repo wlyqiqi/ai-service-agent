@@ -40,7 +40,7 @@ class ToolMeta:
 
 | 工具 | 类型 | min_risk_level | 说明 |
 |---|---|---|---|
-| `kb_search` | 知识库检索 | read | sqlite-vec / 关键词兜底 |
+| `kb_search` | 知识库检索 | read | 真实 LightRAG-chengyuan 检索（read 档）：`only_need_context` / `include_references` / `naive` / 关 rerank；返回上下文 + 参考来源；不可达 / 无结果确定性降级；引用来源在回复文本内标注（event-spec 不变） |
 | `order_lookup` | 订单查询 | read | stub 客户端；**P4（D4）属主校验**：`user_id` 经 `langgraph.prebuilt.InjectedState` 注入，仅返回本人订单，越权拒绝 |
 | `update_address` | 修改收货地址 | mutation | 幂等 |
 | `update_phone` | 修改联系电话 | mutation | 幂等 |

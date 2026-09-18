@@ -6,4 +6,5 @@
 - `2026-09-17-user-page-frontend.md` — 用户侧 AI 客服页面（单文件 HTML）实现计划（Task 1–6，TDD，每任务 commit），对应 `docs/specs/user-page-spec.md`。
 - `2026-09-18-user-page-backend-integration.md` — 用户页面 ↔ 真实后端契约对齐 + 人工车道离线 E2E 单链路（Task 1–4，TDD，每任务 commit），对应 `docs/specs/user-page-spec.md` §10/§11。
 - `2026-09-18-handoff-intent-gate.md` — P0 显式转人工入口检测（detector 前置拦截，不进 Router/Guard/Graph）+ 统一 `_emit_handoff` side-effect path（Task 1–5，TDD，每任务 commit）。
+- `2026-09-18-readgraph-lightrag-rag.md` — ReadGraph 知识库 RAG 接入（`kb_search` 接真实 LightRAG-chengyuan 检索：`naive` / 关 rerank / 来源标注 / 确定性降级 / 真机冒烟）（Task 1–5，TDD，已完成）。
 - 计划按 superpowers:writing-plans 规范编写；执行建议用 `subagent-driven-development`（推荐）或 `executing-plans`。
