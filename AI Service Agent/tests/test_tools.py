@@ -45,7 +45,7 @@ def test_registry_injects_by_risk_level():
 
 
 def test_stub_tools_return_values():
-    assert "结果" in kb_search.invoke("退款")
+    # kb_search 真实检索断言已移至 tests/test_kb_search.py（Task 2）
     assert order_lookup.invoke({"order_id": "ORD-1", "user_id": "u1"})["order_id"] == "ORD-1"
 
 
@@ -167,3 +167,4 @@ def test_read_tool_schema_contracts():
     assert "text" in KbSearchArgs.model_fields
     assert "request_id" in KbSearchArgs.model_fields
     assert KbSearchArgs.model_validate({"text": "退款", "request_id": "r1"}).text == "退款"
+

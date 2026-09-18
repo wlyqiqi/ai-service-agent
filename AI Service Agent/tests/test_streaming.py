@@ -82,8 +82,16 @@ def test_stream_yields_custom_events_and_guard_reject():
     assert events[-1]["data"]["final"] == GUARD_REJECT_TEXT
 
 
-def test_stream_emits_tool_events_from_nested_subgraph():
+def test_stream_emits_tool_events_from_nested_subgraph(monkeypatch):
     """subgraphs=True 重写钉测试：read_graph（嵌套子图）的 tool_call/tool_result 事件仍可见。"""
+    from ai_service_agent.tools import kb as kb_module
+
+    class _FakeLightRag:
+        def query_context(self, query):
+            return {"context": "炸篮 4.5L", "references": [{"file_path": "JoyAir_A1智能空气炸锅.md", "reference_id": "1"}]}
+
+    # 离线测试禁止依赖外部服务：fake 掉 LightRAG 客户端（与 tests/test_kb_search.py 同模式）
+    monkeypatch.setattr(kb_module._lightrag, "get_lightrag_client", lambda: _FakeLightRag())
     model = ToolCallingFakeModel(responses=[
         AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
         AIMessage(content="", tool_calls=[{"name": "kb_search", "args": {"text": "退款"}, "id": "call_1", "type": "tool_call"}]),

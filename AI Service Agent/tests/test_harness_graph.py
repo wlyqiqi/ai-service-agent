@@ -39,7 +39,15 @@ def _invoke(graph, text, thread_id):
     )
 
 
-def test_make_ai_graph_injects_read_tools_by_default():
+def test_make_ai_graph_injects_read_tools_by_default(monkeypatch):
+    # Task 2：kb_search 接真实 LightRAG——注入 fake client，离线确定性（命中带参考来源）
+    from ai_service_agent.tools import kb as kb_module
+
+    class _FakeLightRag:
+        def query_context(self, query):
+            return {"context": "炸篮 4.5L", "references": [{"file_path": "JoyAir_A1智能空气炸锅.md", "reference_id": "1"}]}
+
+    monkeypatch.setattr(kb_module._lightrag, "get_lightrag_client", lambda: _FakeLightRag())
     model = ToolCallingFakeModel(responses=[
         AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
         AIMessage(content="", tool_calls=[{"name": "kb_search", "args": {"text": "退款"}, "id": "call_1", "type": "tool_call"}]),
@@ -49,7 +57,8 @@ def test_make_ai_graph_injects_read_tools_by_default():
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[0], "name", "") == "kb_search"
-    assert "知识库检索结果" in str(tool_msgs[0].content)
+    assert "检索结果" in str(tool_msgs[0].content)
+    assert "JoyAir_A1智能空气炸锅.md" in str(tool_msgs[0].content)
 
 
 def test_default_registry_order_lookup_injected():
