@@ -537,7 +537,18 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
           content: { code: data.code || 'E_UNKNOWN', message: data.message || '未知错误' }, meta: {} });
         break;
       case 'done':
+        // event-spec done.final 契约：无 token 流（如 KB 缺口整段回复）时，
+        // 最终文本只携带在 done.final 里；有 token 流时其内容已拼入末条 text，幂等跳过。
         s.conn.status = s.conversation.mode === 'human' ? 'polling' : 'idle';
+        if (typeof data.final === 'string' && data.final) {
+          var last = s.messages[s.messages.length - 1];
+          var alreadyShown = last && last.kind === 'text' && last.role === 'assistant' &&
+            last.content === data.final;
+          if (!alreadyShown) {
+            s.messages.push({ id: msgId(), role: 'assistant', kind: 'text',
+              content: data.final, meta: {} });
+          }
+        }
         break;
     }
     return s;

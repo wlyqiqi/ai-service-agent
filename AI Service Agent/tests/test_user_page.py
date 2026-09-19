@@ -174,6 +174,33 @@ def test_apply_done_ends_turn(tmp_path):
     assert out["conn"]["status"] == "idle"
 
 
+def test_apply_done_final_appends_text_when_no_token(tmp_path):
+    """done.final 在无 token 流（KB 缺口整段回复）时补齐 assistant text（event-spec done.final 契约）。"""
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'tool_call',data:{name:'kb_search',args:{text:'注册资本'}}}), "
+        "{type:'done',data:{final:'我暂时无法处理，请换个说法或联系人工客服。'}})",
+        tmp_path,
+    )
+    last = out["messages"][-1]
+    assert last["kind"] == "text"
+    assert last["role"] == "assistant"
+    assert "联系人工客服" in last["content"]
+    assert out["conn"]["status"] == "idle"
+
+
+def test_apply_done_final_idempotent_with_token(tmp_path):
+    """已有 token 流时 done.final 不重复追加（幂等）。"""
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'token',data:{text:'您好'}}), {type:'done',data:{final:'您好'}})",
+        tmp_path,
+    )
+    texts = [m for m in out["messages"] if m["kind"] == "text" and m["role"] == "assistant"]
+    assert len(texts) == 1
+    assert texts[0]["content"] == "您好"
+
+
 def test_apply_tool_call_then_result(tmp_path):
     out = _run_js(
         "UserPage.applyEvent(UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
