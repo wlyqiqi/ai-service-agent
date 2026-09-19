@@ -238,6 +238,7 @@ async function main() {
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-gpu",
+        "--no-sandbox",
         "--window-size=1280,900",
         "about:blank",
       ],
@@ -325,7 +326,7 @@ async function main() {
     // 2. 登录
     await evaluate(
       cdp,
-      `document.getElementById('login-account').value='demo'; document.getElementById('login-password').value='demo'; true`
+      `document.getElementById('login-account').value='u1'; document.getElementById('login-password').value='demo'; true`
     );
     await evaluate(cdp, `document.getElementById('btn-login').click(); true`);
     await waitFor(
@@ -348,6 +349,28 @@ async function main() {
       name: "3.AI 对话(真实模型)",
       pass: !!aiText && aiText.length > 1,
       preview: aiText ? aiText.slice(0, 80) : null,
+    });
+
+    // 3.5 Mutation：页面确认 -> /actions/confirm -> checkpoint resume -> DB 写入
+    await sendMessage(cdp, "把我的收货地址改成北京市朝阳区测试路 99 号");
+    await waitFor(
+      cdp,
+      `(() => { const b = Array.from(document.querySelectorAll('#msg-list button[data-action="confirm"]')); return b.length ? true : false; })()`,
+      "确认卡片出现"
+    );
+    await evaluate(
+      cdp,
+      `document.querySelector('#msg-list button[data-action="confirm"]').click(); true`
+    );
+    const confirmedText = await waitFor(
+      cdp,
+      `(() => { const t = Array.from(document.querySelectorAll('#msg-list .msg, #msg-list .card')).map(e => e.textContent).join(' | '); return t.includes('操作已完成') && t.includes('已确认') ? t : false; })()`,
+      "确认执行完成"
+    );
+    results.push({
+      name: "3.5 Mutation确认(resume->DB)",
+      pass: !!confirmedText,
+      preview: confirmedText ? confirmedText.slice(-100) : null,
     });
 
     // 4. 转人工

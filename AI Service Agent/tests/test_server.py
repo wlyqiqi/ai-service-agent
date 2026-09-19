@@ -8,6 +8,8 @@ from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ApprovalFlowFakeModel
+from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.tools import write as write_mod
 
 
 def test_sessions_creates_ai_mode(tmp_path):
@@ -159,6 +161,35 @@ def test_resolve_entrance_handoff_then_next_chat_is_answered(tmp_path):
             st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
             return st.values.get("execution_status")
     assert asyncio.run(check_completed()) == "completed"
+
+
+def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(tmp_path / "isolated-mock.db")
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account", "mutation", 0.9),
+        select_json_message("update_address", {"address": "北京市朝阳区测试路 99 号"}),
+    ])
+    db = str(tmp_path / "confirm.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
+        stream_text = "".join(resp.iter_text())
+    assert '"confirmation_required"' in stream_text
+
+    r = client.post("/actions/confirm", json={"conversation_id": session_id, "action": "confirmed"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["action"] == "confirm"
+    assert body["final"] == "操作已完成。"
+
+    conn = sqlite3.connect(db)
+    rows = MessageStore(conn).list(session_id)
+    conn.close()
+    assert rows[-1]["role"] == "assistant"
+    assert rows[-1]["content"] == "操作已完成。"
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):

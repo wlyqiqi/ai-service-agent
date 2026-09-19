@@ -54,6 +54,11 @@ class ChatBody(BaseModel):
     message: str
 
 
+class ConfirmBody(BaseModel):
+    conversation_id: str
+    action: str
+
+
 class LoginBody(BaseModel):
     account: str
     password: str
@@ -257,6 +262,48 @@ def create_app(
                         yield ev
 
         return _sse_response(ai_stream())
+
+    @app.post("/actions/confirm")
+    async def action_confirm(body: ConfirmBody):
+        """页面确认按钮的 Transport 入口；Graph 编排与 checkpoint resume 仍在图内。"""
+        conv_id = body.conversation_id
+        thread_id = status.get_thread_id(conv_id)
+        if thread_id is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        if body.action not in ("confirm", "confirmed", "cancel", "canceled"):
+            raise HTTPException(status_code=422, detail="invalid action")
+        normalized = "confirm" if body.action in ("confirm", "confirmed") else "cancel"
+        if status.get_mode(conv_id) != "ai":
+            raise HTTPException(status_code=409, detail="conversation is not in ai mode")
+
+        lock = await _thread_lock(thread_id)
+        async with lock:
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                graph = make_ai_graph(_resolve_model(model), saver)
+                cfg = {"configurable": {"thread_id": thread_id}}
+                state = await graph.aget_state(cfg)
+                pending = state.interrupts[0].value if state.interrupts else None
+                if not isinstance(pending, dict) or pending.get("type") != "confirmation_required":
+                    raise HTTPException(status_code=409, detail="no pending confirmation")
+
+                events: list[dict] = []
+                final: str | None = None
+                message_id: str | None = None
+                failed = False
+                async for event in event_stream(
+                    graph, cfg, [], resume_payload={"action": normalized},
+                ):
+                    if event.get("type") == "done":
+                        final = event.get("data", {}).get("final")
+                        message_id = event.get("data", {}).get("message_id")
+                    elif event.get("type") == "error":
+                        failed = True
+                    events.append(event)
+                if final is not None:
+                    messages_store.append(conv_id, "assistant", final, message_id=message_id)
+        if failed:
+            raise HTTPException(status_code=502, detail="resume execution failed")
+        return {"ok": True, "action": normalized, "final": final, "events": events}
 
     @app.get("/conversations/{conversation_id}/messages")
     def get_messages(conversation_id: str):

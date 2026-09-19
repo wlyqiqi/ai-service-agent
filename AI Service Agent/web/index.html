@@ -1172,8 +1172,19 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     var verdict = action === 'confirm' ? 'confirmed' : 'canceled';
     if (!store.pendingAction || store.pendingAction.kind !== 'confirm') return;
     api.confirm(store.conversation.conversation_id, verdict)
-      .then(function () {
-        store = applyEvent(store, { type: 'confirmation_updated', data: { action: verdict } });
+      .then(function (result) {
+        var next = store;
+        (result.events || []).forEach(function (event) {
+          if (event.type === 'tool_call' || event.type === 'tool_result') {
+            next = applyEvent(next, event);
+          }
+        });
+        if (result.final) {
+          next.messages.push({ id: msgId(), role: 'assistant', kind: 'text', content: result.final, meta: {} });
+        }
+        next.conn.status = 'idle';
+        next = applyEvent(next, { type: 'confirmation_updated', data: { action: verdict } });
+        store = next;
         applyView();
       })
       .catch(function (e) {
