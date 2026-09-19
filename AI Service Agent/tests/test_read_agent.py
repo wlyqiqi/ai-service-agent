@@ -18,3 +18,13 @@ def test_read_system_prompt_requires_source_citation():
     assert "来源" in READ_SYSTEM_PROMPT
     assert "（来源：" in READ_SYSTEM_PROMPT
     assert "未查询到" in READ_SYSTEM_PROMPT
+
+
+def test_read_system_prompt_friendly_no_result_tone():
+    """知识缺口回复要求专业客服口吻：如实告知 + 表达歉意/引导替代帮助，而非机械复述。"""
+    from ai_service_agent.prompts import READ_SYSTEM_PROMPT
+    assert "如实告知" in READ_SYSTEM_PROMPT
+    assert "友好" in READ_SYSTEM_PROMPT
+    assert "人工客服" in READ_SYSTEM_PROMPT
+    assert "引导" in READ_SYSTEM_PROMPT
+    assert "换个说法" in READ_SYSTEM_PROMPT

@@ -27,11 +27,15 @@ def test_build_graph_read_path():
 
 def test_build_graph_fallback_path():
     model = ToolCallingFakeModel(
-        responses=[AIMessage(content='{"capability":"order","risk_level":"read","confidence":0.3}')]
+        responses=[
+            AIMessage(content='{"capability":"order","risk_level":"read","confidence":0.3}'),
+            AIMessage(content="抱歉，暂时无法直接处理，您可以换个说法或联系人工客服。"),
+        ]
     )
     graph = build_graph(model, tools=[kb_search])
     out = graph.invoke({"messages": [HumanMessage(content="随便聊聊")], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["execution_status"] == "completed"
+    assert "无法直接处理" in out["messages"][-1].content
 
 
 def test_build_graph_guard_fail_blocks_router_consumption():

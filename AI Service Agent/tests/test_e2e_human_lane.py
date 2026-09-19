@@ -13,6 +13,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, MockTransport, Response
+from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from ai_service_agent.harness.chatwoot import ChatwootClient
@@ -39,9 +40,15 @@ def parse_sse(text: str) -> list[dict]:
 
 
 class HandoffE2EFakeModel(ToolCallingFakeModel):
-    """Router 恒为 unknown/read -> Fallback（显式转人工由入口层 detector 拦截，不进图）。"""
+    """Router 恒为 unknown/read -> Fallback（显式转人工由入口层 detector 拦截，不进图）；
+    fallback explain_llm 返回友好兜底文案（FALLBACK_SYSTEM_PROMPT）。"""
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
+        if "无法直接处理" in system:
+            return ChatResult(generations=[ChatGeneration(
+                message=AIMessage(content="抱歉，暂时无法直接处理，您可以换个说法或让我为您转接人工客服。")
+            )])
         return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", "read", 0.5))])
 
 
@@ -148,9 +155,10 @@ def test_human_lane_end_to_end(tmp_path):
         events = parse_sse("".join(r.iter_text()))
     assert events[-1]["type"] == "done"
     assert _mode(db, sid) == "ai"
-    # fallback explain 为确定性节点不流式 token；断言 Message Store 已落新的 assistant 回复
+    # fallback explain_llm 为 LLM 节点（流式 token）；断言 Message Store 已落新的 assistant 回复
     rows7 = _rows(db, sid)
-    assert rows7[-1]["role"] == "assistant" and rows7[-1]["content"] == "我暂时无法处理，请换个说法或联系人工客服。"
+    assert rows7[-1]["role"] == "assistant"
+    assert rows7[-1]["content"] == "抱歉，暂时无法直接处理，您可以换个说法或让我为您转接人工客服。"
 
 
 

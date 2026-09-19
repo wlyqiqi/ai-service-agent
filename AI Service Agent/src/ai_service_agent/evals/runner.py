@@ -18,7 +18,8 @@ SKIP_REASONS = ("precheck_rule_pending", "handoff_rule_pending", "not_applicable
 
 HANDOFF_SKIP = "handoff_rule_pending"
 READ_MARKER = "READ-OK"
-FALLBACK_EXPLAIN = "我暂时无法处理，请换个说法或联系人工客服。"
+# fallback explain_llm 为 LLM 节点（2026-09-18 起），文案不再确定性；改用 marker 断言 LLM 产出被消费。
+FALLBACK_MARKER = "FALLBACK-OK"
 
 # deny 拆分（OQ-7 + D3/D5/D4）：全部 deny 已转真实断言——0086/0089/0090 为预检规则（含特定 reason），
 # 0087 为读侧工具层数据边界（D4，ReadGraph 无 precheck，工具返回 data_boundary）。
@@ -137,7 +138,7 @@ def _scripted_responses(case: dict) -> list:
     if ep == "allow":
         return [router_json_message(case["expected_capability"], "read", 0.9), AIMessage(content=READ_MARKER)]
     if ep == "fallback":
-        return [router_json_message("unknown", "read", 0.2)]
+        return [router_json_message("unknown", "read", 0.2), AIMessage(content=FALLBACK_MARKER)]
     if ep == "confirm":
         return [router_json_message(case["expected_capability"], "mutation", 0.9),
                 select_json_message("update_phone", {"phone": "13800000000"})]
@@ -221,7 +222,7 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
         if ep == "allow":
             ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == READ_MARKER
         elif ep == "fallback":
-            ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == FALLBACK_EXPLAIN
+            ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == FALLBACK_MARKER
         elif ep == "confirm":
             ok = any(i.get("type") == "confirmation_required" for i in r["interrupts"])
         elif ep == "approval":

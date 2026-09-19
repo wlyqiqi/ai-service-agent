@@ -1,10 +1,12 @@
 import langgraph.types as _lg_types
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.prompts import FALLBACK_SYSTEM_PROMPT
 
 
 def _last_user_content(state: dict) -> str:
@@ -46,21 +48,22 @@ def pause(state: dict) -> dict:
 def make_fallback_graph(model):
     """Fallback / Concierge：check_handoff 前置（graph-spec.md §6.4 P1 定案）。
 
-    命中 handoff -> pause（interrupt，图内不生成文案）；未命中 -> explain 兜底回复。
+    命中 handoff -> pause（interrupt，图内不生成文案）；未命中 -> explain_llm
+    （LLM 生成友好兜底回复，FALLBACK_SYSTEM_PROMPT，人工客服口吻）。
     """
-    def explain(state: dict) -> dict:
-        return {"messages": [AIMessage(content="我暂时无法处理，请换个说法或联系人工客服。")]}
+    # LLM 节点（2026-09-18）：无工具 ReAct，仅生成友好兜底文案；token 流经 harness messages 模式。
+    explain_llm = create_agent(model, tools=[], system_prompt=FALLBACK_SYSTEM_PROMPT)
 
     builder = StateGraph(CustomerServiceState)
     builder.add_node("check_handoff", check_handoff)
-    builder.add_node("explain", explain)
+    builder.add_node("explain_llm", explain_llm)
     builder.add_node("pause", pause)
     builder.add_edge(START, "check_handoff")
     builder.add_conditional_edges(
         "check_handoff",
-        lambda s: "pause" if s.get("handoff") else "explain",
-        {"pause": "pause", "explain": "explain"},
+        lambda s: "pause" if s.get("handoff") else "explain_llm",
+        {"pause": "pause", "explain_llm": "explain_llm"},
     )
-    builder.add_edge("explain", END)
+    builder.add_edge("explain_llm", END)
     builder.add_edge("pause", END)
     return builder.compile()
