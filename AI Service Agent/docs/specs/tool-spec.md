@@ -44,16 +44,17 @@ class ToolMeta:
 | `order_lookup` | 订单查询 | read | **数据源替换（2026-09-19，同 `kb_search` stub→真实检索模式）**：内部实现从写死 stub 改为查询模拟电商库 `data/mock_ecommerce.db`（`scripts/seed_mock_db.py` 确定性生成，配置 `mock_ecommerce_db_path`，只读连接，库缺失/损坏确定性降级）；解析顺序 = `ORDER_STORE` 评测夹具（相对时间语义，CTRL-0086/0090 依赖，永远优先）→ 模拟电商库 → `not_found`；ToolMeta.schema 与对外接口/返回字段不变；**P4（D4）属主校验**不变：`user_id` 经 `langgraph.prebuilt.InjectedState` 注入，仅返回本人订单，越权拒绝 |
 | `my_orders` | 我的订单列表 | read | 登录用户名下最近 10 单（倒序）；`status` 可选过滤（paid/shipped/delivered/completed/refunding/refunded/cancelled）；零业务参数即可用——身份即授权（`user_id` 经 InjectedState 注入，不由模型/用户提供）；只读连接（mode=ro），库缺失降级 `data_source_unavailable`（2026-09-19） |
 | `shipment_query` | 物流查询 | read | 登录用户订单物流；`order_id` 可选（提供则精确查 + D4 属主校验，缺省优先返回在途订单物流，最多 5 条）；cancelled 单返回「已取消，无物流信息」；只读连接（mode=ro），库缺失降级 `data_source_unavailable`（2026-09-19） |
-| `update_address` | 修改收货地址 | mutation | 幂等 |
-| `update_phone` | 修改联系电话 | mutation | 幂等 |
-| `update_order_note` | 修改订单备注 | mutation | 幂等 |
-| `create_invoice` | 开具发票 | mutation | 幂等；order_id/amount/company/tax_no 必填 |
-| `create_service_ticket` | 创建售后工单 | mutation | 幂等 |
+| `update_address` | 修改收货地址 | mutation | 幂等；内部实现写模拟电商库 `customers.address`，`user_id` 经 InjectedState 注入 |
+| `update_phone` | 修改联系电话 | mutation | 幂等；内部实现写模拟电商库 `customers.phone`，`user_id` 经 InjectedState 注入 |
+| `update_order_note` | 修改订单备注 | mutation | 幂等；内部实现写模拟电商库 `orders.note`；仅限本人订单（D4） |
+| `create_invoice` | 开具发票 | mutation | 幂等；内部实现写模拟电商库 `invoices`；仅限本人订单；金额规则由 safety_check 裁决（`amount + 已开票累计 <= orders.total_amount`），一单一开、允许部分开票 |
+| `create_service_ticket` | 创建售后工单 | mutation | 幂等；内部实现写模拟电商库 `service_tickets`；仅限本人订单；工单-会话关联留待 handoff 集成阶段实现 |
 | `cancel_order` | 取消订单 | high_risk | 需人工审批（原 `order_cancel` 重命名） |
 | `refund_apply` | 退款申请 | high_risk | 需人工审批 |
 
 - **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
 - **P4 实现（D3/D4 定案）**：`orders.py` 升级为最小订单状态模型（`order_id -> {user_id, status, signed_at, cancelled_at}`，含确定性种子数据供离线 eval/测试）；`order_lookup` 承担读侧属主校验（D4）；订单状态事实由 `precheck_fetch` 节点提供给预检（D3，见 safety-spec.md §1.2）。
+- **P6 实现（2026-09-19）**：5 个 mutation 工具从内存 `_WRITE_STORE` 替换为查询/写入模拟电商库（同 `kb_search`/`order_lookup` 数据源替换模式）。`idempotency` 表位于 `mock_ecommerce.db`，复合主键 `(tool_name, request_id)`，与业务写入同连接同事务；拒绝路径不消耗幂等键。只读工具仍使用 `mode=ro` 连接，mutation 工具使用读写连接。高风险 `cancel_order/refund_apply` 仍为 stub，待审批集成阶段另行落库。
 - **P5（B1）**：只读工具补 select 侧 schema（`kb_search`=`{text, request_id}`、
   `order_lookup`=`{order_id, request_id}`；`request_id` 由 select 注入，`user_id` 经 InjectedState 注入不入 schema），
   注册表元数据完备（预检用）。

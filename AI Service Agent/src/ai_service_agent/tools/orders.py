@@ -112,11 +112,35 @@ def _db_order_record(order_id: str) -> dict | None:
     }
 
 
+def _db_invoiced_total(order_id: str) -> float:
+    """订单已开票累计（只读）；库缺失/损坏按 0 处理，业务裁决由预检层负责。"""
+    try:
+        conn = _db_connect()
+    except (sqlite3.Error, OSError):
+        return 0.0
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM invoices WHERE order_id=?", (order_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return 0.0
+    finally:
+        conn.close()
+    return float(row[0]) if row else 0.0
+
+
 def lookup_order_state(order_id: str) -> dict | None:
     """订单状态事实查询（D3，P4）：夹具优先 -> 模拟电商库 -> None；仅返回事实，不做授权/业务裁决。"""
     fixture = ORDER_STORE.get(order_id)
     if fixture is not None:
-        return fixture
+        db_record = _db_order_record(order_id)
+        if db_record is not None:
+            return {
+                **fixture,
+                "total_amount": db_record["amount"],
+                "invoiced_amount": _db_invoiced_total(order_id),
+            }
+        return {**fixture, "total_amount": fixture["amount"], "invoiced_amount": 0.0}
     record = _db_order_record(order_id)
     if record is None:
         return None
@@ -126,6 +150,8 @@ def lookup_order_state(order_id: str) -> dict | None:
         "status": _DB_MACHINE_STATUS.get(record["status"], record["status"]),
         "signed_at": record["signed_at"],
         "cancelled_at": record["cancelled_at"],
+        "total_amount": record["amount"],
+        "invoiced_amount": _db_invoiced_total(order_id),
     }
 
 

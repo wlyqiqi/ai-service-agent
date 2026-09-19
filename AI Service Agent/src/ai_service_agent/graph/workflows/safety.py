@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 REFUND_WINDOW_DAYS = 7  # 无理由退款签收窗口（D3，CTRL-0086）
 
 
-def _apply_business_rules(pending: dict, precheck_data: dict | None) -> str | None:
+def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: str = "") -> str | None:
     """D3（P4）业务规则 v1（safety-spec §1.2）：确定性消费 precheck_data 事实，返回拒绝 reason 或 None。
     只裁决不 fetch（fetch 职责在 precheck_fetch 节点，事实层）；参数与事实订单不一致时不做裁决（防御）。"""
     if not precheck_data:
@@ -32,6 +32,19 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None) -> str | No
     order_id = (pending.get("args") or {}).get("order_id")
     if precheck_data.get("order_id") != order_id:
         return None
+    if precheck_data.get("user_id") and user_id and precheck_data["user_id"] != user_id:
+        return "data_boundary"
+    if tool_name == "create_invoice":
+        amount = (pending.get("args") or {}).get("amount")
+        total_amount = precheck_data.get("total_amount")
+        invoiced_amount = precheck_data.get("invoiced_amount")
+        if (
+            isinstance(amount, (int, float)) and amount > 0
+            and isinstance(total_amount, (int, float))
+            and isinstance(invoiced_amount, (int, float))
+            and amount > float(total_amount) - float(invoiced_amount) + 1e-9
+        ):
+            return "invoice_amount_exceeds"
     if tool_name == "refund_apply" and precheck_data.get("status") == "signed":
         signed_at = precheck_data.get("signed_at")
         if isinstance(signed_at, datetime):
@@ -94,7 +107,9 @@ def make_safety_check_node(tier: str, registry: ToolRegistry) -> Callable[[dict]
         ctx = state.get("context", {})
         reason = _check(ctx.get("pending_tool") or {}, tier, registry, state.get("user_id", ""))
         if reason is None:
-            reason = _apply_business_rules(ctx.get("pending_tool") or {}, ctx.get("precheck_data"))
+            reason = _apply_business_rules(
+                ctx.get("pending_tool") or {}, ctx.get("precheck_data"), state.get("user_id", "")
+            )
         if reason is None:
             return {"context": {**ctx, "precheck": "pass"}}
         get_stream_writer()({"type": "safety_rejected", "data": {"rule": "precheck", "reason": reason}})

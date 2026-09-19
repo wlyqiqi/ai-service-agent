@@ -21,10 +21,11 @@
 | 业务规则 | 频次/额度/状态机约束 | 已取消订单不可再取消（CTRL-0090）；单日退款次数上限 |
 | 必填标识符非空（D2，P4） | required schema 字段值不得为空串（`request_id` 除外） | `order_id=""` → 拒绝 |
 | 退款时限（D3，P4） | 无理由退款须在签收 7 天窗口内 | 签收超 7 天 → 拒绝（CTRL-0086） |
+| 开票金额上限（2026-09-19） | `amount + 该单已开票累计 <= orders.total_amount`；一单一开，允许部分开票；多订单分别开票 | `ORD-A` 总额 100、已开 30，再开 71 → `invoice_amount_exceeds` |
 | 敏感操作复核 | 破坏性关键词/高危参数二次确认要求 | 批量删除、大额转账 |
 
 - **v1 范围（D4 定案，P3）**：先实现「参数 schema 白名单 + 权限（`min_risk_level` 匹配 + `user_id` 登录态）+ 数据边界」。
-- **P4 增量（D2/D3 定案）**：业务规则 v1 落地「必填标识符非空 + 退款时限 + 取消状态机」（事实来自 `precheck_fetch` 写入的 `context["precheck_data"]`，仅事实；裁决仍在 `safety_check` 确定性完成）；「敏感操作复核」与其余频次/额度规则仍留后续。
+- **P4 增量（D2/D3 定案）**：业务规则 v1 落地「必填标识符非空 + 退款时限 + 取消状态机 + 开票金额上限」（事实来自 `precheck_fetch` 写入的 `context["precheck_data"]`，仅事实；裁决仍在 `safety_check` 确定性完成）；「敏感操作复核」与其余频次/额度规则仍留后续。
 - **参数不完整 ≠ 拒绝**：select 层判定缺参/空参时走 clarify（普通轮，`execution_status=clarifying`，发 `clarification_required`，见 graph-spec.md §6.2/§6.3）；`safety_rejected` 仅用于真正的拒绝（解析失败/未知工具/schema 错误/预检规则失败）。
 
 ### 1.3 结果与事件

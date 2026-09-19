@@ -80,7 +80,8 @@ CREATE TABLE customers (
     market        TEXT NOT NULL,
     language      TEXT NOT NULL,
     tier          TEXT NOT NULL,
-    registered_at TEXT NOT NULL
+    registered_at TEXT NOT NULL,
+    address       TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE products (
     product_id       TEXT PRIMARY KEY,
@@ -103,7 +104,8 @@ CREATE TABLE orders (
     total_amount REAL NOT NULL,
     currency     TEXT NOT NULL,
     channel      TEXT NOT NULL,
-    market       TEXT NOT NULL
+    market       TEXT NOT NULL,
+    note         TEXT
 );
 CREATE INDEX idx_orders_customer ON orders(customer_id);
 CREATE TABLE order_items (
@@ -149,6 +151,24 @@ CREATE TABLE conversations (
     ticket_id       TEXT REFERENCES service_tickets(ticket_id),
     mode            TEXT NOT NULL,
     created_at      TEXT NOT NULL
+);
+CREATE TABLE invoices (
+    invoice_id  TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL REFERENCES customers(customer_id),
+    order_id    TEXT NOT NULL UNIQUE REFERENCES orders(order_id),
+    amount      REAL NOT NULL CHECK (amount > 0),
+    company     TEXT NOT NULL,
+    tax_no      TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX idx_invoices_order ON invoices(order_id);
+CREATE TABLE idempotency (
+    tool_name   TEXT NOT NULL,
+    request_id  TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (tool_name, request_id)
 );
 """
 
@@ -201,9 +221,9 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
     # ---- customers：u1/u2 为规范化夹具属主，其余 u0003.. ----
     customers = [
         ("u1", "张伟", "+65-81234567", "zhangwei.demo@example.com", "SG", "zh-CN", "VIP",
-         _iso(ANCHOR - timedelta(days=800))),
+         _iso(ANCHOR - timedelta(days=800)), "123 Chengyuan Avenue #04-01, Singapore"),
         ("u2", "李娜", "+60-198765432", "lina.demo@example.com", "MY", "zh-CN", "普通会员",
-         _iso(ANCHOR - timedelta(days=650))),
+         _iso(ANCHOR - timedelta(days=650)), "456 Chengyuan Road, Kuala Lumpur"),
     ]
     used_names = {"张伟", "李娜"}
     for i in range(1, N_CUSTOMERS + 1):
@@ -219,8 +239,12 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
             rng.choice(["zh-CN", "en", "th", "id", "vi"]),
             rng.choice(["普通会员", "普通会员", "普通会员", "高级会员", "VIP"]),
             _iso(_rand_dt(rng, ANCHOR - timedelta(days=730), 720)),
+            f"No. {i}, Chengyuan {market}",
         ))
-    conn.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?,?,?)", customers)
+    conn.executemany(
+        "INSERT INTO customers(customer_id,name,phone,email,market,language,tier,registered_at,address)"
+        " VALUES (?,?,?,?,?,?,?,?,?)", customers,
+    )
 
     # ---- products ----
     products = []
@@ -269,7 +293,10 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
             f"ORD-2026-{10001 + k:05d}", cust, status, _iso(ordered_at), signed, cancelled,
             0.0, CURRENCY[market], rng.choice(CHANNELS), market,
         ))
-    conn.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?)", orders)
+    conn.executemany(
+        "INSERT INTO orders(order_id,customer_id,status,ordered_at,signed_at,cancelled_at,"
+        "total_amount,currency,channel,market) VALUES (?,?,?,?,?,?,?,?,?,?)", orders,
+    )
 
     # ---- order_items + 金额回填 ----
     items = []
@@ -352,7 +379,10 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
         ))
     conn.executemany("INSERT INTO conversations VALUES (?,?,?,?,?)", conversations)
 
-    tables = ["customers", "products", "orders", "order_items", "shipments", "devices", "service_tickets", "conversations"]
+    tables = [
+        "customers", "products", "orders", "order_items", "shipments",
+        "devices", "service_tickets", "conversations", "invoices", "idempotency",
+    ]
     return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
 

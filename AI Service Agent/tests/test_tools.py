@@ -68,19 +68,15 @@ def test_tool_meta_carries_schema_field():
     assert meta2.idempotent is True
 
 
-def test_write_tools_stub_idempotent_by_request_id():
-    r1 = update_address.invoke({"address": "北京市朝阳区", "request_id": "rq-1"})
-    r2 = update_address.invoke({"address": "北京市朝阳区", "request_id": "rq-1"})
-    assert r1["replayed"] is False and r2["replayed"] is True
-    assert r1["result"] == r2["result"]
-    r3 = update_address.invoke({"address": "上海市浦东", "request_id": "rq-2"})
-    assert r3["replayed"] is False
+def test_write_tools_not_logged_in():
+    result = update_address.invoke({"address": "北京市朝阳区", "request_id": "rq-1"})
+    assert result == {"error": "not_logged_in"}
 
 
 def test_write_tool_schemas():
     assert UpdateAddressArgs(address="a", request_id="rq").address == "a"
     assert UpdatePhoneArgs(phone="13800000000", request_id="rq").phone == "13800000000"
-    assert UpdateOrderNoteArgs(note="n", request_id="rq").note == "n"
+    assert UpdateOrderNoteArgs(order_id="ORD-1", note="n", request_id="rq").note == "n"
     inv = CreateInvoiceArgs(order_id="10086", amount=99.0, company="c", tax_no="t", request_id="rq")
     assert inv.amount == 99.0 and inv.company == "c" and inv.tax_no == "t"
     assert CreateServiceTicketArgs(order_id="10086", reason="r", request_id="rq").reason == "r"
