@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS conversation_message (
 );
 """
 
+MESSAGE_ID_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS ux_conversation_message_message_id
+ON conversation_message(message_id)
+WHERE message_id IS NOT NULL;
+"""
+
 
 class MessageStore:
     """会话消息唯一真相源（user / assistant 轮次）。
@@ -26,12 +32,40 @@ class MessageStore:
         self.conn = conn
         self.conn.execute(MESSAGE_SCHEMA)
         self._ensure_message_id_column()
+        self._ensure_unique_message_ids()
         self.conn.commit()
 
     def _ensure_message_id_column(self) -> None:
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(conversation_message)").fetchall()]
         if "message_id" not in cols:
             self.conn.execute("ALTER TABLE conversation_message ADD COLUMN message_id TEXT")
+
+    def _ensure_unique_message_ids(self) -> None:
+        self.conn.execute(
+            "DELETE FROM conversation_message "
+            "WHERE message_id IS NOT NULL AND id NOT IN ("
+            "  SELECT MAX(id) FROM conversation_message "
+            "  WHERE message_id IS NOT NULL GROUP BY message_id"
+            ")"
+        )
+        self.conn.execute(MESSAGE_ID_UNIQUE_INDEX)
+
+    def append_if_absent(self, message_id: str, conversation_id: str, role: str, content: str) -> int:
+        if not message_id:
+            raise ValueError("message_id is required")
+
+        self.conn.execute(
+            "INSERT OR IGNORE INTO conversation_message "
+            "(conversation_id, role, content, message_id) VALUES (?, ?, ?, ?)",
+            (conversation_id, role, content, message_id),
+        )
+        row = self.conn.execute(
+            "SELECT id FROM conversation_message WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        self.conn.commit()
+        assert row is not None
+        return row[0]
 
     def append(self, conversation_id: str, role: str, content: str, message_id: str | None = None) -> int:
         cur = self.conn.execute(
