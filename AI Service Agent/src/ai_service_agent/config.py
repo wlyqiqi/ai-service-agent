@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     db_path: str = "data/ai_service.db"
+    # 模拟电商库（order_lookup 等 read 工具的真实数据源替代品；工具对外接口不变）
+    mock_ecommerce_db_path: str = "data/mock_ecommerce.db"
     fake_model: bool = False
     # 真实运行走 ARK（OpenAI 兼容）：字段与 .env 的 ARK_* 对齐
     model_name: str = Field(default="deepseek-v4-flash", validation_alias="ARK_MODEL")

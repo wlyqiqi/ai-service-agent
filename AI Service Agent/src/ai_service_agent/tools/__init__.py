@@ -1,5 +1,12 @@
 from ai_service_agent.tools.kb import KbSearchArgs, kb_search
-from ai_service_agent.tools.orders import OrderLookupArgs, order_lookup
+from ai_service_agent.tools.orders import (
+    MyOrdersArgs,
+    OrderLookupArgs,
+    ShipmentQueryArgs,
+    my_orders,
+    order_lookup,
+    shipment_query,
+)
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
 from ai_service_agent.tools.write import (
     CancelOrderArgs,
@@ -19,7 +26,7 @@ from ai_service_agent.tools.write import (
 )
 
 # 默认注册表（tool-spec.md §4 v1 清单 + P5 工具集定案）：
-# read 档：kb_search / order_lookup；mutation 档：+ update_address / update_phone / update_order_note /
+# read 档：kb_search / order_lookup / my_orders / shipment_query；mutation 档：+ update_address / update_phone / update_order_note /
 # create_invoice / create_service_ticket；high_risk 档：+ cancel_order（原 order_cancel）/ refund_apply。
 DEFAULT_TOOL_REGISTRY = ToolRegistry()
 DEFAULT_TOOL_REGISTRY.register(
@@ -27,6 +34,12 @@ DEFAULT_TOOL_REGISTRY.register(
 )
 DEFAULT_TOOL_REGISTRY.register(
     ToolMeta("order_lookup", "订单查询", "read", schema=OrderLookupArgs), order_lookup,
+)
+DEFAULT_TOOL_REGISTRY.register(
+    ToolMeta("my_orders", "我的订单列表", "read", schema=MyOrdersArgs), my_orders,
+)
+DEFAULT_TOOL_REGISTRY.register(
+    ToolMeta("shipment_query", "物流查询", "read", schema=ShipmentQueryArgs), shipment_query,
 )
 # mutation 档：5 个写工具
 DEFAULT_TOOL_REGISTRY.register(

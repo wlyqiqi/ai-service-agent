@@ -53,7 +53,7 @@ def test_default_registry_tiered():
     read_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("read")}
     mutation_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")}
     high_risk_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk")}
-    assert read_tools == {"kb_search", "order_lookup"}
+    assert read_tools == {"kb_search", "order_lookup", "my_orders", "shipment_query"}
     assert mutation_tools == read_tools | {"update_address", "update_phone", "update_order_note",
                                            "create_invoice", "create_service_ticket"}
     assert high_risk_tools == mutation_tools | {"cancel_order", "refund_apply"}
@@ -115,7 +115,7 @@ def test_registry_risk_sets_v2():
     read = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("read")}
     mutation = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")}
     high = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk")}
-    assert read == {"kb_search", "order_lookup"}
+    assert read == {"kb_search", "order_lookup", "my_orders", "shipment_query"}
     assert mutation == read | {"update_address", "update_phone", "update_order_note",
                                "create_invoice", "create_service_ticket"}
     assert high == mutation | {"cancel_order", "refund_apply"}
