@@ -1,4 +1,4 @@
-"""写工具：mutation 档落模拟电商库，high_risk 档保留 stub；幂等凭证与业务写入同事务。"""
+"""写工具：mutation 档落模拟电商库；幂等凭证与业务写入同事务。"""
 
 import json
 import sqlite3
@@ -79,7 +79,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _run_db_mutation(tool_name: str, request_id: str, user_id: str, produce) -> dict:
+def _run_db_mutation(tool_name: str, request_id: str, user_id: str, produce, validate_replay=None) -> dict:
     """复合幂等键 = (tool_name, request_id)，与业务写入同连接同事务提交。"""
     if not user_id:
         return {"error": "not_logged_in"}
@@ -93,7 +93,11 @@ def _run_db_mutation(tool_name: str, request_id: str, user_id: str, produce) -> 
             (tool_name, request_id),
         ).fetchone()
         if row is not None:
-            return {"ok": True, "replayed": True, "result": json.loads(row[0])}
+            result = json.loads(row[0])
+            replay_error = validate_replay(conn, result) if validate_replay else None
+            if replay_error is not None:
+                return replay_error
+            return {"ok": True, "replayed": True, "result": result}
         result = produce(conn)
         if "error" in result:
             conn.rollback()
@@ -249,19 +253,21 @@ def cancel_order(
         boundary = _own_order(conn, order_id, user_id)
         if boundary is not None:
             return boundary
-        row = conn.execute(
-            "SELECT status FROM orders WHERE order_id=?", (order_id,)
-        ).fetchone()
-        status = row[0]
-        if status == "cancelled":
-            return {"error": "order_already_cancelled", "order_id": order_id}
-        if status != "paid":
-            return {"error": "cancel_not_allowed", "order_id": order_id, "status": status}
         cancelled_at = _now()
-        conn.execute(
-            "UPDATE orders SET status='cancelled', cancelled_at=? WHERE order_id=?",
+        cursor = conn.execute(
+            "UPDATE orders SET status='cancelled', cancelled_at=? WHERE order_id=? AND status='paid'",
             (cancelled_at, order_id),
         )
+        if cursor.rowcount != 1:
+            row = conn.execute(
+                "SELECT status FROM orders WHERE order_id=?", (order_id,)
+            ).fetchone()
+            if row is None:
+                return {"error": "not_found", "order_id": order_id}
+            status = row[0]
+            if status == "cancelled":
+                return {"error": "order_already_cancelled", "order_id": order_id}
+            return {"error": "cancel_not_allowed", "order_id": order_id, "status": status}
         return {
             "field": "cancel_order",
             "order_id": order_id,
@@ -270,8 +276,13 @@ def cancel_order(
             "reason": reason,
         }
 
+    def _validate_replay(conn: sqlite3.Connection, result: dict) -> dict | None:
+        if result.get("order_id") != order_id:
+            return {"error": "data_boundary", "order_id": order_id}
+        return _own_order(conn, order_id, user_id)
+
     return _run_db_mutation(
-        "cancel_order", request_id or str(uuid4()), user_id, _produce
+        "cancel_order", request_id or str(uuid4()), user_id, _produce, _validate_replay
     )
 
 

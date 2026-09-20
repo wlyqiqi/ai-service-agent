@@ -314,6 +314,57 @@ def test_cancel_order_success_replay_and_business_rejection(monkeypatch, seed):
     assert after_rejections["idempotency"] == after_cancel["idempotency"]
 
 
+def test_cancel_order_replay_is_bound_to_requester(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+        attacker = "u1" if owner != "u1" else "u2"
+    finally:
+        conn.close()
+
+    first = write_mod.cancel_order.invoke(
+        {
+            "order_id": order_id,
+            "reason": "owner cancel",
+            "request_id": "cancel-replay-boundary",
+            "user_id": owner,
+        }
+    )
+    assert first["replayed"] is False
+    assert first["result"]["status"] == "cancelled"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        key_count = conn.execute(
+            "SELECT COUNT(*) FROM idempotency WHERE tool_name='cancel_order' AND request_id='cancel-replay-boundary'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    replay = write_mod.cancel_order.invoke(
+        {
+            "order_id": order_id,
+            "reason": "attacker replay",
+            "request_id": "cancel-replay-boundary",
+            "user_id": attacker,
+        }
+    )
+    assert replay == {"error": "data_boundary", "order_id": order_id}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after_key_count = conn.execute(
+            "SELECT COUNT(*) FROM idempotency WHERE tool_name='cancel_order' AND request_id='cancel-replay-boundary'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert after_key_count == key_count == 1
+
+
 def test_cancel_order_blocks_cross_user_without_pollution(monkeypatch, seed):
     _, db_path = seed
     _use_db(monkeypatch, db_path)
