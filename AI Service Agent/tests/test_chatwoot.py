@@ -59,7 +59,12 @@ def _client_with(handler, tmp_path) -> tuple[ChatwootClient, ChatwootMappingStor
     calls: list[dict] = []
 
     async def handler_wrapper(request):
-        calls.append({"method": request.method, "url": str(request.url), "json": request.content})
+        calls.append({
+            "method": request.method,
+            "url": str(request.url),
+            "headers": dict(request.headers),
+            "json": request.content,
+        })
         return handler(request)
 
     conn = sqlite3.connect(tmp_path / "m.db")
@@ -175,6 +180,59 @@ def test_chatwoot_message_id_format():
     from ai_service_agent.harness.chatwoot import chatwoot_message_id
 
     assert chatwoot_message_id({"id": 502}) == "chatwoot-502"
+
+
+def test_agent_message_rejects_template_empty_and_non_string_content():
+    from ai_service_agent.harness.chatwoot import is_agent_message
+
+    assert not is_agent_message({
+        "id": 508,
+        "content": "模板消息",
+        "message_type": 3,
+        "private": False,
+        "sender": {"type": "user"},
+    })
+    assert not is_agent_message({
+        "id": 509,
+        "content": "",
+        "message_type": 1,
+        "private": False,
+        "sender": {"type": "user"},
+    })
+    assert not is_agent_message({
+        "id": 510,
+        "content": 123,
+        "message_type": 1,
+        "private": False,
+        "sender": {"type": "user"},
+    })
+
+
+@pytest.mark.asyncio
+async def test_list_messages_sends_api_access_token(tmp_path):
+    cw, mapping, calls = _client_with(
+        lambda request: Response(200, json={"payload": []}),
+        tmp_path,
+    )
+    mapping.put("c1", 555)
+
+    messages = await cw.list_messages("c1")
+
+    assert calls[0]["headers"]["api_access_token"] == "tok"
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_list_messages_without_mapping_skips_http(tmp_path):
+    cw, _, calls = _client_with(
+        lambda request: Response(200, json={"payload": []}),
+        tmp_path,
+    )
+
+    messages = await cw.list_messages("c1")
+
+    assert messages == []
+    assert calls == []
 
 
 @pytest.mark.asyncio
