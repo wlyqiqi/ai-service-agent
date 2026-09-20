@@ -40,6 +40,7 @@ def test_webhook_agent_reply_persists(tmp_path):
     client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
     body = {
         "event": "message_created",
+        "id": 502,
         "message_type": "outgoing",
         "content": "您好，订单问题请提供订单号",
         "private": False,
@@ -54,6 +55,27 @@ def test_webhook_agent_reply_persists(tmp_path):
     rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(conv_id)
     assert rows[-1]["role"] == "assistant"
     assert rows[-1]["content"] == "您好，订单问题请提供订单号"
+    assert rows[-1]["message_id"] == "chatwoot-502"
+
+
+def test_webhook_ignores_agent_message_without_id(tmp_path):
+    conv_id = _human_session(tmp_path)
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret="sec"))
+    body = {
+        "event": "message_created",
+        "message_type": "outgoing",
+        "content": "您好，订单问题请提供订单号",
+        "private": False,
+        "sender": {"type": "user"},
+        "conversation": {"id": 555},
+    }
+    raw = json.dumps(body).encode()
+    r = client.post("/webhooks/chatwoot", content=raw,
+                    headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS})
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert MessageStore(sqlite3.connect(tmp_path / "s.db")).list(conv_id) == []
 
 
 def test_webhook_ignores_non_agent_and_private(tmp_path):

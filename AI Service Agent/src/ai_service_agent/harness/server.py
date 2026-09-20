@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import sqlite3
@@ -430,19 +429,13 @@ def create_app(
             return {"ok": True}
 
         msg_id = data.get("id")
-        if msg_id is not None and mapping.is_runtime_message(int(msg_id)):
+        if msg_id is None:
+            return {"ok": True}
+        if mapping.is_runtime_message(int(msg_id)):
             return {"ok": True}
 
-        if data.get("id") is None:
-            canonical = json.dumps(
-                data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode()
-            message_id = "chatwoot-legacy-" + hashlib.sha256(canonical).hexdigest()
-        else:
-            message_id = chatwoot_message_id(data)
-
         messages_store.append_if_absent(
-            message_id,
+            chatwoot_message_id(data),
             conv_id,
             "assistant",
             data["content"],
