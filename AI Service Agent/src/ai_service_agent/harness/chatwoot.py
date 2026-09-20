@@ -14,6 +14,23 @@ import httpx
 logger = logging.getLogger("ai_service_agent")
 
 
+def is_agent_message(message: dict) -> bool:
+    """只接受人工坐席发送的公开文本回复；拒绝备注、系统事件、模板与 bot。"""
+    sender = message.get("sender") or {}
+    content = message.get("content")
+    return (
+        message.get("message_type") in ("outgoing", 1)
+        and message.get("private", False) is False
+        and sender.get("type") == "user"
+        and isinstance(content, str)
+        and bool(content.strip())
+    )
+
+
+def chatwoot_message_id(message: dict) -> str:
+    return f"chatwoot-{int(message['id'])}"
+
+
 MAPPING_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chatwoot_conversation (
     conversation_id TEXT PRIMARY KEY,
@@ -168,6 +185,21 @@ class ChatwootClient:
             self.mapping.put_runtime_message(first_message_id, conversation_id)
         self.mapping.put(conversation_id, cw_id)
         return cw_id
+
+    async def list_messages(self, conversation_id: str) -> list[dict]:
+        """Application API：读取已映射 Chatwoot 会话的全部消息。"""
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return []
+
+        chatwoot_conversation_id = rec["chatwoot_conversation_id"]
+        r = await self.client.get(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/"
+            f"{chatwoot_conversation_id}/messages",
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json().get("payload", [])
 
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
         rec = self.mapping.get(conversation_id)

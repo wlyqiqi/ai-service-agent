@@ -124,6 +124,78 @@ async def test_send_as_contact_posts_content_and_skips_without_mapping(tmp_path)
     assert mapping.is_runtime_message(1) is True  # 推送消息 id 记录（webhook 回显去重用）
 
 
+def test_agent_message_contract():
+    from ai_service_agent.harness.chatwoot import is_agent_message
+
+    assert is_agent_message({
+        "id": 502,
+        "content": "坐席回复",
+        "message_type": "outgoing",
+        "private": False,
+        "sender": {"type": "user"},
+    })
+    assert is_agent_message({
+        "id": 503,
+        "content": "坐席回复",
+        "message_type": 1,
+        "private": False,
+        "sender": {"type": "user"},
+    })
+    assert not is_agent_message({
+        "id": 504,
+        "content": "私密备注",
+        "message_type": 1,
+        "private": True,
+        "sender": {"type": "user"},
+    })
+    assert not is_agent_message({
+        "id": 505,
+        "content": "系统事件",
+        "message_type": 2,
+        "private": False,
+        "sender": {"type": "user"},
+    })
+    assert not is_agent_message({
+        "id": 506,
+        "content": "bot 回复",
+        "message_type": 1,
+        "private": False,
+        "sender": {"type": "agent_bot"},
+    })
+    assert not is_agent_message({
+        "id": 507,
+        "content": None,
+        "message_type": 1,
+        "private": False,
+        "sender": {"type": "user"},
+    })
+
+
+def test_chatwoot_message_id_format():
+    from ai_service_agent.harness.chatwoot import chatwoot_message_id
+
+    assert chatwoot_message_id({"id": 502}) == "chatwoot-502"
+
+
+@pytest.mark.asyncio
+async def test_list_messages_returns_application_api_payload(tmp_path):
+    cw, mapping, calls = _client_with(
+        lambda request: Response(200, json={"payload": [
+            {"id": 502, "content": "坐席回复", "message_type": 1,
+             "private": False, "sender": {"type": "user"}}
+        ]}),
+        tmp_path,
+    )
+    mapping.put("c1", 555)
+
+    messages = await cw.list_messages("c1")
+
+    assert [m["id"] for m in messages] == [502]
+    assert len(calls) == 1
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"].endswith("/accounts/3/conversations/555/messages")
+
+
 
 def test_mapping_runtime_message(tmp_path):
     conn = sqlite3.connect(tmp_path / "m.db")
