@@ -162,14 +162,14 @@ def create_app(
             for message in await chatwoot.list_messages(conv_id):
                 if not is_agent_message(message):
                     continue
-                if mapping.is_runtime_message(int(message["id"])):
+                try:
+                    raw_message_id = int(message["id"])
+                    message_id = chatwoot_message_id(message)
+                except (KeyError, TypeError, ValueError, OverflowError):
                     continue
-                messages_store.append_if_absent(
-                    chatwoot_message_id(message),
-                    conv_id,
-                    "assistant",
-                    message["content"],
-                )
+                if mapping.is_runtime_message(raw_message_id):
+                    continue
+                messages_store.append_if_absent(message_id, conv_id, "assistant", message["content"])
         except Exception:
             logger.exception("chatwoot resolve sync failed: conv=%s", conv_id)
 
@@ -337,7 +337,11 @@ def create_app(
         if pending_handoff is None:
             raise HTTPException(status_code=404, detail="handoff not found")
 
-        await _sync_chatwoot_agent_messages(pending_handoff["conversation_id"])
+        conv_id = pending_handoff["conversation_id"]
+        if pending_handoff["status"] != "active":
+            return {"handoff_id": handoff_id, "mode": "ai"}
+        if status.get_mode(conv_id) == "human":
+            await _sync_chatwoot_agent_messages(conv_id)
 
         try:
             result = handoff.resolve_handoff(handoff_id)

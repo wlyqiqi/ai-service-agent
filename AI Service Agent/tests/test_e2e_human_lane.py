@@ -128,6 +128,85 @@ def test_resolve_syncs_chatwoot_agent_messages_into_ai_history(tmp_path):
     assert "agent-history-2" in text
 
 
+def test_repeated_resolve_does_not_sync_chatwoot_again(tmp_path):
+    db = str(tmp_path / "repeat.db")
+    calls: list = []
+    cw = _chatwoot_client(db, calls)
+    model = AgentHistoryFakeModel(responses=[])
+    client = TestClient(create_app(db, model=model, chatwoot=cw, chatwoot_webhook_secret="sec"))
+
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        events = parse_sse("".join(r.iter_text()))
+    handoff_id = next(e["data"]["handoff_id"] for e in events if e["type"] == "handoff_created")
+
+    first = client.post(f"/handoffs/{handoff_id}/resolve")
+    assert first.status_code == 200 and first.json() == {"handoff_id": handoff_id, "mode": "ai"}
+    sync_calls = sum(method == "GET" and "/conversations/111/messages" in url for method, url, _ in calls)
+    assert sync_calls == 1
+
+    second = client.post(f"/handoffs/{handoff_id}/resolve")
+    assert second.status_code == 200 and second.json() == first.json()
+    assert sum(method == "GET" and "/conversations/111/messages" in url for method, url, _ in calls) == sync_calls
+
+
+def test_resolve_survives_chatwoot_sync_failure(tmp_path):
+    db = str(tmp_path / "failure.db")
+    calls: list = []
+    cw = _chatwoot_client(db, calls)
+
+    async def failing_list_messages(conversation_id):
+        calls.append(("list", conversation_id))
+        raise RuntimeError("chatwoot unavailable")
+
+    cw.list_messages = failing_list_messages
+    model = AgentHistoryFakeModel(responses=[])
+    client = TestClient(create_app(db, model=model, chatwoot=cw, chatwoot_webhook_secret="sec"))
+
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        events = parse_sse("".join(r.iter_text()))
+    handoff_id = next(e["data"]["handoff_id"] for e in events if e["type"] == "handoff_created")
+
+    response = client.post(f"/handoffs/{handoff_id}/resolve")
+    assert response.status_code == 200
+    assert response.json() == {"handoff_id": handoff_id, "mode": "ai"}
+    assert _mode(db, session_id) == "ai"
+    assert ("list", session_id) in calls
+
+
+def test_resolve_sync_does_not_duplicate_webhook_persisted_agent_message(tmp_path):
+    db = str(tmp_path / "dedupe.db")
+    calls: list = []
+    cw = _chatwoot_client(db, calls)
+    model = AgentHistoryFakeModel(responses=[])
+    client = TestClient(create_app(db, model=model, chatwoot=cw, chatwoot_webhook_secret="sec"))
+
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        events = parse_sse("".join(r.iter_text()))
+    handoff_id = next(e["data"]["handoff_id"] for e in events if e["type"] == "handoff_created")
+
+    payload = {
+        "event": "message_created",
+        "message_type": "outgoing",
+        "content": "坐席已处理地址",
+        "private": False,
+        "sender": {"type": "user"},
+        "conversation": {"id": 111},
+        "id": 502,
+    }
+    raw = json.dumps(payload).encode()
+    assert client.post(
+        "/webhooks/chatwoot", content=raw,
+        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+    ).status_code == 200
+
+    assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
+    rows = [row for row in _rows(db, session_id) if row["message_id"] == "chatwoot-502"]
+    assert len(rows) == 1
+    assert rows[0]["role"] == "assistant"
+    assert rows[0]["content"] == "坐席已处理地址"
 def test_human_lane_end_to_end(tmp_path):
     db = str(tmp_path / "s.db")
     calls: list = []
