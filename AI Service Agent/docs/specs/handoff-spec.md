@@ -69,6 +69,14 @@
 - **对账机制（P1 定案）**：`conversation_message` 增 `message_id` 列（langchain message id；assistant 消息落库时由 harness 从流式输出记录）；`hydrate()` 为 user 消息分配稳定 id `store-{row_id}`、assistant 消息复用 `message_id`（缺失则 `store-{row_id}`）；每次图调用输入 = 完整水合历史，经 `add_messages` 按 id 对账，使 `state.messages` 恒等于 Store 快照（checkpointer 中同 id 消息被替换，不产生重复）。
 - 决策留痕见 `docs/decisions/2026-09-14-message-store-truth-source.md` 与 `docs/decisions/2026-09-14-checkpointer-resume-handoff.md`。
 
+### 5.2.1 Chatwoot 坐席消息回传（2026-09-19）
+
+- Chatwoot `message_created` 中，只有 `message_type=outgoing/1`、`private=false`、`sender.type=user` 且文本非空的公开坐席回复，才写入 Message Store 并映射为 `assistant`。
+- 私密备注、系统事件、模板消息、bot/system sender、Runtime 回显均不得进入 AI 历史。
+- Chatwoot 消息使用 `message_id = chatwoot-{Chatwoot message id}` 幂等落库；该 ID 同时作为 LangChain `add_messages` 的稳定 ID。
+- Resolve 时先通过 Chatwoot Application API 幂等同步最近公开坐席消息，再执行 `MessageStore.hydrate()` 与 `Command(resume=...)`；同步失败只记日志，不阻塞 Resolve。
+- 人工车道用户消息只追加一条 `user` 记录；`HANDOFF_NOTICE` 仅在 handoff 创建时写入一次。
+
 ## 6. 关联文档
 
 - `architecture.md` §2 / §4 / §8.1 · `graph-spec.md` §1 / §3 / §6.5 · `state-spec.md` §1 · `event-spec.md` §1 / §2.1 · `safety-spec.md` §2 · `docs/diagrams/handoff-overview.svg`（顶层图）
