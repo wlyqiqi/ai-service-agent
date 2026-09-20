@@ -78,6 +78,15 @@ class HandoffService:
             "resolved_at": row[6],
         }
 
+    def get(self, handoff_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT handoff_id, conversation_id, status FROM handoff_record WHERE handoff_id = ?",
+            (handoff_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"handoff_id": row[0], "conversation_id": row[1], "status": row[2]}
+
     def get_active(self, conversation_id: str) -> dict | None:
         """当前会话最新 active handoff（幂等复用；无则 None）。"""
         row = self.conn.execute(

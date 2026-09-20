@@ -154,6 +154,25 @@ def create_app(
         yield {"type": "token", "data": {"text": HANDOFF_NOTICE}}
         yield ev
 
+    async def _sync_chatwoot_agent_messages(conv_id: str) -> None:
+        """Resolve 前兜底同步；webhook 延迟或丢失时仍能补齐人工上下文。"""
+        if chatwoot is None:
+            return
+        try:
+            for message in await chatwoot.list_messages(conv_id):
+                if not is_agent_message(message):
+                    continue
+                if mapping.is_runtime_message(int(message["id"])):
+                    continue
+                messages_store.append_if_absent(
+                    chatwoot_message_id(message),
+                    conv_id,
+                    "assistant",
+                    message["content"],
+                )
+        except Exception:
+            logger.exception("chatwoot resolve sync failed: conv=%s", conv_id)
+
     @app.post("/auth/login")
     def auth_login(body: LoginBody):
         # 占位认证（user-page-spec.md §10）：待真实认证方案定案；返回 dev token，页面据此携带 Bearer
@@ -314,6 +333,12 @@ def create_app(
 
     @app.post("/handoffs/{handoff_id}/resolve")
     async def resolve(handoff_id: str):
+        pending_handoff = handoff.get(handoff_id)
+        if pending_handoff is None:
+            raise HTTPException(status_code=404, detail="handoff not found")
+
+        await _sync_chatwoot_agent_messages(pending_handoff["conversation_id"])
+
         try:
             result = handoff.resolve_handoff(handoff_id)
         except KeyError:

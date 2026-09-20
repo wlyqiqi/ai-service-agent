@@ -52,6 +52,23 @@ class HandoffE2EFakeModel(ToolCallingFakeModel):
         return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", "read", 0.5))])
 
 
+class AgentHistoryFakeModel(ToolCallingFakeModel):
+    """路由后统计 AI 历史中来自坐席的标记消息，验证 resolve 时上下文已水合。"""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
+        if "路由器" in system:
+            return ChatResult(generations=[ChatGeneration(
+                message=AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}')
+            )])
+
+        agent_messages = [
+            m for m in messages
+            if getattr(m, "type", "") == "ai" and "坐席已处理" in (m.content or "")
+        ]
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=f"agent-history-{len(agent_messages)}"))])
+
+
 def _chatwoot_client(db_path, calls: list) -> ChatwootClient:
     conn = sqlite3.connect(db_path, check_same_thread=False)
     from ai_service_agent.harness.chatwoot import ChatwootMappingStore
@@ -64,7 +81,14 @@ def _chatwoot_client(db_path, calls: list) -> ChatwootClient:
             return Response(200, json={"payload": {"contact": {"id": 900}}})
         if request.url.path.endswith("/conversations"):
             return Response(200, json={"id": 111, "messages": [{"id": 500, "content": "首条"}]})
-        if "/conversations/111/messages" in request.url.path:
+        if request.method == "GET" and "/conversations/111/messages" in request.url.path:
+            return Response(200, json={"payload": [
+                {"id": 502, "content": "坐席已处理地址", "message_type": 1,
+                 "private": False, "sender": {"type": "user"}},
+                {"id": 503, "content": "坐席已处理退款", "message_type": 1,
+                 "private": False, "sender": {"type": "user"}},
+            ]})
+        if request.method == "POST" and "/conversations/111/messages" in request.url.path:
             return Response(200, json={"id": 501, "content": "x"})
         return Response(404)
 
@@ -78,6 +102,30 @@ def _mode(db_path, conv_id) -> str:
 
 def _rows(db_path, conv_id) -> list[dict]:
     return MessageStore(sqlite3.connect(db_path)).list(conv_id)
+
+
+def test_resolve_syncs_chatwoot_agent_messages_into_ai_history(tmp_path):
+    db = str(tmp_path / "sync.db")
+    calls: list = []
+    cw = _chatwoot_client(db, calls)
+    model = AgentHistoryFakeModel(responses=[])
+    client = TestClient(create_app(db, model=model, chatwoot=cw, chatwoot_webhook_secret="sec"))
+
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        events = parse_sse("".join(r.iter_text()))
+    handoff_id = next(e["data"]["handoff_id"] for e in events if e["type"] == "handoff_created")
+
+    assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
+
+    rows = _rows(db, session_id)
+    agent_rows = [row for row in rows if row["message_id"] in {"chatwoot-502", "chatwoot-503"}]
+    assert [row["content"] for row in agent_rows] == ["坐席已处理地址", "坐席已处理退款"]
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "你好"}) as r:
+        text = "".join(r.iter_text())
+
+    assert "agent-history-2" in text
 
 
 def test_human_lane_end_to_end(tmp_path):
