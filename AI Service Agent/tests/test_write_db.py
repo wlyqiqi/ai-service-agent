@@ -243,3 +243,107 @@ def test_mutation_graph_rejects_invoice_over_remaining(monkeypatch, seed):
         assert conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_cancel_order_success_replay_and_business_rejection(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, paid_order = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+        cancelled_owner, cancelled_order = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='cancelled' LIMIT 1"
+        ).fetchone()
+        shipped_owner, shipped_order = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status NOT IN ('paid','cancelled') LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    before = _snapshot(db_path)
+    first = write_mod.cancel_order.invoke(
+        {
+            "order_id": paid_order,
+            "reason": "不想要了",
+            "request_id": "cancel-1",
+            "user_id": owner,
+        }
+    )
+    assert first["replayed"] is False
+    assert first["result"]["status"] == "cancelled"
+    assert first["result"]["cancelled_at"]
+
+    replay = write_mod.cancel_order.invoke(
+        {
+            "order_id": paid_order,
+            "reason": "换一个理由",
+            "request_id": "cancel-1",
+            "user_id": owner,
+        }
+    )
+    assert replay["replayed"] is True
+    assert replay["result"] == first["result"]
+
+    after_cancel = _snapshot(db_path)
+    assert after_cancel["orders"] != before["orders"]
+    assert after_cancel["idempotency"] != before["idempotency"]
+
+    already = write_mod.cancel_order.invoke(
+        {
+            "order_id": cancelled_order,
+            "request_id": "cancel-already",
+            "user_id": cancelled_owner,
+        }
+    )
+    assert already == {"error": "order_already_cancelled", "order_id": cancelled_order}
+
+    not_allowed = write_mod.cancel_order.invoke(
+        {
+            "order_id": shipped_order,
+            "request_id": "cancel-not-allowed",
+            "user_id": shipped_owner,
+        }
+    )
+    assert not_allowed["error"] == "cancel_not_allowed"
+    assert not_allowed["order_id"] == shipped_order
+
+    after_rejections = _snapshot(db_path)
+    assert after_rejections["orders"] == after_cancel["orders"]
+    assert after_rejections["idempotency"] == after_cancel["idempotency"]
+
+
+def test_cancel_order_blocks_cross_user_without_pollution(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        victim_owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+        attacker = "u1" if victim_owner != "u1" else "u2"
+        before = conn.execute("SELECT * FROM orders WHERE order_id=?", (order_id,)).fetchone()
+    finally:
+        conn.close()
+
+    denied = write_mod.cancel_order.invoke(
+        {
+            "order_id": order_id,
+            "reason": "越权取消",
+            "request_id": "cancel-cross-user",
+            "user_id": attacker,
+        }
+    )
+    assert denied == {"error": "data_boundary", "order_id": order_id}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = conn.execute("SELECT * FROM orders WHERE order_id=?", (order_id,)).fetchone()
+        key_count = conn.execute(
+            "SELECT COUNT(*) FROM idempotency WHERE tool_name='cancel_order' AND request_id='cancel-cross-user'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert after == before
+    assert key_count == 0

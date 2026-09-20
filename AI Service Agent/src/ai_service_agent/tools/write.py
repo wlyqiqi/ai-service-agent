@@ -238,11 +238,41 @@ def create_service_ticket(
 
 
 @tool
-def cancel_order(order_id: str, reason: str | None = None, request_id: str = "") -> dict:
-    """取消订单（high_risk stub，需人工审批，幂等）。"""
-    def _produce() -> dict:
-        return {"field": "cancel_order", "order_id": order_id, "reason": reason}
-    return _run_idempotent(request_id or str(uuid4()), _produce)
+def cancel_order(
+    order_id: str,
+    reason: str | None = None,
+    request_id: str = "",
+    user_id: Annotated[str, InjectedState("user_id")] = "",
+) -> dict:
+    """取消本人订单（high_risk，需人工审批；仅 paid -> cancelled）。"""
+    def _produce(conn: sqlite3.Connection) -> dict:
+        boundary = _own_order(conn, order_id, user_id)
+        if boundary is not None:
+            return boundary
+        row = conn.execute(
+            "SELECT status FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        status = row[0]
+        if status == "cancelled":
+            return {"error": "order_already_cancelled", "order_id": order_id}
+        if status != "paid":
+            return {"error": "cancel_not_allowed", "order_id": order_id, "status": status}
+        cancelled_at = _now()
+        conn.execute(
+            "UPDATE orders SET status='cancelled', cancelled_at=? WHERE order_id=?",
+            (cancelled_at, order_id),
+        )
+        return {
+            "field": "cancel_order",
+            "order_id": order_id,
+            "status": "cancelled",
+            "cancelled_at": cancelled_at,
+            "reason": reason,
+        }
+
+    return _run_db_mutation(
+        "cancel_order", request_id or str(uuid4()), user_id, _produce
+    )
 
 
 @tool
