@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import sqlite3
@@ -25,6 +26,8 @@ from ai_service_agent.harness.approvals import (
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
+    chatwoot_message_id,
+    is_agent_message,
     verify_chatwoot_signature,
 )
 from ai_service_agent.harness.graph import make_ai_graph
@@ -180,7 +183,6 @@ def create_app(
         if status.get_mode(conv_id) == "human":
             # 人工车道：写 Message Store（唯一真相源）+ 同步推送 Chatwoot（失败只记日志）
             messages_store.append(conv_id, "user", body.message)
-            messages_store.append(conv_id, "assistant", "已转人工，坐席将尽快回复。")
             if chatwoot is not None:
                 try:
                     await chatwoot.send_as_contact(conv_id, body.message)
@@ -413,30 +415,38 @@ def create_app(
             data = json.loads(payload)
         except ValueError:
             return {"ok": True}
-        if data.get("event") != "message_created":
+        if data.get("event") != "message_created" or not is_agent_message(data):
             return {"ok": True}
-        if data.get("message_type") != "outgoing" or data.get("private"):
-            return {"ok": True}
-        sender = data.get("sender") or {}
-        # v4.17.1 契约：坐席(User).webhook_data.type = "user"；Contact 无 type 字段
-        if sender.get("type") != "user":
-            return {"ok": True}
+
         cw_id = (data.get("conversation") or {}).get("id")
-        content = data.get("content")
-        if not cw_id or not content:
+        if not cw_id:
             return {"ok": True}
+
         rec = mapping.find(int(cw_id))
         if rec is None:
             return {"ok": True}
         conv_id = rec["conversation_id"]
         if status.get_mode(conv_id) != "human":
-            # 坐席回复只接受人工车道（AI 车道由图负责）
             return {"ok": True}
+
         msg_id = data.get("id")
         if msg_id is not None and mapping.is_runtime_message(int(msg_id)):
-            # Runtime 自己创建的 Chatwoot 消息（如转人工提示首条）回显，跳过防重复落库
             return {"ok": True}
-        messages_store.append(conv_id, "assistant", content)
+
+        if data.get("id") is None:
+            canonical = json.dumps(
+                data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+            message_id = "chatwoot-legacy-" + hashlib.sha256(canonical).hexdigest()
+        else:
+            message_id = chatwoot_message_id(data)
+
+        messages_store.append_if_absent(
+            message_id,
+            conv_id,
+            "assistant",
+            data["content"],
+        )
         return {"ok": True}
 
     _web_dir = Path(__file__).resolve().parents[3] / "web"

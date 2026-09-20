@@ -111,8 +111,8 @@ def test_human_lane_end_to_end(tmp_path):
         events = parse_sse("".join(r.iter_text()))
     assert events[-1]["type"] == "done"
     rows3 = _rows(db, sid)
-    assert rows3[-1]["role"] == "assistant" and rows3[-1]["content"] == "已转人工，坐席将尽快回复。"
     assert any(m["role"] == "user" and m["content"] == "在吗" for m in rows3)
+    assert sum(m["content"] == HANDOFF_NOTICE for m in rows3) == 1
     assert any("/conversations/111/messages" in url for (_, url, _) in calls)
 
     # 4) 坐席 webhook 回复 -> Message Store 追加 assistant
@@ -138,7 +138,12 @@ def test_human_lane_end_to_end(tmp_path):
     data = r.json()
     assert data["mode"] == "human"
     contents = [m["content"] for m in data["items"]]
-    assert contents == ["我要转人工", HANDOFF_NOTICE, "在吗", "已转人工，坐席将尽快回复。", "您好，已为您加急处理"]
+    assert contents == [
+        "我要转人工",
+        HANDOFF_NOTICE,
+        "在吗",
+        "您好，已为您加急处理",
+    ]
 
     # 6) resolve -> mode=ai + record resolved
     r = client.post(f"/handoffs/{handoff_id}/resolve")

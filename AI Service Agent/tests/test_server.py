@@ -45,7 +45,89 @@ def test_human_lane_after_handoff(tmp_path):
     conn2 = sqlite3.connect(tmp_path / "s.db")
     rows = MessageStore(conn2).list(info["conversation_id"])
     conn2.close()
-    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert [r["role"] for r in rows] == ["user"]
+
+
+def test_chatwoot_webhook_agent_message_is_idempotent(tmp_path):
+    import hashlib
+    import hmac
+    import json
+
+    from ai_service_agent.harness.chatwoot import ChatwootMappingStore
+
+    db = str(tmp_path / "cw.db")
+    client = TestClient(create_app(db, model="fake", chatwoot_webhook_secret="sec"))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+
+    conn = sqlite3.connect(db)
+    ChatwootMappingStore(conn).put(session_id, 111)
+    ConversationStatusStore(conn).set_mode(session_id, "human")
+    conn.close()
+
+    payload = {
+        "event": "message_created",
+        "id": 502,
+        "content": "您好，已加急处理",
+        "message_type": "outgoing",
+        "private": False,
+        "sender": {"type": "user"},
+        "conversation": {"id": 111},
+    }
+    raw = json.dumps(payload).encode()
+    timestamp = "1700000000"
+    signature = "sha256=" + hmac.new(
+        b"sec", timestamp.encode() + b"." + raw, hashlib.sha256
+    ).hexdigest()
+    headers = {"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": timestamp}
+
+    assert client.post("/webhooks/chatwoot", content=raw, headers=headers).status_code == 200
+    assert client.post("/webhooks/chatwoot", content=raw, headers=headers).status_code == 200
+
+    rows = MessageStore(sqlite3.connect(db)).list(session_id)
+    assert len(rows) == 1
+    assert rows[0]["role"] == "assistant"
+    assert rows[0]["message_id"] == "chatwoot-502"
+
+
+def test_chatwoot_webhook_rejects_private_note(tmp_path):
+    import hashlib
+    import hmac
+    import json
+
+    from ai_service_agent.harness.chatwoot import ChatwootMappingStore
+
+    db = str(tmp_path / "cw-private.db")
+    client = TestClient(create_app(db, model="fake", chatwoot_webhook_secret="sec"))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+
+    conn = sqlite3.connect(db)
+    ChatwootMappingStore(conn).put(session_id, 111)
+    ConversationStatusStore(conn).set_mode(session_id, "human")
+    conn.close()
+
+    payload = {
+        "event": "message_created",
+        "id": 503,
+        "content": "内部备注",
+        "message_type": "outgoing",
+        "private": True,
+        "sender": {"type": "user"},
+        "conversation": {"id": 111},
+    }
+    raw = json.dumps(payload).encode()
+    timestamp = "1700000000"
+    signature = "sha256=" + hmac.new(
+        b"sec", timestamp.encode() + b"." + raw, hashlib.sha256
+    ).hexdigest()
+
+    response = client.post(
+        "/webhooks/chatwoot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": timestamp},
+    )
+
+    assert response.status_code == 200
+    assert MessageStore(sqlite3.connect(db)).list(session_id) == []
 
 
 def test_ai_chat_persists_user_and_assistant(tmp_path):
