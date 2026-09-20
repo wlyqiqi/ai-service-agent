@@ -257,3 +257,58 @@ def test_new_read_tools_degrade_when_db_missing(monkeypatch, seed):
     _use_db(monkeypatch, Path(tempfile.mkdtemp()) / "not-exist.db")
     assert orders_mod.my_orders.func(status=None, user_id="u1") == {"error": "data_source_unavailable"}
     assert orders_mod.shipment_query.func(order_id=None, user_id="u1") == {"error": "data_source_unavailable"}
+
+
+def test_find_own_cancellable_paid_orders_returns_owned_paid_orders(monkeypatch, seed):
+    _, db_a, _ = seed
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_a)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    conn = sqlite3.connect(db_a)
+    try:
+        owner = conn.execute(
+            "SELECT customer_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    result = orders_mod.find_own_cancellable_paid_orders(owner)
+    assert isinstance(result, list)
+    assert result
+    assert all(
+        {"order_id", "total_amount", "ordered_at", "product_summary"} <= item.keys()
+        for item in result
+    )
+
+
+def test_find_own_cancellable_paid_orders_rejects_missing_login(monkeypatch, seed):
+    _, db_a, _ = seed
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_a)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    assert orders_mod.find_own_cancellable_paid_orders("") == {
+        "error": "not_logged_in"
+    }
+
+
+def test_order_items_summary_handles_owned_and_missing_orders(monkeypatch, seed):
+    _, db_a, _ = seed
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_a)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    conn = sqlite3.connect(db_a)
+    try:
+        order_id = conn.execute(
+            "SELECT o.order_id FROM orders o JOIN order_items oi ON oi.order_id=o.order_id LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert orders_mod.order_items_summary(order_id)
+    assert orders_mod.order_items_summary("ORD-NOPE") == "商品信息不可用"

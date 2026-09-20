@@ -129,6 +129,70 @@ def _db_invoiced_total(order_id: str) -> float:
     return float(row[0]) if row else 0.0
 
 
+def find_own_cancellable_paid_orders(user_id: str) -> list[dict] | dict:
+    """查询本人可取消的已付款订单；只读，不做裁决，最多返回最近 10 笔。"""
+    if not user_id:
+        return {"error": "not_logged_in"}
+    try:
+        conn = _db_connect()
+    except (sqlite3.Error, OSError):
+        return {"error": "data_source_unavailable"}
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.order_id, o.total_amount, o.ordered_at,
+                   COALESCE(GROUP_CONCAT(p.product_name || ' x' || oi.quantity), '')
+            FROM orders o
+            LEFT JOIN order_items oi ON oi.order_id = o.order_id
+            LEFT JOIN products p ON p.product_id = oi.product_id
+            WHERE o.customer_id = ? AND o.status = 'paid'
+            GROUP BY o.order_id, o.total_amount, o.ordered_at
+            ORDER BY o.ordered_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return {"error": "data_source_unavailable"}
+    finally:
+        conn.close()
+    return [
+        {
+            "order_id": row[0],
+            "total_amount": float(row[1]),
+            "ordered_at": row[2],
+            "product_summary": row[3] or "商品信息不可用",
+        }
+        for row in rows
+    ]
+
+
+def order_items_summary(order_id: str) -> str:
+    """审批卡片用商品摘要；库缺失或订单不存在时确定性降级。"""
+    try:
+        conn = _db_connect()
+    except (sqlite3.Error, OSError):
+        return "商品信息不可用"
+    try:
+        rows = conn.execute(
+            """
+            SELECT p.product_name, oi.quantity
+            FROM order_items oi
+            JOIN products p ON p.product_id = oi.product_id
+            WHERE oi.order_id = ?
+            ORDER BY oi.id
+            """,
+            (order_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return "商品信息不可用"
+    finally:
+        conn.close()
+    if not rows:
+        return "商品信息不可用"
+    return "、".join(f"{name} ×{quantity}" for name, quantity in rows)
+
+
 def lookup_order_state(order_id: str) -> dict | None:
     """订单状态事实查询（D3，P4）：夹具优先 -> 模拟电商库 -> None；仅返回事实，不做授权/业务裁决。"""
     fixture = ORDER_STORE.get(order_id)
