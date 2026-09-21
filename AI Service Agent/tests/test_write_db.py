@@ -398,3 +398,88 @@ def test_cancel_order_blocks_cross_user_without_pollution(monkeypatch, seed):
         conn.close()
     assert after == before
     assert key_count == 0
+
+
+def test_refund_apply_full_amount_writes_and_replays(monkeypatch, seed):
+    """Full refund: amount=None defaults to total_amount; order -> refunding; idempotency row."""
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id, total = conn.execute(
+            "SELECT customer_id, order_id, total_amount FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    first = write_mod.refund_apply.invoke(
+        {"order_id": order_id, "request_id": "ref-1", "user_id": owner}
+    )
+    assert first["replayed"] is False
+    assert first["result"]["status"] == "refunding"
+    assert first["result"]["amount"] == total
+    assert first["result"]["refund_id"]
+    conn = sqlite3.connect(db_path)
+    try:
+        status = conn.execute("SELECT status FROM orders WHERE order_id=?", (order_id,)).fetchone()[0]
+        refund = conn.execute("SELECT amount, status FROM refunds WHERE order_id=?", (order_id,)).fetchone()
+        idem = conn.execute("SELECT tool_name, request_id FROM idempotency WHERE tool_name='refund_apply'").fetchall()
+    finally:
+        conn.close()
+    assert status == "refunding"
+    assert refund[0] == total
+    assert refund[1] == "refunding"
+    assert len(idem) == 1
+    replay = write_mod.refund_apply.invoke(
+        {"order_id": order_id, "request_id": "ref-1", "user_id": owner}
+    )
+    assert replay["replayed"] is True
+
+
+def test_refund_apply_partial_amount_tracks_cumulative(monkeypatch, seed):
+    """Partial refund: amount=50; second partial allowed if cumulative <= total."""
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id, total = conn.execute(
+            "SELECT customer_id, order_id, total_amount FROM orders WHERE status='paid' AND total_amount > 100 LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    half = round(total / 2, 2)
+    first = write_mod.refund_apply.invoke(
+        {"order_id": order_id, "amount": half, "request_id": "ref-p1", "user_id": owner}
+    )
+    assert first["replayed"] is False
+    second = write_mod.refund_apply.invoke(
+        {"order_id": order_id, "amount": half, "request_id": "ref-p2", "user_id": owner}
+    )
+    assert second["replayed"] is False
+    third = write_mod.refund_apply.invoke(
+        {"order_id": order_id, "amount": 0.01, "request_id": "ref-p3", "user_id": owner}
+    )
+    assert third == {"error": "refund_amount_exceeds", "order_id": order_id}
+
+
+def test_refund_apply_blocks_wrong_status_and_cross_user(monkeypatch, seed):
+    """Non-refundable status or cross-user -> error, no DB pollution."""
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        shipped_owner, shipped_order = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='shipped' LIMIT 1"
+        ).fetchone()
+        _, other_order = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    result = write_mod.refund_apply.invoke(
+        {"order_id": shipped_order, "request_id": "ref-s1", "user_id": shipped_owner}
+    )
+    assert result == {"error": "refund_not_allowed", "order_id": shipped_order, "status": "shipped"}
+    cross = write_mod.refund_apply.invoke(
+        {"order_id": other_order, "request_id": "ref-x1", "user_id": "nobody"}
+    )
+    assert cross == {"error": "data_boundary", "order_id": other_order}

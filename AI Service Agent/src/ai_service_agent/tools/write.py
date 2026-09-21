@@ -66,6 +66,9 @@ class RefundApplyArgs(BaseModel):
 
 
 _WRITE_STORE: dict[str, dict] = {}
+_REFUNDABLE_STATUSES = ("paid", "completed")
+_CUMULATIVE_REFUND_STATUSES = _REFUNDABLE_STATUSES + ("refunding",)
+_OCCUPIED_REFUND_STATUSES = ("refunding", "refunded")
 
 
 def _write_connect() -> sqlite3.Connection:
@@ -287,8 +290,66 @@ def cancel_order(
 
 
 @tool
-def refund_apply(order_id: str, amount: float | None = None, reason: str | None = None, request_id: str = "") -> dict:
-    """退款申请（high_risk stub，需人工审批，幂等）。"""
-    def _produce() -> dict:
-        return {"field": "refund_apply", "order_id": order_id, "amount": amount, "reason": reason}
-    return _run_idempotent(request_id or str(uuid4()), _produce)
+def refund_apply(
+    order_id: str,
+    amount: float | None = None,
+    reason: str | None = None,
+    request_id: str = "",
+    user_id: Annotated[str, InjectedState("user_id")] = "",
+) -> dict:
+    """退款申请（high_risk；需人工审批；仅 paid/completed -> refunding；金额 ≤ 订单总额 - 已累计退款）。"""
+    def _produce(conn: sqlite3.Connection) -> dict:
+        boundary = _own_order(conn, order_id, user_id)
+        if boundary is not None:
+            return boundary
+        row = conn.execute(
+            "SELECT total_amount, status FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        if row is None:
+            return {"error": "not_found", "order_id": order_id}
+        total, status = row
+        if status == "refunded":
+            return {"error": "order_already_refunded", "order_id": order_id}
+        if status not in _CUMULATIVE_REFUND_STATUSES:
+            return {"error": "refund_not_allowed", "order_id": order_id, "status": status}
+        occupied = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM refunds"
+            " WHERE order_id=? AND status IN ('refunding','refunded')",
+            (order_id,),
+        ).fetchone()[0]
+        resolved_amount = (
+            round(float(amount), 2)
+            if amount is not None
+            else round(float(total) - float(occupied), 2)
+        )
+        if resolved_amount <= 0 or resolved_amount > float(total) - float(occupied):
+            return {"error": "refund_amount_exceeds", "order_id": order_id}
+        refund_id = f"RFD-{uuid4().hex[:12]}"
+        conn.execute(
+            "INSERT INTO refunds(refund_id, order_id, customer_id, amount, reason, status, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (refund_id, order_id, user_id, resolved_amount, reason, "refunding", _now()),
+        )
+        conn.execute(
+            "UPDATE orders SET status='refunding' WHERE order_id=? AND status IN ('paid','completed')",
+            (order_id,),
+        )
+        if conn.execute("SELECT status FROM orders WHERE order_id=?", (order_id,)).fetchone()[0] != "refunding":
+            return {"error": "write_conflict", "order_id": order_id}
+        return {
+            "field": "refund_apply",
+            "order_id": order_id,
+            "refund_id": refund_id,
+            "amount": resolved_amount,
+            "status": "refunding",
+            "reason": reason,
+        }
+
+    def _validate_replay(conn: sqlite3.Connection, result: dict) -> dict | None:
+        if result.get("order_id") != order_id:
+            return {"error": "data_boundary", "order_id": order_id}
+        return _own_order(conn, order_id, user_id)
+
+    return _run_db_mutation(
+        "refund_apply", request_id or str(uuid4()), user_id, _produce, _validate_replay
+    )
