@@ -127,7 +127,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
         if tool_error:
             return {
                 "messages": [AIMessage(content=f"审批通过，但操作执行失败。（{tool_error}）")],
-                "execution_status": "completed",
+                "execution_status": "failed",
             }
         return {"messages": [AIMessage(content="审批通过，操作已完成。")], "execution_status": "completed"}
 

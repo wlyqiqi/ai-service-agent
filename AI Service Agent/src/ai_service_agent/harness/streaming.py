@@ -1,3 +1,4 @@
+import json
 from typing import AsyncGenerator, Callable
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
@@ -107,9 +108,19 @@ async def event_stream(
                                         "data": {"name": tc["name"], "args": tc["args"]},
                                     }
                             elif isinstance(msg, ToolMessage):
+                                tool_payload = msg.content
+                                if isinstance(tool_payload, str):
+                                    try:
+                                        tool_payload = json.loads(tool_payload)
+                                    except json.JSONDecodeError:
+                                        tool_payload = None
+                                ok = not (
+                                    isinstance(tool_payload, dict)
+                                    and ("error" in tool_payload or tool_payload.get("ok") is False)
+                                )
                                 yield {
                                     "type": "tool_result",
-                                    "data": {"name": msg.name or "tool", "ok": True, "summary": str(msg.content)[:80]},
+                                    "data": {"name": msg.name or "tool", "ok": ok, "summary": str(msg.content)[:80]},
                                 }
         final = "".join(final_text) or None
         if not final:

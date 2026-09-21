@@ -1,10 +1,12 @@
 import sqlite3
+import asyncio
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
+from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools.kb import kb_search
 from langgraph.graph import END, START, StateGraph
@@ -423,10 +425,18 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
     assert len(approval_values) == 1
     assert approval_values[0]["approval_id"]
 
-    out = graph.invoke(
-        Command(resume={"action": "approve"}),
+    events = asyncio.run(_collect_events(event_stream(
+        graph,
         {"configurable": {"thread_id": thread_id}},
-    )
+        messages=[HumanMessage(content="审批通过")],
+        resume_payload={"action": "approve"},
+    )))
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert [(result["data"]["name"], result["data"]["ok"]) for result in tool_results] == [
+        ("cancel_order", True)
+    ]
+
+    out = graph.get_state({"configurable": {"thread_id": thread_id}}).values
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert [getattr(m, "name", "") for m in tool_msgs] == ["cancel_order"]
@@ -475,6 +485,10 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
     ]
 
 
+async def _collect_events(gen):
+    return [event async for event in gen]
+
+
 def test_cancel_order_post_approval_drift_reports_failure(monkeypatch, tmp_path):
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "drift")
     _use_cancel_db(monkeypatch, db_path)
@@ -498,16 +512,28 @@ def test_cancel_order_post_approval_drift_reports_failure(monkeypatch, tmp_path)
     finally:
         conn.close()
 
-    out = graph.invoke(
-        Command(resume={"action": "approve"}),
+    events = asyncio.run(_collect_events(event_stream(
+        graph,
         {"configurable": {"thread_id": thread_id}},
-    )
-    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+        messages=[HumanMessage(content="审批通过")],
+        resume_payload={"action": "approve"},
+    )))
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert len(tool_results) == 1
+    assert tool_results[0]["data"]["name"] == "cancel_order"
+    assert tool_results[0]["data"]["ok"] is False
+    assert "cancel_not_allowed" in tool_results[0]["data"]["summary"]
+    assert events[-1]["type"] == "done"
+    assert "操作执行失败" in events[-1]["data"]["final"]
+    assert "操作已完成" not in events[-1]["data"]["final"]
+
+    state = graph.get_state({"configurable": {"thread_id": thread_id}})
+    assert state.values["execution_status"] == "failed"
+    tool_msgs = [m for m in state.values["messages"] if getattr(m, "type", "") == "tool"]
     assert [getattr(m, "name", "") for m in tool_msgs] == ["cancel_order"]
-    assert out["execution_status"] == "completed"
-    assert "操作执行失败" in out["messages"][-1].content
-    assert "cancel_not_allowed" in out["messages"][-1].content
-    assert "操作已完成" not in out["messages"][-1].content
+    assert "操作执行失败" in state.values["messages"][-1].content
+    assert "cancel_not_allowed" in state.values["messages"][-1].content
+    assert "操作已完成" not in state.values["messages"][-1].content
 
     conn = sqlite3.connect(db_path)
     try:
