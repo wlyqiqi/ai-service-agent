@@ -51,6 +51,25 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
             age_days = (datetime.now(timezone.utc) - signed_at).total_seconds() / 86400
             if age_days > REFUND_WINDOW_DAYS:
                 return "refund_window_expired"
+    if tool_name == "refund_apply":
+        status = precheck_data.get("status")
+        if status == "data_source_unavailable":
+            return "data_source_unavailable"
+        if status == "not_found":
+            return "order_not_found"
+        if status in ("refunded", "refunding"):
+            return "order_already_refunded" if status == "refunded" else "order_already_refunding"
+        if status not in ("paid", "completed"):
+            return "refund_not_allowed"
+        amount = (pending.get("args") or {}).get("amount")
+        total_amount = precheck_data.get("total_amount")
+        occupied = precheck_data.get("occupied_refund_amount", 0.0)
+        if (
+            isinstance(amount, (int, float)) and amount > 0
+            and isinstance(total_amount, (int, float))
+            and amount > float(total_amount) - float(occupied) + 1e-9
+        ):
+            return "refund_amount_exceeds"
     if tool_name == "cancel_order":
         status = precheck_data.get("status")
         if status == "data_source_unavailable":

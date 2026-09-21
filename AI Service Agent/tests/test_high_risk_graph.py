@@ -217,6 +217,156 @@ def test_cancel_precheck_distinguishes_db_unavailable(monkeypatch):
     ) == "data_source_unavailable"
 
 
+def _load_refund_seed(tmp_path, label):
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        f"seed_mock_db_refund_precheck_{label}", root / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / f"refund-precheck-{label}.db"
+    module.build_database(str(db_path))
+    return module, db_path
+
+
+def test_refund_facts_include_occupied_refund_total(monkeypatch, tmp_path):
+    """precheck_fetch 事实层包含 refunding/refunded 已占用退款金额。"""
+    _, db_path = _load_refund_seed(tmp_path, "occupied-facts")
+    _use_cancel_db(monkeypatch, db_path)
+    from ai_service_agent.tools.orders import lookup_order_state_with_availability
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.order_id, COALESCE(SUM(r.amount), 0)
+            FROM orders o LEFT JOIN refunds r
+              ON r.order_id = o.order_id AND r.status IN ('refunding', 'refunded')
+            WHERE o.status IN ('refunding', 'refunded')
+            GROUP BY o.order_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows
+    for order_id, occupied in rows:
+        facts, available = lookup_order_state_with_availability(order_id)
+        assert available is True
+        assert facts["occupied_refund_amount"] == occupied
+
+
+def test_refund_precheck_rejects_wrong_status(monkeypatch, tmp_path):
+    """refund_apply on shipped order -> refund_not_allowed (not allowed statuses)."""
+    _, db_path = _load_refund_seed(tmp_path, "wrong-status")
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='shipped' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "refund-precheck-wrong-status"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    assert [it for it in out.get("__interrupt__", []) if it.value.get("type") == "approval_required"] == []
+    assert out["execution_status"] == "completed"
+    assert out["context"]["precheck_reason"] == "refund_not_allowed"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
+def test_refund_precheck_rejects_over_amount(monkeypatch, tmp_path):
+    """refund_apply amount > total - occupied -> refund_amount_exceeds."""
+    _, db_path = _load_refund_seed(tmp_path, "over-amount")
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id, total_amount = conn.execute(
+            "SELECT customer_id, order_id, total_amount FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message(
+            "refund_apply", {"order_id": order_id, "amount": float(total_amount) + 99999.0}
+        ),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "refund-precheck-over-amount"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    assert [it for it in out.get("__interrupt__", []) if it.value.get("type") == "approval_required"] == []
+    assert out["execution_status"] == "completed"
+    assert out["context"]["precheck_reason"] == "refund_amount_exceeds"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
+def test_refund_precheck_allows_completed_order(monkeypatch, tmp_path):
+    """refund_apply on a recent completed order reaches approval, not precheck rejection."""
+    _, db_path = _load_refund_seed(tmp_path, "completed-allowed")
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders"
+            " WHERE status='completed' ORDER BY signed_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "refund-precheck-completed"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    assert out["context"].get("precheck_reason") is None
+    assert any(
+        it.value.get("type") == "approval_required" for it in out.get("__interrupt__", [])
+    )
+
+
 def test_high_risk_refund_unknown_order_still_approval():
     """规则不误伤：订单不在种子库 -> 无事实 -> 正常进入审批。"""
     model = ToolCallingFakeModel(responses=[

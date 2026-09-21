@@ -60,7 +60,7 @@ _DB_MACHINE_STATUS = {
     "paid": "paid",
     "shipped": "shipped",
     "delivered": "signed",
-    "completed": "signed",
+    "completed": "completed",
     "refunding": "refunding",
     "refunded": "refunded",
     "cancelled": "cancelled",
@@ -126,6 +126,25 @@ def _db_invoiced_total(order_id: str) -> float:
     try:
         row = conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM invoices WHERE order_id=?", (order_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return 0.0
+    finally:
+        conn.close()
+    return float(row[0]) if row else 0.0
+
+
+def _db_occupied_refund_total(order_id: str) -> float:
+    """已占用退款额度（refunding + refunded）；库缺失/损坏按 0 处理。"""
+    try:
+        conn = _db_connect()
+    except (sqlite3.Error, OSError):
+        return 0.0
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM refunds"
+            " WHERE order_id=? AND status IN ('refunding','refunded')",
+            (order_id,),
         ).fetchone()
     except sqlite3.Error:
         return 0.0
@@ -208,8 +227,14 @@ def lookup_order_state_with_availability(order_id: str) -> tuple[dict | None, bo
                 **fixture,
                 "total_amount": db_record["amount"],
                 "invoiced_amount": _db_invoiced_total(order_id),
+                "occupied_refund_amount": _db_occupied_refund_total(order_id),
             }, True
-        return {**fixture, "total_amount": fixture["amount"], "invoiced_amount": 0.0}, True
+        return {
+            **fixture,
+            "total_amount": fixture["amount"],
+            "invoiced_amount": 0.0,
+            "occupied_refund_amount": 0.0,
+        }, True
     record, db_available = _db_order_record_with_availability(order_id)
     if not db_available:
         return None, False
@@ -223,6 +248,7 @@ def lookup_order_state_with_availability(order_id: str) -> tuple[dict | None, bo
         "cancelled_at": record["cancelled_at"],
         "total_amount": record["amount"],
         "invoiced_amount": _db_invoiced_total(order_id),
+        "occupied_refund_amount": _db_occupied_refund_total(order_id),
     }, True
 
 
