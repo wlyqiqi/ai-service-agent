@@ -1,3 +1,5 @@
+import sqlite3
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from langchain_core.messages import HumanMessage
@@ -248,3 +250,198 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
         f"申请人 {owner}｜"
         f"状态 已付款"
     )
+
+
+def _use_cancel_db(monkeypatch, db_path):
+    from ai_service_agent.tools import orders as orders_mod
+    from ai_service_agent.tools import write as write_mod
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+
+
+def _db_snapshot(conn):
+    conn.row_factory = sqlite3.Row
+    orders = [dict(row) for row in conn.execute("SELECT * FROM orders ORDER BY order_id")]
+    idempotency = [
+        dict(row)
+        for row in conn.execute("SELECT * FROM idempotency ORDER BY tool_name, request_id")
+    ]
+    return {"orders": orders, "idempotency": idempotency}
+
+
+def _load_cancel_seed(tmp_path, label):
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        f"seed_mock_db_cancel_graph_{label}", root / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / f"cancel-graph-{label}.db"
+    module.build_database(str(db_path))
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        paid_order = conn.execute(
+            "SELECT * FROM orders WHERE status='paid' ORDER BY order_id LIMIT 1"
+        ).fetchone()
+        before = _db_snapshot(conn)
+    finally:
+        conn.close()
+    return module, db_path, paid_order["customer_id"], paid_order["order_id"], before
+
+
+def _cancel_graph(order_id, request_id):
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("cancel_order", {"order_id": order_id, "request_id": request_id}),
+    ])
+    return build_graph(model, tools=[], checkpointer=MemorySaver())
+
+
+def _invoke_cancel(graph, owner, thread_id):
+    return graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消这个订单")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+
+def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
+    from ai_service_agent.tools.write import cancel_order
+
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "approved")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _cancel_graph(order_id, "cancel-approved")
+    thread_id = "cancel-approved"
+    request_id = "cancel-approved"
+
+    out = _invoke_cancel(graph, owner, thread_id)
+    approval_values = [
+        it.value for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    ]
+    assert len(approval_values) == 1
+    assert approval_values[0]["approval_id"]
+
+    out = graph.invoke(
+        Command(resume={"action": "approve"}),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["execution_status"] == "completed"
+    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+    assert [getattr(m, "name", "") for m in tool_msgs] == ["cancel_order"]
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        order = conn.execute(
+            "SELECT * FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        cancel_rows = conn.execute(
+            "SELECT * FROM idempotency WHERE tool_name='cancel_order'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    expected_cancelled_at = order["cancelled_at"]
+    assert order["status"] == "cancelled"
+    assert expected_cancelled_at
+    assert len(cancel_rows) == 1
+    replay = cancel_order.invoke(
+        {"order_id": order_id, "request_id": request_id, "user_id": owner}
+    )
+    assert replay == {
+        "ok": True,
+        "replayed": True,
+        "result": {
+            "field": "cancel_order",
+            "order_id": order_id,
+            "status": "cancelled",
+            "cancelled_at": expected_cancelled_at,
+            "reason": None,
+        },
+    }
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert len(after["idempotency"]) == len(before["idempotency"]) + 1
+    assert after["orders"] == [
+        {**row, "status": "cancelled", "cancelled_at": expected_cancelled_at}
+        if row["order_id"] == order_id else row
+        for row in before["orders"]
+    ]
+
+
+def test_cancel_order_rejected_does_not_write_db(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "rejected")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _cancel_graph(order_id, "cancel-rejected")
+    thread_id = "cancel-rejected"
+
+    out = _invoke_cancel(graph, owner, thread_id)
+    approvals = [
+        it.value for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    ]
+    assert len(approvals) == 1
+    assert approvals[0]["approval_id"]
+
+    out = graph.invoke(
+        Command(resume={"action": "reject", "note": "资料不足"}),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["execution_status"] == "completed"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+    assert "未通过" in out["messages"][-1].content
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert after == before
+
+
+def test_cancel_order_expired_does_not_write_db(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "expired")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _cancel_graph(order_id, "cancel-expired")
+    thread_id = "cancel-expired"
+
+    out = _invoke_cancel(graph, owner, thread_id)
+    approvals = [
+        it.value for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    ]
+    assert len(approvals) == 1
+    assert approvals[0]["approval_id"]
+    assert approvals[0]["expires_at"]
+
+    out = graph.invoke(
+        Command(resume={"result": "expired"}),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["execution_status"] == "completed"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+    assert "过期" in out["messages"][-1].content
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert after == before
