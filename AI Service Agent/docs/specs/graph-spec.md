@@ -136,7 +136,7 @@
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
 | select（mutation/high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
-| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
+| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |

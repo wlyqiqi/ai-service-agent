@@ -20,7 +20,7 @@
 | `safety_rejected` | `{rule, reason}` | 安全预检拒绝（见 safety-spec.md） |
 | `approval_required` | `{approval_id, summary, expires_at}` | HighRisk interrupt（见 approval-spec.md） |
 | `approval_updated` | `{approval_id, status}` | 审批状态变更 |
-| `clarification_required` | `{missing: [...], reason?: "tier_mismatch", candidates?: [...]}` | select 参数不完整 / 低档工具档不匹配（tier_mismatch）→ clarify 节点（普通轮、非 interrupt，D1/B2b，见 graph-spec.md §6.2/§6.3）。`candidates` 仅用于 cancel-order 缺单号选择，含所有候选（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
+| `clarification_required` | `{missing: [...], reason?: "tier_mismatch", candidates?: [...]}` | select 参数不完整 / 低档工具档不匹配（tier_mismatch）→ clarify 节点（普通轮、非 interrupt，D1/B2b，见 graph-spec.md §6.2/§6.3）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
 | `confirmation_required` | `{summary}` | Mutation interrupt（等待用户确认，见 graph-spec.md §6.2） |
 | `confirmation_updated` | `{action}` | 用户确认结果（confirm / cancel） |
 | `handoff_created` | `{handoff_id?, reason, summary?, ticket_id?}` | 转人工接管完成（Conversation Runtime 外层发出，见 handoff-spec.md §3） |
