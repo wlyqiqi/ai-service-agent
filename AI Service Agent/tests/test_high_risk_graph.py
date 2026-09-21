@@ -8,7 +8,7 @@ from ai_service_agent.tools.kb import kb_search
 from langgraph.graph import END, START, StateGraph
 
 from ai_service_agent.graph.state import CustomerServiceState
-from ai_service_agent.graph.workflows.safety import _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
+from ai_service_agent.graph.workflows.safety import _apply_business_rules, _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
@@ -169,6 +169,18 @@ def test_precheck_cancel_order_already_cancelled():
         {"order_id": "ORD-CANCEL-1", "status": "cancelled"},
     )
     assert reason == "order_already_cancelled"
+
+
+def test_cancel_precheck_status_machine():
+    """cancel_order 预检：仅 paid 可进入审批；未找到、已取消、其他状态均拒绝。"""
+    tool = {"tool": "cancel_order", "args": {"order_id": "ORD-X", "request_id": "r"}}
+    assert _apply_business_rules(tool, {"order_id": "ORD-X", "status": "not_found"}, "u1") == "order_not_found"
+    assert _apply_business_rules(tool, {"order_id": "ORD-X", "status": "paid"}, "u1") is None
+    assert _apply_business_rules(tool, {"order_id": "ORD-X", "status": "cancelled"}, "u1") == "order_already_cancelled"
+    assert _apply_business_rules(tool, {"order_id": "ORD-X", "status": "shipped"}, "u1") == "cancel_not_allowed"
+    assert _apply_business_rules(
+        tool, {"order_id": "ORD-X", "user_id": "u2", "status": "paid"}, "u1"
+    ) == "data_boundary"
 
 
 def test_high_risk_refund_unknown_order_still_approval():

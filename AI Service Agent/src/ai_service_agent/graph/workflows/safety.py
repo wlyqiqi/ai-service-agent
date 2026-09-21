@@ -51,8 +51,14 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
             age_days = (datetime.now(timezone.utc) - signed_at).total_seconds() / 86400
             if age_days > REFUND_WINDOW_DAYS:
                 return "refund_window_expired"
-    if tool_name == "cancel_order" and precheck_data.get("status") == "cancelled":
-        return "order_already_cancelled"
+    if tool_name == "cancel_order":
+        status = precheck_data.get("status")
+        if status == "not_found":
+            return "order_not_found"
+        if status == "cancelled":
+            return "order_already_cancelled"
+        if status != "paid":
+            return "cancel_not_allowed"
     return None
 
 
@@ -67,6 +73,13 @@ def make_precheck_fetch_node() -> Callable[[dict], dict]:
             return {}
         data = lookup_order_state(order_id)
         if data is None:
+            if pending.get("tool") == "cancel_order":
+                return {
+                    "context": {
+                        **ctx,
+                        "precheck_data": {"order_id": order_id, "status": "not_found"},
+                    }
+                }
             return {}
         return {"context": {**ctx, "precheck_data": dict(data)}}
     return precheck_fetch
