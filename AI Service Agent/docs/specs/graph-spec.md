@@ -99,6 +99,7 @@
 - **select（参数完备性，同 §6.2 clarify 机制）** → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
   选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
+- `cancel_order` 缺 `order_id` 时按用户名下可取消已付款订单确定性解析：单笔自动补齐；多笔或零笔进入 clarify，并以当次 `cancellation_candidates` 驱动候选 / 无单文案。select 每次进入结果分支前清除旧候选，只有上述 cancel-order 澄清路径重新写入，避免污染其他工具的澄清。
 - 超时由下一 turn 惰性检查处理为过期。
 - **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
 
@@ -134,7 +135,7 @@
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
-| select（mutation/high_risk） | `messages`、`context`（`clarify_count`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify`；完整 select 时清零 `clarify_count`） |
+| select（mutation/high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
 | clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |

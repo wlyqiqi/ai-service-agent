@@ -10,8 +10,12 @@ from langgraph.types import Command
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
+from ai_service_agent.graph.workflows import clarify as clarify_mod
+from ai_service_agent.graph.workflows.clarify import clarify_text
+from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools import orders as orders_mod
 from ai_service_agent.tools import write as write_mod
@@ -292,3 +296,50 @@ def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
     )
     assert out["context"]["cancellation_candidates"] == []
     assert "没有可取消" in out["messages"][-1].content
+
+
+def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("cancel_order", {}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "cancel-stale-candidates"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    first = graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消我的订单")],
+            "user_id": "user-with-no-paid-order",
+            "session_id": thread_id,
+            "context": {},
+        },
+        config,
+    )
+    assert first["context"]["cancellation_candidates"] == []
+    assert "没有可取消" in first["messages"][-1].content
+
+    select_node = make_select_node(
+        ToolCallingFakeModel(responses=[select_json_message("refund_apply", {})]),
+        "high_risk",
+        DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    selected = select_node({**first, "messages": [HumanMessage(content="帮我申请退款")]})
+    assert "cancellation_candidates" not in selected["context"]
+    assert selected["context"]["clarify_missing"] == ["order_id"]
+
+    clarification_events = []
+    monkeypatch.setattr(
+        clarify_mod,
+        "get_stream_writer",
+        lambda: clarification_events.append,
+    )
+    clarified = clarify_mod.make_clarify_node()(selected)
+    assert len(clarification_events) == 1
+    clarification = clarification_events[0]
+    assert clarification["type"] == "clarification_required"
+    assert "candidates" not in clarification["data"]
+    assert clarified["messages"][-1].content == clarify_text(selected["context"]["clarify_missing"])

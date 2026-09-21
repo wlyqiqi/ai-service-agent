@@ -137,6 +137,9 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         return []
 
     def select(state: dict) -> dict:
+        current_context = {**state.get("context", {})}
+        current_context.pop("cancellation_candidates", None)
+        state = {**state, "context": current_context}
         last = ""
         for m in reversed(state.get("messages", [])):
             if getattr(m, "type", "") == "human":
