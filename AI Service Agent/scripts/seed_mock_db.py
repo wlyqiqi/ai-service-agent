@@ -163,6 +163,16 @@ CREATE TABLE invoices (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX idx_invoices_order ON invoices(order_id);
+CREATE TABLE refunds (
+    refund_id   TEXT PRIMARY KEY,
+    order_id    TEXT NOT NULL REFERENCES orders(order_id),
+    customer_id TEXT NOT NULL REFERENCES customers(customer_id),
+    amount      REAL NOT NULL CHECK (amount > 0),
+    reason      TEXT,
+    status      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX idx_refunds_order ON refunds(order_id);
 CREATE TABLE idempotency (
     tool_name   TEXT NOT NULL,
     request_id  TEXT NOT NULL,
@@ -316,6 +326,24 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
         )
     conn.executemany("INSERT INTO order_items(order_id,product_id,quantity,unit_price) VALUES (?,?,?,?)", items)
 
+    # ---- refunds（refunding/refunded 订单各生成一条确定性退款记录）----
+    refund_orders = conn.execute(
+        "SELECT order_id, customer_id, total_amount, status, ordered_at"
+        " FROM orders WHERE status IN ('refunding', 'refunded') ORDER BY order_id"
+    ).fetchall()
+    refunds = [
+        (
+            f"RFD-{n:05d}", order_id, customer_id, total_amount,
+            "质量问题" if n % 2 else "不想要了", status,
+            _iso(datetime.fromisoformat(ordered_at) + timedelta(days=1)),
+        )
+        for n, (order_id, customer_id, total_amount, status, ordered_at) in enumerate(refund_orders, 1)
+    ]
+    conn.executemany(
+        "INSERT INTO refunds(refund_id,order_id,customer_id,amount,reason,status,created_at)"
+        " VALUES (?,?,?,?,?,?,?)", refunds,
+    )
+
     # ---- shipments ----
     shipments = []
     sn = 0
@@ -381,7 +409,8 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
 
     tables = [
         "customers", "products", "orders", "order_items", "shipments",
-        "devices", "service_tickets", "conversations", "invoices", "idempotency",
+        "devices", "service_tickets", "conversations", "invoices", "refunds",
+        "idempotency",
     ]
     return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
