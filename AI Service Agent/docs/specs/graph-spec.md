@@ -99,8 +99,8 @@
 - **select（参数完备性，同 §6.2 clarify 机制）** → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
   选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
-- `cancel_order` 缺 `order_id` 时由确定性代码解析：本人仅 1 笔 `paid` 订单自动选中；多笔进入 `clarification_required` 并列出最多 10 笔候选；没有可取消订单时明确收尾，不进入审批。select 每次进入结果分支前清除旧候选，只有上述 cancel-order 澄清路径重新写入，避免污染其他工具的澄清。
-- `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态，便于人工审批人核对执行对象。
+- `cancel_order` 缺 `order_id` 时由确定性代码解析：本人仅 1 笔 `paid` 订单自动选中；多笔进入 `clarification_required` 并列出最多 10 笔候选；零笔同样发出 `clarification_required` 且 `candidates=[]`，继续 clarifying 流程，不进入审批。select 每次进入结果分支前清除旧候选，只有上述 cancel-order 澄清路径重新写入，避免污染其他工具的澄清。
+- `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态；由于预检只放行 `paid` 订单，进入审批时的状态预期为 `paid`。
 - 超时由下一 turn 惰性检查处理为过期。
 - **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
 

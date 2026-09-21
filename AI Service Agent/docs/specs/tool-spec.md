@@ -55,7 +55,7 @@ class ToolMeta:
 - **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
 - **P4 实现（D3/D4 定案）**：`orders.py` 升级为最小订单状态模型（`order_id -> {user_id, status, signed_at, cancelled_at}`，含确定性种子数据供离线 eval/测试）；`order_lookup` 承担读侧属主校验（D4）；订单状态事实由 `precheck_fetch` 节点提供给预检（D3，见 safety-spec.md §1.2）。
 - **P6 实现（2026-09-19）**：5 个 mutation 工具从内存 `_WRITE_STORE` 替换为查询/写入模拟电商库（同 `kb_search`/`order_lookup` 数据源替换模式）。`idempotency` 表位于 `mock_ecommerce.db`，复合主键 `(tool_name, request_id)`，与业务写入同连接同事务；拒绝路径不消耗幂等键。只读工具仍使用 `mode=ro` 连接，mutation 工具使用读写连接。高风险 `refund_apply` 仍为 stub；`cancel_order` 的当前实现见 P7。
-- **P7 实现（2026-09-20）**：`cancel_order` 从内存 stub 替换为模拟电商库事务写入，沿用 `_run_db_mutation` 模式。幂等语义是**同一业务取消请求只能成功执行一次**：成功提交后同一 `request_id` 且同一 requester 才返回 `replayed=true`；失败、拒绝、过期、越权和状态不允许都不写幂等表。订单取消成功后，更换新 `request_id` 的重复请求仍会被状态机拒绝为 `order_already_cancelled`。
+- **P7 实现（2026-09-20）**：`cancel_order` 从内存 stub 替换为模拟电商库事务写入，沿用 `_run_db_mutation` 模式。幂等语义是**同一业务取消请求只能成功执行一次**：同一业务取消请求由 requester `user_id`、`order_id` 和 `request_id` 共同匹配；成功提交后该 requester/order/request 组合返回 `replayed=true`。同一 `request_id` 但 `order_id` 不匹配时按数据边界拒绝（`data_boundary`），不暴露已存储结果；失败、拒绝、过期、越权和状态不允许都不写幂等表。订单取消成功后，更换新 `request_id` 的重复请求仍会被状态机拒绝为 `order_already_cancelled`。
 - **P5（B1）**：只读工具补 select 侧 schema（`kb_search`=`{text, request_id}`、
   `order_lookup`=`{order_id, request_id}`；`request_id` 由 select 注入，`user_id` 经 InjectedState 注入不入 schema），
   注册表元数据完备（预检用）。
