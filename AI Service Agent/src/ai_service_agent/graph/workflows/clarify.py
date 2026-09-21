@@ -54,7 +54,9 @@ def make_clarify_node() -> Callable[[dict], dict]:
             missing = ctx.get("clarify_missing") or []
             candidates = ctx.get("cancellation_candidates")
             is_cancel_selection = candidates is not None and missing == ["order_id"]
-            data = {"missing": missing, "candidates": candidates or []}
+            data = {"missing": missing}
+            if is_cancel_selection:
+                data["candidates"] = candidates
             if is_cancel_selection and candidates:
                 options = "、".join(
                     f"{item['order_id']}（{item.get('product_summary', '商品信息不可用')}）"
