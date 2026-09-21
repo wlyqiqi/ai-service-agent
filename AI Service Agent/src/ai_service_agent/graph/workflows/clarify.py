@@ -52,8 +52,19 @@ def make_clarify_node() -> Callable[[dict], dict]:
             text = TIER_CLARIFY_TEXT
         else:
             missing = ctx.get("clarify_missing") or []
-            data = {"missing": missing}
-            text = clarify_text(missing)
+            candidates = ctx.get("cancellation_candidates")
+            is_cancel_selection = candidates is not None and missing == ["order_id"]
+            data = {"missing": missing, "candidates": candidates or []}
+            if is_cancel_selection and candidates:
+                options = "、".join(
+                    f"{item['order_id']}（{item.get('product_summary', '商品信息不可用')}）"
+                    for item in candidates
+                )
+                text = f"您有多笔可取消订单，请选择订单号：{options}。"
+            elif is_cancel_selection:
+                text = "当前没有可取消的已付款订单。"
+            else:
+                text = clarify_text(missing)
         get_stream_writer()({"type": "clarification_required", "data": data})
         return {
             "messages": [AIMessage(content=text)],

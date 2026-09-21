@@ -1,5 +1,10 @@
 import asyncio
+import importlib.util
+import sqlite3
+import tempfile
+from pathlib import Path
 
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from langchain_core.messages import HumanMessage
@@ -8,6 +13,37 @@ from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools.kb import kb_search
+from ai_service_agent.tools import orders as orders_mod
+from ai_service_agent.tools import write as write_mod
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_seed_module():
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_mutation", ROOT / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def seed():
+    module = _load_seed_module()
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "mutation.db"
+        module.build_database(str(db_path))
+        yield module, db_path
+
+
+def _use_db(monkeypatch, db_path: Path):
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
 
 
 def _mutation_model():
@@ -171,3 +207,88 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
     assert "操作已完成" in t3["messages"][-1].content
+
+
+def _cancel_model(payload: dict):
+    return ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("cancel_order", payload),
+    ])
+
+
+def test_cancel_order_without_id_uses_single_paid_order(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            """
+            SELECT o.customer_id, o.order_id FROM orders o
+            WHERE o.status='paid'
+              AND (SELECT COUNT(*) FROM orders c WHERE c.customer_id=o.customer_id AND c.status='paid') = 1
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    graph = build_graph(_cancel_model({}), tools=[], checkpointer=MemorySaver())
+    thread_id = "cancel-single"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消我的订单")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out.get("__interrupt__")
+    interrupt_value = out["__interrupt__"][0].value
+    assert order_id in interrupt_value["summary"]
+
+
+def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    graph = build_graph(_cancel_model({}), tools=[], checkpointer=MemorySaver())
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner = conn.execute(
+            """
+            SELECT customer_id FROM orders
+            WHERE status='paid'
+            GROUP BY customer_id
+            HAVING COUNT(*) >= 2
+            LIMIT 1
+            """
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    thread_id = "cancel-multiple"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消我的订单")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["context"]["cancellation_candidates"]
+    assert out["context"]["clarify_missing"] == ["order_id"]
+
+    thread_id = "cancel-empty"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消我的订单")],
+            "user_id": "user-with-no-paid-order",
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["context"]["cancellation_candidates"] == []
+    assert "没有可取消" in out["messages"][-1].content
