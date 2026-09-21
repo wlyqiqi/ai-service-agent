@@ -192,3 +192,58 @@ def test_high_risk_refund_unknown_order_still_approval():
     out = _invoke(_hr_graph(model), "申请退款", "t3-pos")
     values = [it.value for it in out.get("__interrupt__", [])]
     assert any(v.get("type") == "approval_required" for v in values)
+
+
+def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_path):
+    import importlib.util
+    import sqlite3
+    from pathlib import Path
+
+    from ai_service_agent.tools import orders as orders_mod
+    from ai_service_agent.tools import write as write_mod
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_cancel_summary", root / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "cancel-summary.db"
+    module.build_database(str(db_path))
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("cancel_order", {"order_id": order_id}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "cancel-summary"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消这个订单")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+    summary = next(
+        it.value["summary"] for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    )
+    assert order_id in summary
+    assert owner in summary
+    assert "已付款" in summary
+    assert "商品" in summary

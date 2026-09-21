@@ -27,13 +27,28 @@ from ai_service_agent.graph.workflows.safety import (
 )
 from ai_service_agent.graph.workflows.clarify import make_clarify_node
 from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.tools.orders import lookup_order_state, order_items_summary
 from ai_service_agent.tools.registry import ToolRegistry
 
 
 def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
     def prepare_approval(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
-        summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
+        if pending["tool"] == "cancel_order":
+            order_id = pending["args"].get("order_id", "")
+            facts = lookup_order_state(order_id)
+            if facts is None:
+                summary = f"即将执行「cancel_order」，参数：{pending['args']}"
+            else:
+                summary = (
+                    f"取消订单 {facts['order_id']}｜"
+                    f"金额 {facts['total_amount']}｜"
+                    f"商品：{order_items_summary(order_id)}｜"
+                    f"申请人 {state.get('user_id', '')}｜"
+                    f"状态 已付款"
+                )
+        else:
+            summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
         req = make_approval_request(state.get("user_id", ""), summary, get_settings().approval_expires_minutes)
         return {
             "pending_approval": req,
