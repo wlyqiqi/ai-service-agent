@@ -200,7 +200,6 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
     from pathlib import Path
 
     from ai_service_agent.tools import orders as orders_mod
-    from ai_service_agent.tools import write as write_mod
 
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location(
@@ -215,11 +214,10 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
         mock_ecommerce_db_path = str(db_path)
 
     monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
-    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
     conn = sqlite3.connect(db_path)
     try:
-        owner, order_id = conn.execute(
-            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        owner, order_id, amount = conn.execute(
+            "SELECT customer_id, order_id, total_amount FROM orders WHERE status='paid' LIMIT 1"
         ).fetchone()
     finally:
         conn.close()
@@ -243,7 +241,10 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
         it.value["summary"] for it in out.get("__interrupt__", [])
         if it.value.get("type") == "approval_required"
     )
-    assert order_id in summary
-    assert owner in summary
-    assert "已付款" in summary
-    assert "商品" in summary
+    assert summary == (
+        f"取消订单 {order_id}｜"
+        f"金额 {amount}｜"
+        f"商品：{orders_mod.order_items_summary(order_id)}｜"
+        f"申请人 {owner}｜"
+        f"状态 已付款"
+    )
