@@ -10,6 +10,8 @@ from ai_service_agent.tools.kb import kb_search
 from langgraph.graph import END, START, StateGraph
 
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.workflows import high_risk_agent as high_risk_agent_mod
+from ai_service_agent.graph.workflows import safety as safety_mod
 from ai_service_agent.graph.workflows.safety import _apply_business_rules, _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
@@ -185,6 +187,34 @@ def test_cancel_precheck_status_machine():
     ) == "data_boundary"
 
 
+def test_cancel_precheck_distinguishes_db_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        safety_mod,
+        "lookup_order_state_with_availability",
+        lambda order_id: (None, False),
+    )
+    out = _safety_mini_graph(make_precheck_fetch_node()).invoke({
+        "messages": [],
+        "user_id": "u1",
+        "session_id": "cancel-datasource",
+        "context": {
+            "pending_tool": {
+                "tool": "cancel_order",
+                "args": {"order_id": "ORD-X", "request_id": "r"},
+            }
+        },
+    })
+    assert out["context"]["precheck_data"] == {
+        "order_id": "ORD-X",
+        "status": "data_source_unavailable",
+    }
+    assert _apply_business_rules(
+        out["context"]["pending_tool"],
+        out["context"]["precheck_data"],
+        "u1",
+    ) == "data_source_unavailable"
+
+
 def test_high_risk_refund_unknown_order_still_approval():
     """规则不误伤：订单不在种子库 -> 无事实 -> 正常进入审批。"""
     model = ToolCallingFakeModel(responses=[
@@ -250,6 +280,65 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
         f"申请人 {owner}｜"
         f"状态 已付款"
     )
+
+
+def test_cancel_approval_fails_closed_without_valid_paid_facts(monkeypatch, tmp_path):
+    import importlib.util
+    import sqlite3
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_cancel_fail_closed", root / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "cancel-fail-closed.db"
+    module.build_database(str(db_path))
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    def missing_precheck_fetch():
+        return lambda state: {}
+
+    def passing_safety_check(tier, registry):
+        return lambda state: {
+            "context": {**state.get("context", {}), "precheck": "pass"}
+        }
+
+    monkeypatch.setattr(high_risk_agent_mod, "make_precheck_fetch_node", missing_precheck_fetch)
+    monkeypatch.setattr(high_risk_agent_mod, "make_safety_check_node", passing_safety_check)
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("cancel_order", {"order_id": order_id}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "cancel-fail-closed"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="取消这个订单")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    approvals = [
+        it for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    ]
+    assert approvals == []
+    assert out["context"]["precheck_reason"] == "cancel_order_facts_unavailable"
+    assert "未能通过安全校验" in out["messages"][-1].content
 
 
 def _use_cancel_db(monkeypatch, db_path):
@@ -384,6 +473,52 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
         if row["order_id"] == order_id else row
         for row in before["orders"]
     ]
+
+
+def test_cancel_order_post_approval_drift_reports_failure(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "drift")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _cancel_graph(order_id, "cancel-drift")
+    thread_id = "cancel-drift"
+
+    out = _invoke_cancel(graph, owner, thread_id)
+    approvals = [
+        it for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    ]
+    assert len(approvals) == 1
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE orders SET status='shipped', cancelled_at=NULL WHERE order_id=?",
+            (order_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = graph.invoke(
+        Command(resume={"action": "approve"}),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+    assert [getattr(m, "name", "") for m in tool_msgs] == ["cancel_order"]
+    assert out["execution_status"] == "completed"
+    assert "操作执行失败" in out["messages"][-1].content
+    assert "cancel_not_allowed" in out["messages"][-1].content
+    assert "操作已完成" not in out["messages"][-1].content
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+        status = conn.execute(
+            "SELECT status FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert status == "shipped"
+    assert len(after["idempotency"]) == len(before["idempotency"])
 
 
 def test_cancel_order_rejected_does_not_write_db(monkeypatch, tmp_path):

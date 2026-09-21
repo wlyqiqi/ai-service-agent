@@ -9,8 +9,11 @@ goto 目标会并发执行导致共享 LastValue 通道双写 InvalidUpdateError
 dict，由条件边函数路由，规避该冲突——与 mutation_agent.py 同裁定）。
 """
 
+import json
+
 import langgraph.types as _lg_types
 from langchain_core.messages import AIMessage
+from langchain_core.messages import ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -27,7 +30,7 @@ from ai_service_agent.graph.workflows.safety import (
 )
 from ai_service_agent.graph.workflows.clarify import make_clarify_node
 from ai_service_agent.graph.workflows.select import make_select_node
-from ai_service_agent.tools.orders import lookup_order_state, order_items_summary
+from ai_service_agent.tools.orders import order_items_summary
 from ai_service_agent.tools.registry import ToolRegistry
 
 
@@ -36,10 +39,14 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
         pending = state["context"]["pending_tool"]
         if pending["tool"] == "cancel_order":
             order_id = pending["args"].get("order_id", "")
-            facts = lookup_order_state(order_id)
-            if facts is None:
-                summary = f"即将执行「cancel_order」，参数：{pending['args']}"
-            else:
+            facts = state.get("context", {}).get("precheck_data")
+            valid_paid_facts = (
+                isinstance(facts, dict)
+                and facts.get("order_id") == order_id
+                and facts.get("status") == "paid"
+                and facts.get("user_id") == state.get("user_id", "")
+            )
+            if valid_paid_facts:
                 summary = (
                     f"取消订单 {facts['order_id']}｜"
                     f"金额 {facts['total_amount']}｜"
@@ -47,6 +54,14 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
                     f"申请人 {state.get('user_id', '')}｜"
                     f"状态 已付款"
                 )
+            else:
+                return {
+                    "context": {
+                        **state.get("context", {}),
+                        "precheck_reason": "cancel_order_facts_unavailable",
+                    },
+                    "execution_status": "completed",
+                }
         else:
             summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
         req = make_approval_request(state.get("user_id", ""), summary, get_settings().approval_expires_minutes)
@@ -55,6 +70,9 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
             "context": {**state.get("context", {}), "approval_summary": summary},
             "execution_status": "waiting_approval",
         }
+
+    def _prepare_target(state: dict) -> str:
+        return "safety_final" if state.get("context", {}).get("precheck_reason") else "approval_pause"
 
     def approval_pause(state: dict) -> dict:
         req = state.get("pending_approval") or {}
@@ -92,6 +110,25 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
         }
 
     def finalize_ok(state: dict) -> dict:
+        pending = state["context"]["pending_tool"]
+        tool_error = None
+        for message in reversed(state.get("messages", [])):
+            if not isinstance(message, ToolMessage) or message.name != pending["tool"]:
+                continue
+            result = message.content
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except json.JSONDecodeError:
+                    result = None
+            if isinstance(result, dict) and result.get("error"):
+                tool_error = result["error"]
+            break
+        if tool_error:
+            return {
+                "messages": [AIMessage(content=f"审批通过，但操作执行失败。（{tool_error}）")],
+                "execution_status": "completed",
+            }
         return {"messages": [AIMessage(content="审批通过，操作已完成。")], "execution_status": "completed"}
 
     def finalize_rejected(state: dict) -> dict:
@@ -148,7 +185,10 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
     builder.add_conditional_edges(
         "safety_check", _safety_target, {"prepare_approval": "prepare_approval", "safety_final": "safety_final"}
     )
-    builder.add_edge("prepare_approval", "approval_pause")
+    builder.add_conditional_edges(
+        "prepare_approval", _prepare_target,
+        {"approval_pause": "approval_pause", "safety_final": "safety_final"},
+    )
     builder.add_conditional_edges(
         "approval_pause", _approval_target,
         {"recheck": "recheck", "finalize_rejected": "finalize_rejected", "finalize_expired": "finalize_expired"},

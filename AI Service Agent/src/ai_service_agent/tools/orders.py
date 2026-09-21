@@ -84,12 +84,12 @@ def _db_connect() -> sqlite3.Connection:
     return sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True, timeout=2)
 
 
-def _db_order_record(order_id: str) -> dict | None:
+def _db_order_record_with_availability(order_id: str) -> tuple[dict | None, bool]:
     """只读查询模拟电商库；库缺失 / 损坏 -> None（确定性降级到夹具层 / not_found）。"""
     try:
         conn = _db_connect()
     except (sqlite3.Error, OSError):
-        return None
+        return None, False
     try:
         row = conn.execute(
             "SELECT order_id, customer_id, status, signed_at, cancelled_at, total_amount"
@@ -97,11 +97,11 @@ def _db_order_record(order_id: str) -> dict | None:
             (order_id,),
         ).fetchone()
     except sqlite3.Error:
-        return None
+        return None, False
     finally:
         conn.close()
     if row is None:
-        return None
+        return None, True
     return {
         "order_id": row[0],
         "user_id": row[1],
@@ -109,7 +109,12 @@ def _db_order_record(order_id: str) -> dict | None:
         "signed_at": datetime.fromisoformat(row[3]) if row[3] else None,
         "cancelled_at": datetime.fromisoformat(row[4]) if row[4] else None,
         "amount": row[5],
-    }
+    }, True
+
+
+def _db_order_record(order_id: str) -> dict | None:
+    """兼容查询：只返回事实；数据源可用性由 lookup_order_state_with_availability 暴露。"""
+    return _db_order_record_with_availability(order_id)[0]
 
 
 def _db_invoiced_total(order_id: str) -> float:
@@ -193,21 +198,23 @@ def order_items_summary(order_id: str) -> str:
     return "、".join(f"{name} ×{quantity}" for name, quantity in rows)
 
 
-def lookup_order_state(order_id: str) -> dict | None:
+def lookup_order_state_with_availability(order_id: str) -> tuple[dict | None, bool]:
     """订单状态事实查询（D3，P4）：夹具优先 -> 模拟电商库 -> None；仅返回事实，不做授权/业务裁决。"""
     fixture = ORDER_STORE.get(order_id)
     if fixture is not None:
-        db_record = _db_order_record(order_id)
+        db_record, _ = _db_order_record_with_availability(order_id)
         if db_record is not None:
             return {
                 **fixture,
                 "total_amount": db_record["amount"],
                 "invoiced_amount": _db_invoiced_total(order_id),
-            }
-        return {**fixture, "total_amount": fixture["amount"], "invoiced_amount": 0.0}
-    record = _db_order_record(order_id)
+            }, True
+        return {**fixture, "total_amount": fixture["amount"], "invoiced_amount": 0.0}, True
+    record, db_available = _db_order_record_with_availability(order_id)
+    if not db_available:
+        return None, False
     if record is None:
-        return None
+        return None, True
     return {
         "order_id": record["order_id"],
         "user_id": record["user_id"],
@@ -216,7 +223,12 @@ def lookup_order_state(order_id: str) -> dict | None:
         "cancelled_at": record["cancelled_at"],
         "total_amount": record["amount"],
         "invoiced_amount": _db_invoiced_total(order_id),
-    }
+    }, True
+
+
+def lookup_order_state(order_id: str) -> dict | None:
+    """订单状态事实查询；数据源不可用与不存在同样返回 None 以保持既有公共行为。"""
+    return lookup_order_state_with_availability(order_id)[0]
 
 
 @tool

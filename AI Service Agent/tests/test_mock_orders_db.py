@@ -160,6 +160,16 @@ def test_db_missing_degrades(monkeypatch, seed):
     assert orders_mod.lookup_order_state("ORD-2026-10001") is None
 
 
+def test_lookup_order_state_exposes_db_unavailability(monkeypatch):
+    def broken_connect():
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(orders_mod, "_db_connect", broken_connect)
+
+    assert orders_mod.lookup_order_state_with_availability("ORD-NOPE") == (None, False)
+    assert orders_mod.lookup_order_state("ORD-NOPE") is None
+
+
 def test_my_orders_lists_own_orders(monkeypatch, seed):
     """my_orders：零业务参数按登录态查询本人订单；状态过滤与无效值处理。"""
     _, db_a, _ = seed

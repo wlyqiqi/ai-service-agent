@@ -12,7 +12,7 @@ from typing import Callable
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 
-from ai_service_agent.tools.orders import lookup_order_state
+from ai_service_agent.tools.orders import lookup_order_state_with_availability
 from ai_service_agent.tools.registry import ToolRegistry
 
 PRECHECK_REJECT_TEXT = "该操作未能通过安全校验，已拒绝执行。"
@@ -53,6 +53,8 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
                 return "refund_window_expired"
     if tool_name == "cancel_order":
         status = precheck_data.get("status")
+        if status == "data_source_unavailable":
+            return "data_source_unavailable"
         if status == "not_found":
             return "order_not_found"
         if status == "cancelled":
@@ -71,7 +73,17 @@ def make_precheck_fetch_node() -> Callable[[dict], dict]:
         order_id = (pending.get("args") or {}).get("order_id")
         if not isinstance(order_id, str) or not order_id:
             return {}
-        data = lookup_order_state(order_id)
+        data, db_available = lookup_order_state_with_availability(order_id)
+        if not db_available:
+            return {
+                "context": {
+                    **ctx,
+                    "precheck_data": {
+                        "order_id": order_id,
+                        "status": "data_source_unavailable",
+                    },
+                }
+            }
         if data is None:
             if pending.get("tool") == "cancel_order":
                 return {
