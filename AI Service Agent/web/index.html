@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -606,13 +606,21 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
               ] }
             : { tag: 'p', children: [m.meta.status === 'confirmed' ? '已确认' : '已取消'] },
         ] };
-      case 'approval':
-        return { tag: 'div', attrs: { class: 'card' }, children: [
+      case 'approval': {
+        var approvalKids = [
           { tag: 'h4', children: ['高风险操作 · 人工审批中'] },
           { tag: 'p', children: [m.content.summary] },
           { tag: 'p', children: ['状态：' + statusLabel(m.meta.status) +
             (m.content.expires_at ? '（' + m.content.expires_at + ' 到期）' : '')] },
-        ] };
+        ];
+        if (m.meta.status === 'pending') {
+          approvalKids.push({ tag: 'div', attrs: { class: 'row' }, children: [
+            { tag: 'button', attrs: { class: 'btn primary', 'data-action': 'approve', 'data-approval-id': m.content.approval_id }, children: ['同意'] },
+            { tag: 'button', attrs: { class: 'btn ghost', 'data-action': 'reject', 'data-approval-id': m.content.approval_id }, children: ['拒绝'] },
+          ] });
+        }
+        return { tag: 'div', attrs: { class: 'card' }, children: approvalKids };
+      }
       case 'notice':
         return { tag: 'div', attrs: { class: 'notice' }, children: ['安全拦截：' + m.content.reason] };
       case 'handoff':
@@ -710,7 +718,6 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return { ok: true };
     }
 
-    // TODO(后端契约): 动作接口为占位路径。
     async function confirm(conversationId, action) {
       var r = await fetchImpl(base + '/actions/confirm', {
         method: 'POST', headers: headers(),
@@ -720,16 +727,22 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return await r.json();
     }
 
-    async function approve(approvalId, verdict) {
-      var r = await fetchImpl(base + '/approvals/' + encodeURIComponent(approvalId), {
+    async function approve(approvalId) {
+      var r = await fetchImpl(base + '/approvals/' + encodeURIComponent(approvalId) + '/approve', {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ verdict: verdict }),
       });
       if (!r.ok) throw apiError('APPROVE_FAILED', r);
       return await r.json();
     }
 
-    // TODO(后端契约): 动作接口为占位路径。
+    async function reject(approvalId) {
+      var r = await fetchImpl(base + '/approvals/' + encodeURIComponent(approvalId) + '/reject', {
+        method: 'POST', headers: headers(),
+      });
+      if (!r.ok) throw apiError('APPROVE_FAILED', r);
+      return await r.json();
+    }
+
     async function clarify(conversationId, fields) {
       var r = await fetchImpl(base + '/actions/clarify', {
         method: 'POST', headers: headers(),
@@ -741,7 +754,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
 
     return {
       login: login, createSession: createSession, getMessages: getMessages,
-      sendMessage: sendMessage, confirm: confirm, approve: approve, clarify: clarify,
+      sendMessage: sendMessage, confirm: confirm, approve: approve, reject: reject, clarify: clarify,
     };
   }
 
@@ -1167,6 +1180,20 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       var input = document.getElementById('msg-input');
       input.value = field + ': ';
       input.focus();
+      return;
+    }
+    if (action === 'approve' || action === 'reject') {
+      var approvalId = btn.getAttribute('data-approval-id');
+      if (!approvalId) return;
+      var approvalFn = action === 'approve' ? api.approve : api.reject;
+      approvalFn(approvalId).then(function () {
+        store = applyEvent(store, { type: 'approval_updated', data: { approval_id: approvalId, status: action === 'approve' ? 'approved' : 'rejected' } });
+        applyView();
+        loadHistory();
+      }).catch(function (e) {
+        store = applyEvent(store, { type: 'error', data: { code: 'E_APPROVAL', message: e.message } });
+        applyView();
+      });
       return;
     }
     var verdict = action === 'confirm' ? 'confirmed' : 'canceled';
