@@ -1,4 +1,5 @@
 import argparse
+from contextlib import closing
 import sqlite3
 
 from ai_service_agent.harness.auth import UserStore
@@ -21,8 +22,12 @@ def main() -> None:
     parser.add_argument("--password", default="123456")
     args = parser.parse_args()
 
-    with sqlite3.connect(args.runtime_db) as runtime, sqlite3.connect(args.mock_db) as business:
-        count = seed_users(runtime, business, args.password)
+    with (
+        closing(sqlite3.connect(args.runtime_db)) as runtime,
+        closing(sqlite3.connect(args.mock_db)) as business,
+    ):
+        with runtime, business:
+            count = seed_users(runtime, business, args.password)
     print(f"Seeded {count} auth users")
 
 
