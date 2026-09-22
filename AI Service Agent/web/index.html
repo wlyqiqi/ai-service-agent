@@ -670,7 +670,9 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         body: JSON.stringify({ phone: account, password: password }),
       });
       if (!r.ok) throw apiError('LOGIN_FAILED', r);
-      return await r.json();
+      var auth = await r.json();
+      token = (auth && auth.token) || null;
+      return auth;
     }
 
     async function createSession(user) {

@@ -425,6 +425,26 @@ def test_api_login_posts_credentials(tmp_path):
     assert json.loads(out["body"]) == {"phone": "a", "password": "b"}
 
 
+def test_api_login_attaches_token_to_next_request(tmp_path):
+    expr = (
+        "var calls=[];"
+        "var api=UserPage.createApi({"
+        "fetchImpl:async function(url,opts){calls.push({url:url,opts:opts});"
+        "if(url.endsWith('/auth/login'))return {ok:true,status:200,json:async function(){return {token:'t'};}};"
+        "return {ok:true,status:200,json:async function(){return {};}};"
+        "},baseUrl:'http://x'});"
+        "var auth=await api.login('a','b');"
+        "await api.createSession({id:'alice',name:'Alice'});"
+        "({token:auth.token,nextUrl:calls[1].url,authorization:calls[1].opts.headers['Authorization']})"
+    )
+    out = _run_js(expr, tmp_path)
+    assert out == {
+        "token": "t",
+        "nextUrl": "http://x/sessions",
+        "authorization": "Bearer t",
+    }
+
+
 def test_api_send_message_parses_sse(tmp_path):
     expr = (
         "var enc=new TextEncoder();"
