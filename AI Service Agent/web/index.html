@@ -354,7 +354,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     <h2>登录</h2>
     <p class="login-sub">进入澄元智能客服，有问题随时问我</p>
     <div class="field">
-      <label for="login-account">账号</label>
+      <label for="login-account">手机号</label>
       <input id="login-account" autocomplete="username" spellcheck="false">
     </div>
     <div class="field">
@@ -363,7 +363,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     </div>
     <button class="btn primary btn-block" id="btn-login">登录</button>
     <p class="hint error" id="login-error" hidden></p>
-    <p class="hint">占位登录：任意账号密码即可体验；后端未连接时自动进入 mock 演示模式。</p>
+    <p class="hint">演示账号：客户手机号，默认密码 123456；后端未连接时自动进入 mock 演示模式。</p>
   </div>
 </main>
 
@@ -664,11 +664,10 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return err;
     }
 
-    // TODO(后端契约): 路径为占位，真实对接时与后端对齐（spec §10）。
     async function login(account, password) {
       var r = await fetchImpl(base + '/auth/login', {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ account: account, password: password }),
+        body: JSON.stringify({ phone: account, password: password }),
       });
       if (!r.ok) throw apiError('LOGIN_FAILED', r);
       return await r.json();

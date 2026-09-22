@@ -133,6 +133,8 @@ def test_has_two_views_and_login_fields(html):
         'id="msg-list"', 'id="status-tag"', 'id="chips"',
     ):
         assert marker in html, f"缺少 {marker}"
+    assert '<label for="login-account">手机号</label>' in html
+    assert '演示账号：客户手机号，默认密码 123456' in html
 
 
 def test_resolve_view_requires_token(tmp_path):
@@ -420,7 +422,7 @@ def test_api_login_posts_credentials(tmp_path):
     out = _run_js(expr, tmp_path)
     assert out["token"] == "t"
     assert out["url"] == "http://x/auth/login"
-    assert json.loads(out["body"]) == {"account": "a", "password": "b"}
+    assert json.loads(out["body"]) == {"phone": "a", "password": "b"}
 
 
 def test_api_send_message_parses_sse(tmp_path):
