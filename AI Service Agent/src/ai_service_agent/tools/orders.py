@@ -191,6 +191,44 @@ def find_own_cancellable_paid_orders(user_id: str) -> list[dict] | dict:
     ]
 
 
+def find_own_refundable_orders(user_id: str) -> list[dict] | dict:
+    """查询本人可退款的 paid/completed 订单；只读，最多返回最近 10 笔。"""
+    if not user_id:
+        return {"error": "not_logged_in"}
+    try:
+        conn = _db_connect()
+    except (sqlite3.Error, OSError):
+        return {"error": "data_source_unavailable"}
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.order_id, o.total_amount, o.ordered_at,
+                   COALESCE(GROUP_CONCAT(p.product_name || ' x' || oi.quantity), '')
+            FROM orders o
+            LEFT JOIN order_items oi ON oi.order_id = o.order_id
+            LEFT JOIN products p ON p.product_id = oi.product_id
+            WHERE o.customer_id = ? AND o.status IN ('paid', 'completed')
+            GROUP BY o.order_id, o.total_amount, o.ordered_at
+            ORDER BY o.ordered_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return {"error": "data_source_unavailable"}
+    finally:
+        conn.close()
+    return [
+        {
+            "order_id": row[0],
+            "total_amount": float(row[1]),
+            "ordered_at": row[2],
+            "product_summary": row[3] or "商品信息不可用",
+        }
+        for row in rows
+    ]
+
+
 def order_items_summary(order_id: str) -> str:
     """审批卡片用商品摘要；库缺失或订单不存在时确定性降级。"""
     try:

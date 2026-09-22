@@ -62,7 +62,7 @@ def make_clarify_node() -> Callable[[dict], dict]:
                     f"{item['order_id']}（{item.get('product_summary', '商品信息不可用')}）"
                     for item in candidates
                 )
-                text = f"您有多笔可取消订单，请选择订单号：{options}。"
+                text = f"您有多笔符合条件的订单，请选择订单号：{options}。"
             elif is_cancel_selection:
                 text = "当前没有可取消的已付款订单。"
             else:

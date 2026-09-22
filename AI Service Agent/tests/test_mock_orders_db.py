@@ -305,6 +305,49 @@ def test_find_own_cancellable_paid_orders_rejects_missing_login(monkeypatch, see
     }
 
 
+def test_find_own_refundable_orders_returns_paid_and_completed(monkeypatch, seed):
+    """Refund candidates include only the user's paid/completed orders."""
+    _, db_a, _ = seed
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_a)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    conn = sqlite3.connect(db_a)
+    try:
+        owner = conn.execute(
+            "SELECT customer_id FROM orders WHERE status IN ('paid','completed') LIMIT 1"
+        ).fetchone()[0]
+        expected_order_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT order_id FROM orders WHERE customer_id=? AND status IN ('paid','completed')",
+                (owner,),
+            )
+        }
+    finally:
+        conn.close()
+
+    result = orders_mod.find_own_refundable_orders(owner)
+    assert isinstance(result, list)
+    assert {item["order_id"] for item in result} == expected_order_ids
+    assert all(
+        {"order_id", "total_amount", "ordered_at", "product_summary"} <= item.keys()
+        for item in result
+    )
+    assert all(isinstance(item["total_amount"], float) for item in result)
+
+
+def test_find_own_refundable_orders_rejects_missing_login(monkeypatch, seed):
+    _, db_a, _ = seed
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_a)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    assert orders_mod.find_own_refundable_orders("") == {"error": "not_logged_in"}
+
+
 def test_order_items_summary_handles_owned_and_missing_orders(monkeypatch, seed):
     _, db_a, _ = seed
 

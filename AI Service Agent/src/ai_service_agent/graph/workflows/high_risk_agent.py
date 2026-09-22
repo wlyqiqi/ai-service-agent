@@ -62,6 +62,34 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
                     },
                     "execution_status": "completed",
                 }
+        elif pending["tool"] == "refund_apply":
+            order_id = pending["args"].get("order_id", "")
+            facts = state.get("context", {}).get("precheck_data")
+            valid_refund_facts = (
+                isinstance(facts, dict)
+                and facts.get("order_id") == order_id
+                and facts.get("user_id") == state.get("user_id", "")
+                and facts.get("status") in ("paid", "completed")
+            )
+            if valid_refund_facts:
+                amount = pending["args"].get("amount")
+                occupied = float(facts.get("occupied_refund_amount", 0.0))
+                resolved_amount = (
+                    round(float(amount), 2)
+                    if amount is not None
+                    else round(float(facts["total_amount"]) - occupied, 2)
+                )
+                summary = (
+                    f"退款申请 {facts['order_id']}｜"
+                    f"退款金额 {resolved_amount}｜"
+                    f"订单总额 {facts['total_amount']}｜"
+                    f"已占用退款 {occupied}｜"
+                    f"商品：{order_items_summary(order_id)}｜"
+                    f"申请人 {state.get('user_id', '')}｜"
+                    f"状态 {'已付款' if facts['status'] == 'paid' else '已完成'}"
+                )
+            else:
+                summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
         else:
             summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
         req = make_approval_request(state.get("user_id", ""), summary, get_settings().approval_expires_minutes)

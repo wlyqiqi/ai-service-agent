@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from langgraph.config import get_stream_writer
 
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
-from ai_service_agent.tools.orders import find_own_cancellable_paid_orders
+from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.prompts import SELECT_SYSTEM_TEMPLATE
 
@@ -171,6 +171,21 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                     "cancellation_candidates": candidates,
                 }
                 return {"context": ctx}
+        if tool_name == "refund_apply" and not args.get("order_id"):
+            candidates = find_own_refundable_orders(state.get("user_id", ""))
+            if isinstance(candidates, dict):
+                return _reject(state, candidates["error"])
+            if len(candidates) == 1:
+                args["order_id"] = candidates[0]["order_id"]
+            elif len(candidates) > 1:
+                ctx = {
+                    **state.get("context", {}),
+                    "clarify_missing": ["order_id"],
+                    "cancellation_candidates": candidates,
+                }
+                return {"context": ctx}
+            else:
+                return _clarify(state, ["order_id"])
         args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:

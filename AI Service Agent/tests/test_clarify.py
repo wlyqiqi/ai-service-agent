@@ -101,7 +101,10 @@ async def _acollect(gen):
 
 def test_clarify_streams_event_and_done():
     events = asyncio.run(_acollect(event_stream(
-        _graph(_highrisk_model({})), {"configurable": {"thread_id": "c6"}}, [HumanMessage(content="退了吧")]
+        _graph(_highrisk_model({})),
+        {"configurable": {"thread_id": "c6"}},
+        [HumanMessage(content="退了吧")],
+        extra_state={"user_id": "user-with-no-paid-order"},
     )))
     types = [e["type"] for e in events]
     assert "clarification_required" in types

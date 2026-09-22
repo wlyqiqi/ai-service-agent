@@ -42,10 +42,33 @@ def test_high_risk_reaches_approval_interrupt():
     assert any(v.get("type") == "approval_required" and v.get("approval_id") and v.get("expires_at") for v in values)
 
 
-def test_high_risk_approve_executes_tool():
-    graph = build_graph(_hr_model(), tools=[kb_search], checkpointer=MemorySaver())
-    _invoke(graph, "申请退款", "h2")
-    out = _invoke(graph, "审批通过", "h2", resume={"action": "approve"})
+def test_high_risk_approve_executes_tool(monkeypatch, tmp_path):
+    _, db_path = _load_refund_seed(tmp_path, "approve-executes")
+    _use_cancel_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "h2"}}
+    graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": "h2",
+            "context": {},
+        },
+        config,
+    )
+    out = graph.invoke(Command(resume={"action": "approve"}), config)
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "refund_apply"
@@ -365,6 +388,129 @@ def test_refund_precheck_allows_completed_order(monkeypatch, tmp_path):
     assert any(
         it.value.get("type") == "approval_required" for it in out.get("__interrupt__", [])
     )
+
+
+def test_refund_order_approval_summary_contains_amount(monkeypatch, tmp_path):
+    """Approval card shows refund amount and order facts."""
+    _, db_path = _load_refund_seed(tmp_path, "approval-summary")
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id, total_amount = conn.execute(
+            "SELECT customer_id, order_id, total_amount FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": order_id, "amount": 25.5}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "refund-approval-summary"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    approvals = [
+        it.value for it in out.get("__interrupt__", [])
+        if it.value.get("type") == "approval_required"
+    ]
+    assert len(approvals) == 1
+    summary = approvals[0]["summary"]
+    assert "退款申请" in summary
+    assert order_id in summary
+    assert "退款金额 25.5" in summary
+    assert f"订单总额 {total_amount}" in summary
+    assert "已占用退款" in summary
+    assert "申请人" in summary
+
+
+def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
+    """Single refundable order auto-selects and reaches refund approval."""
+    _, db_path = _load_refund_seed(tmp_path, "single-refundable")
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            """
+            SELECT customer_id, order_id FROM orders o
+            WHERE o.status IN ('paid', 'completed')
+              AND (SELECT COUNT(*) FROM orders c
+                   WHERE c.customer_id=o.customer_id
+                     AND c.status IN ('paid', 'completed')) = 1
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"amount": 10.0}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "refund-single-auto-resolve"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    assert out.get("__interrupt__")
+    assert order_id in out["__interrupt__"][0].value["summary"]
+
+
+def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
+    """Multiple refundable orders ask the user to choose one."""
+    _, db_path = _load_refund_seed(tmp_path, "multiple-refundable")
+    _use_cancel_db(monkeypatch, db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_ids = conn.execute(
+            """
+            SELECT customer_id, GROUP_CONCAT(order_id) FROM orders
+            WHERE status IN ('paid', 'completed')
+            GROUP BY customer_id
+            HAVING COUNT(*) >= 2
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {}),
+    ])
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    thread_id = "refund-multiple-clarify"
+    out = graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+    assert out["context"]["clarify_missing"] == ["order_id"]
+    assert {item["order_id"] for item in out["context"]["cancellation_candidates"]} <= set(order_ids.split(","))
+    assert "多笔符合条件的订单" in out["messages"][-1].content
 
 
 def test_high_risk_refund_unknown_order_still_approval():
