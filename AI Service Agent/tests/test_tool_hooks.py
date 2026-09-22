@@ -277,3 +277,85 @@ def test_wrapper_fail_open_on_missing_tool_call():
     assert recorder.events[0][1].tool_name == ""
     assert recorder.events[1][0] == "after"
     assert recorder.events[1][2].ok is True
+
+def _patch_kb_client(monkeypatch):
+    from ai_service_agent.tools import kb as kb_module
+
+    class _FakeLightRag:
+        def query_context(self, query):
+            return {
+                "context": "炸篮 4.5L",
+                "references": [{"file_path": "JoyAir_A1智能空气炸锅.md", "reference_id": "1"}],
+            }
+
+    monkeypatch.setattr(kb_module._lightrag, "get_lightrag_client", lambda: _FakeLightRag())
+
+
+def test_make_ai_graph_default_logging_hook_wired(monkeypatch):
+    from ai_service_agent.harness.streaming import event_stream  # noqa: F401
+    import ai_service_agent.harness.graph as graph_mod
+
+    _patch_kb_client(monkeypatch)
+    recorded = []
+
+    class SpyHook:
+        def on_before(self, context):
+            recorded.append(("before", context))
+
+        def on_after(self, context, outcome):
+            recorded.append(("after", context, outcome))
+
+    monkeypatch.setattr(graph_mod, "LoggingToolHook", SpyHook)
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("faq", "read", 0.9),
+        AIMessage(content="", tool_calls=[
+            {"name": "kb_search", "args": {"text": "退款"}, "id": "call-1", "type": "tool_call"},
+        ]),
+        AIMessage(content="查到了。"),
+    ])
+    graph = graph_mod.make_ai_graph(model, MemorySaver())
+    out = graph.invoke(
+        {"messages": [HumanMessage(content="保修多久")], "user_id": "u1", "session_id": "s1", "context": {}},
+        {"configurable": {"thread_id": "t-hook-default"}},
+    )
+    assert out["execution_status"] == "completed"
+    assert recorded
+    assert recorded[0][0] == "before"
+    assert recorded[0][1].tool_name == "kb_search"
+    assert recorded[-1][0] == "after"
+    assert recorded[-1][2].ok is True
+
+
+def test_sse_tool_events_unchanged_with_hooks(monkeypatch):
+    from ai_service_agent.harness.streaming import event_stream
+
+    _patch_kb_client(monkeypatch)
+    recorder = Recorder()
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("faq", "read", 0.9),
+        AIMessage(content="", tool_calls=[
+            {"name": "kb_search", "args": {"text": "退款"}, "id": "call-1", "type": "tool_call"},
+        ]),
+        AIMessage(content="查到了。"),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
+
+    async def _acollect(gen):
+        return [event async for event in gen]
+
+    events = asyncio.run(_acollect(event_stream(
+        graph,
+        config={"configurable": {"thread_id": "t-sse-hook"}},
+        messages=[HumanMessage(content="保修多久")],
+        extra_state={"user_id": "u1"},
+    )))
+    tool_calls = [event for event in events if event["type"] == "tool_call"]
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["data"]["name"] == "kb_search"
+    assert tool_calls[0]["data"]["args"] == {"text": "退款"}
+    assert len(tool_results) == 1
+    assert tool_results[0]["data"]["name"] == "kb_search"
+    assert tool_results[0]["data"]["ok"] is True
+    assert events[-1]["type"] == "done"
+    assert recorder.events and recorder.events[0][0] == "before"

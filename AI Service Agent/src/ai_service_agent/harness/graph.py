@@ -1,4 +1,5 @@
 from ai_service_agent.graph.builder import build_graph
+from ai_service_agent.harness.tool_hooks import LoggingToolHook
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
@@ -12,4 +13,4 @@ def make_ai_graph(model, checkpointer, registry=None):
     """
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
     tools = reg.for_risk_level("read")
-    return build_graph(model, tools=tools, checkpointer=checkpointer, registry=reg)
+    return build_graph(model, tools=tools, checkpointer=checkpointer, registry=reg, tool_hooks=[LoggingToolHook()])
