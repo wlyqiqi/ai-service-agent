@@ -18,7 +18,14 @@ def _client(tmp_path, seed=None):
     UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
     seed_result = seed(conn) if seed else None
     conn.close()
-    client = TestClient(create_app(db, model="fake", auth_enabled=True, jwt_secret="test-secret"))
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            auth_enabled=True,
+            jwt_secret="test-secret-with-at-least-32-bytes!!",
+        )
+    )
     return client, seed_result
 
 
