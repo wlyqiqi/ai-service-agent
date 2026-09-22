@@ -1,13 +1,27 @@
 import asyncio
+import importlib.util
+import sqlite3
+import tempfile
+from pathlib import Path
 
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
+from ai_service_agent.graph.agents.read_agent import make_read_graph
+from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.tool_hooks import (
     ToolHookContext,
     build_hook_context,
     make_tool_hook_wrapper,
 )
+from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.tools.kb import kb_search
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeRuntime:
@@ -124,28 +138,6 @@ def test_wrapper_fail_open_on_hook_errors():
 
 def test_empty_hooks_return_none():
     assert make_tool_hook_wrapper([]) is None
-
-
-
-
-import importlib.util
-import sqlite3
-import tempfile
-from pathlib import Path
-
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
-
-from ai_service_agent.graph.agents.read_agent import make_read_graph
-from ai_service_agent.graph.builder import build_graph
-from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
-from ai_service_agent.tools.kb import kb_search
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
 
 @tool
 def hook_echo_tool(text: str) -> str:
@@ -268,3 +260,20 @@ def test_high_risk_graph_runs_tool_hooks(monkeypatch, tmp_path):
     assert afters
     assert afters[-1][1].tool_name == "refund_apply"
     assert afters[-1][2].ok is True
+
+
+def test_wrapper_fail_open_on_missing_tool_call():
+    """Regression: request.tool_call=None must not block tool execution."""
+    recorder = Recorder()
+    wrapper = make_tool_hook_wrapper([recorder])
+
+    async def execute(request):
+        return ToolMessage(content="ok result", name="unknown", tool_call_id="unknown")
+
+    request = FakeRequest(tool_call=None, state={"user_id": "u1"}, runtime=FakeRuntime(config={"configurable": {"thread_id": "t1"}}))
+    result = asyncio.run(wrapper(request, execute))
+    assert result.content == "ok result"
+    assert recorder.events[0][0] == "before"
+    assert recorder.events[0][1].tool_name == ""
+    assert recorder.events[1][0] == "after"
+    assert recorder.events[1][2].ok is True

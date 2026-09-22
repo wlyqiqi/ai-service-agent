@@ -88,14 +88,18 @@ def _build_context_safe(request: Any) -> ToolHookContext:
         return build_hook_context(request)
     except Exception:
         logger.exception("tool hook context failed; fail-open")
-        tool_call = request.tool_call
-        return ToolHookContext(
-            tool_name=str(tool_call.get("name", "")),
-            tool_call_id=str(tool_call.get("id", "")),
-            args={},
-            user_id="",
-            thread_id="",
-        )
+        try:
+            tool_call = request.tool_call
+            return ToolHookContext(
+                tool_name=str(tool_call.get("name", "")),
+                tool_call_id=str(tool_call.get("id", "")),
+                args={},
+                user_id="",
+                thread_id="",
+            )
+        except Exception:
+            logger.exception("tool hook fallback context failed; returning blank")
+            return ToolHookContext(tool_name="", tool_call_id="", args={}, user_id="", thread_id="")
 
 
 def _is_ok(result: Any) -> bool:
