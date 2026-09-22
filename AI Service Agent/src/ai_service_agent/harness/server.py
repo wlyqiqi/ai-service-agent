@@ -3,7 +3,7 @@ import json
 import logging
 import sqlite3
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 
@@ -154,6 +154,33 @@ def create_app(
             return None
         return verify_bearer(request.headers, secret)
 
+    def _ensure_conversation_owner(auth_user: str | None, conversation_id: str):
+        if auth_user is not None and status.get_user_id(conversation_id) != auth_user:
+            raise HTTPException(status_code=403, detail="conversation forbidden")
+
+    def _ensure_approval_owner(auth_user: str | None, record: dict):
+        if auth_user is not None and record["requester_user_id"] != auth_user:
+            raise HTTPException(status_code=403, detail="approval forbidden")
+
+    def _chat_ownership(request: Request, body: ChatBody):
+        _ensure_conversation_owner(_auth_user(request), body.session_id)
+
+    def _confirm_ownership(request: Request, body: ConfirmBody):
+        _ensure_conversation_owner(_auth_user(request), body.conversation_id)
+
+    def _conversation_ownership(request: Request, conversation_id: str):
+        _ensure_conversation_owner(_auth_user(request), conversation_id)
+
+    def _handoff_ownership(request: Request, handoff_id: str):
+        record = handoff.get(handoff_id)
+        if record is not None:
+            _ensure_conversation_owner(_auth_user(request), record["conversation_id"])
+
+    def _approval_ownership(request: Request, approval_id: str):
+        record = approvals.get(approval_id)
+        if record is not None:
+            _ensure_approval_owner(_auth_user(request), record)
+
     async def _emit_handoff(conv_id: str, ev: dict):
         """统一 handoff side-effect path（P0 D3）：落 NOTICE + ensure Chatwoot（失败只记日志）+ 事件流。
 
@@ -210,7 +237,7 @@ def create_app(
         return {"session_id": info["conversation_id"], "mode": info["mode"]}
 
     @app.post("/chat")
-    async def chat(body: ChatBody):
+    async def chat(body: ChatBody, _: None = Depends(_chat_ownership)):
         conv_id = body.session_id
         thread_id = status.get_thread_id(conv_id)
         if thread_id is None:
@@ -307,7 +334,7 @@ def create_app(
         return _sse_response(ai_stream())
 
     @app.post("/actions/confirm")
-    async def action_confirm(body: ConfirmBody):
+    async def action_confirm(body: ConfirmBody, _: None = Depends(_confirm_ownership)):
         """页面确认按钮的 Transport 入口；Graph 编排与 checkpoint resume 仍在图内。"""
         conv_id = body.conversation_id
         thread_id = status.get_thread_id(conv_id)
@@ -349,13 +376,13 @@ def create_app(
         return {"ok": True, "action": normalized, "final": final, "events": events}
 
     @app.get("/conversations/{conversation_id}/messages")
-    def get_messages(conversation_id: str):
+    def get_messages(conversation_id: str, _: None = Depends(_conversation_ownership)):
         if status.get_thread_id(conversation_id) is None:
             raise HTTPException(status_code=404, detail="conversation not found")
         return {"items": messages_store.list(conversation_id), "mode": status.get_mode(conversation_id)}
 
     @app.post("/handoffs/{handoff_id}/resolve")
-    async def resolve(handoff_id: str):
+    async def resolve(handoff_id: str, _: None = Depends(_handoff_ownership)):
         pending_handoff = handoff.get(handoff_id)
         if pending_handoff is None:
             raise HTTPException(status_code=404, detail="handoff not found")
@@ -427,29 +454,33 @@ def create_app(
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
-    async def approve_approval(approval_id: str):
+    async def approve_approval(approval_id: str, _: None = Depends(_approval_ownership)):
         return await _approval_resume(approval_id, {"action": "approve"}, "approved")
 
     @app.post("/approvals/{approval_id}/reject")
-    async def reject_approval(approval_id: str, body: RejectBody | None = None):
+    async def reject_approval(approval_id: str, body: RejectBody | None = None, _: None = Depends(_approval_ownership)):
         resume = {"action": "reject"}
         if body is not None and body.note:
             resume["note"] = body.note
         return await _approval_resume(approval_id, resume, "rejected")
 
     @app.get("/approvals/{approval_id}")
-    def get_approval(approval_id: str):
+    def get_approval(approval_id: str, _: None = Depends(_approval_ownership)):
         rec = approvals.get(approval_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="approval not found")
         return rec
 
     @app.get("/approvals")
-    def list_approvals(status: str | None = None):
-        return {"items": approvals.list_pending() if status == "pending" else approvals.all()}
+    def list_approvals(request: Request, status: str | None = None):
+        auth_user = _auth_user(request)
+        items = approvals.list_pending() if status == "pending" else approvals.all()
+        if auth_user is not None:
+            items = [item for item in items if item["requester_user_id"] == auth_user]
+        return {"items": items}
 
     @app.get("/handoffs")
-    def list_handoffs(conversation_id: str):
+    def list_handoffs(conversation_id: str, _: None = Depends(_conversation_ownership)):
         rec = handoff.get_by_conversation(conversation_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="handoff not found")
