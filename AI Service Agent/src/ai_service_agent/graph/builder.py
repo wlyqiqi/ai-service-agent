@@ -50,7 +50,7 @@ def _safety_final(state: dict) -> dict:
     return {"messages": [AIMessage(content=GUARD_REJECT_TEXT)], "execution_status": "completed"}
 
 
-def build_graph(model, tools: list, checkpointer=None, registry=None):
+def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks=None):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
@@ -58,10 +58,10 @@ def build_graph(model, tools: list, checkpointer=None, registry=None):
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
     router = make_router(model)
     guard = make_guard_node()
-    read_graph = make_read_graph(model, tools)
+    read_graph = make_read_graph(model, tools, tool_hooks=tool_hooks)
     fallback = make_fallback_graph(model)
-    mutation_graph = make_mutation_graph(model, reg.for_risk_level("mutation"), reg)
-    high_risk_graph = make_high_risk_graph(model, reg.for_risk_level("high_risk"), reg)
+    mutation_graph = make_mutation_graph(model, reg.for_risk_level("mutation"), reg, tool_hooks=tool_hooks)
+    high_risk_graph = make_high_risk_graph(model, reg.for_risk_level("high_risk"), reg, tool_hooks=tool_hooks)
 
     def finalize(state: dict) -> dict:
         # 保留子图产出的终态 clarifying（P4 D1 普通轮澄清）；failed 防覆盖。
