@@ -1,3 +1,5 @@
+from typing import Mapping
+
 import bcrypt
 import jwt
 from fastapi import HTTPException
@@ -49,8 +51,8 @@ def create_access_token(user_id: str, secret: str, expires_minutes: int = 60) ->
     )
 
 
-def verify_bearer(headers: dict | object, secret: str) -> str:
-    auth_header = headers.get("Authorization") if hasattr(headers, "get") else None
+def verify_bearer(headers: Mapping[str, str], secret: str) -> str:
+    auth_header = headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     token = auth_header.removeprefix("Bearer ").strip()

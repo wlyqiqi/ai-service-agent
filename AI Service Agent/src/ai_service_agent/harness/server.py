@@ -22,6 +22,7 @@ from ai_service_agent.harness.approvals import (
     ApprovalNotFound,
     ApprovalService,
 )
+from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
@@ -62,7 +63,8 @@ class ConfirmBody(BaseModel):
 
 
 class LoginBody(BaseModel):
-    account: str
+    phone: str | None = None
+    account: str | None = None
     password: str
 
 
@@ -111,19 +113,27 @@ def create_app(
     simulate_approval: bool | None = None,
     chatwoot: object | None = None,
     chatwoot_webhook_secret: str | None = None,
+    auth_enabled: bool | None = None,
+    jwt_secret: str | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
     入口层例外：conversation_mode 轻量判断（handoff-spec.md §2）与 Message Store
     持久化 / 水合（state.messages 工作视图，handoff-spec.md §5.2）。
     """
-    sim = get_settings().simulate_approval if simulate_approval is None else simulate_approval
+    settings = get_settings()
+    required_auth = settings.auth_enabled if auth_enabled is None else auth_enabled
+    secret = jwt_secret or settings.jwt_secret
+    if required_auth and not secret:
+        raise ValueError("JWT_SECRET is required when authentication is enabled")
+    sim = settings.simulate_approval if simulate_approval is None else simulate_approval
     conn = sqlite3.connect(db_path, check_same_thread=False)
+    users = UserStore(conn)
     status = ConversationStatusStore(conn)
     handoff = HandoffService(conn, status)
     messages_store = MessageStore(conn)
     mapping = ChatwootMappingStore(conn)
-    settings_chatwoot = get_settings()
+    settings_chatwoot = settings
     if chatwoot is None and settings_chatwoot.chatwoot_enabled and settings_chatwoot.chatwoot_base_url \
             and settings_chatwoot.chatwoot_account_id and settings_chatwoot.chatwoot_inbox_id \
             and settings_chatwoot.chatwoot_api_token:
@@ -138,6 +148,11 @@ def create_app(
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
+
+    def _auth_user(request: Request):
+        if not required_auth:
+            return None
+        return verify_bearer(request.headers, secret)
 
     async def _emit_handoff(conv_id: str, ev: dict):
         """统一 handoff side-effect path（P0 D3）：落 NOTICE + ensure Chatwoot（失败只记日志）+ 事件流。
@@ -175,14 +190,20 @@ def create_app(
 
     @app.post("/auth/login")
     def auth_login(body: LoginBody):
-        # 占位认证（user-page-spec.md §10）：待真实认证方案定案；返回 dev token，页面据此携带 Bearer
-        return {
-            "token": "dev-" + body.account,
-            "user": {"id": body.account, "name": body.account},
-        }
+        phone = body.phone or body.account
+        if not phone:
+            raise HTTPException(status_code=422, detail="phone is required")
+        user = users.authenticate(phone, body.password)
+        if user is None:
+            raise HTTPException(status_code=401, detail="invalid credentials")
+        token = create_access_token(user["user_id"], secret, settings.jwt_expires_minutes)
+        return {"token": token, "user": {"id": user["user_id"], "name": user["name"]}}
 
     @app.post("/sessions")
-    def create_session(body: CreateSessionBody):
+    def create_session(body: CreateSessionBody, request: Request):
+        auth_user = _auth_user(request)
+        if auth_user is not None and body.user_id != auth_user:
+            raise HTTPException(status_code=403, detail="user mismatch")
         info = status.create_session(body.user_id)
         return {"session_id": info["conversation_id"], "mode": info["mode"]}
 
