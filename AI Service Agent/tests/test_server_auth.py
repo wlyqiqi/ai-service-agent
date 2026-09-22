@@ -64,6 +64,25 @@ def test_missing_secret_is_rejected_when_auth_enabled(tmp_path):
         create_app(str(tmp_path / "s.db"), model="fake", auth_enabled=True)
 
 
+def test_login_is_unavailable_when_auth_disabled_without_secret(tmp_path):
+    db = str(tmp_path / "s.db")
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    client = TestClient(create_app(db, model="fake", auth_enabled=False, jwt_secret=None))
+
+    response = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "JWT signing is unavailable"
+
+
+def test_login_rejects_empty_phone_or_account(tmp_path):
+    client = _client(tmp_path)
+    assert client.post("/auth/login", json={"phone": "", "password": "123456"}).status_code == 422
+    assert client.post("/auth/login", json={"account": "", "password": "123456"}).status_code == 422
+
+
 def test_get_messages_returns_mode(tmp_path):
     conn = sqlite3.connect(tmp_path / "s.db")
     status = ConversationStatusStore(conn)

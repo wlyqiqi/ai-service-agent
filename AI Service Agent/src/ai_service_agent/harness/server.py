@@ -193,6 +193,8 @@ def create_app(
         phone = body.phone or body.account
         if not phone:
             raise HTTPException(status_code=422, detail="phone is required")
+        if secret is None:
+            raise HTTPException(status_code=503, detail="JWT signing is unavailable")
         user = users.authenticate(phone, body.password)
         if user is None:
             raise HTTPException(status_code=401, detail="invalid credentials")
