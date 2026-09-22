@@ -653,11 +653,12 @@ def _use_cancel_db(monkeypatch, db_path):
 def _db_snapshot(conn):
     conn.row_factory = sqlite3.Row
     orders = [dict(row) for row in conn.execute("SELECT * FROM orders ORDER BY order_id")]
+    refunds = [dict(row) for row in conn.execute("SELECT * FROM refunds ORDER BY refund_id")]
     idempotency = [
         dict(row)
         for row in conn.execute("SELECT * FROM idempotency ORDER BY tool_name, request_id")
     ]
-    return {"orders": orders, "idempotency": idempotency}
+    return {"orders": orders, "refunds": refunds, "idempotency": idempotency}
 
 
 def _load_cancel_seed(tmp_path, label):
@@ -690,6 +691,32 @@ def _cancel_graph(order_id, request_id):
         select_json_message("cancel_order", {"order_id": order_id, "request_id": request_id}),
     ])
     return build_graph(model, tools=[], checkpointer=MemorySaver())
+
+
+def _refund_graph(order_id, request_id, amount=1.0):
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message(
+            "refund_apply", {"order_id": order_id, "amount": amount, "request_id": request_id}
+        ),
+    ])
+    return build_graph(model, tools=[], checkpointer=MemorySaver())
+
+
+def _invoke_refund(graph, owner, thread_id):
+    return graph.invoke(
+        {
+            "messages": [HumanMessage(content="申请退款")],
+            "user_id": owner,
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+
+
+def _approval_required(value):
+    return value.get("type") == "approval_required"
 
 
 def _invoke_cancel(graph, owner, thread_id):
@@ -779,6 +806,200 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
         if row["order_id"] == order_id else row
         for row in before["orders"]
     ]
+
+
+def test_refund_order_approved_writes_db_once(monkeypatch, tmp_path):
+    from ai_service_agent.tools.write import refund_apply
+
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-approved")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _refund_graph(order_id, "refund-approved")
+    thread_id = "refund-approved"
+    request_id = "refund-approved"
+
+    out = _invoke_refund(graph, owner, thread_id)
+    approvals = [
+        it.value for it in out.get("__interrupt__", []) if _approval_required(it.value)
+    ]
+    assert len(approvals) == 1
+    assert approvals[0]["approval_id"]
+
+    events = asyncio.run(_collect_events(event_stream(
+        graph,
+        {"configurable": {"thread_id": thread_id}},
+        messages=[HumanMessage(content="审批通过")],
+        resume_payload={"action": "approve"},
+    )))
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert [(result["data"]["name"], result["data"]["ok"]) for result in tool_results] == [
+        ("refund_apply", True)
+    ]
+
+    out = graph.get_state({"configurable": {"thread_id": thread_id}}).values
+    assert out["execution_status"] == "completed"
+    tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
+    assert [getattr(m, "name", "") for m in tool_msgs] == ["refund_apply"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        status = conn.execute(
+            "SELECT status FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()[0]
+        refund = conn.execute(
+            "SELECT amount, status FROM refunds WHERE order_id=?", (order_id,)
+        ).fetchone()
+        idem = conn.execute(
+            "SELECT tool_name, request_id FROM idempotency WHERE tool_name='refund_apply'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert status == "refunding"
+    assert refund == (1.0, "refunding")
+    assert idem == [("refund_apply", request_id)]
+
+    replay = refund_apply.invoke(
+        {"order_id": order_id, "amount": 1.0, "request_id": request_id, "user_id": owner}
+    )
+    assert replay["replayed"] is True
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert len(after["refunds"]) == len(before["refunds"]) + 1
+    assert len(after["idempotency"]) == len(before["idempotency"]) + 1
+    assert next(row for row in after["orders"] if row["order_id"] == order_id)["status"] == "refunding"
+
+
+def test_refund_order_rejected_does_not_write_db(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-rejected")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _refund_graph(order_id, "refund-rejected")
+    thread_id = "refund-rejected"
+
+    out = _invoke_refund(graph, owner, thread_id)
+    approvals = [it.value for it in out.get("__interrupt__", []) if _approval_required(it.value)]
+    assert len(approvals) == 1
+
+    out = graph.invoke(
+        Command(resume={"action": "reject", "note": "资料不足"}),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["execution_status"] == "completed"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+    assert "未通过" in out["messages"][-1].content
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert after == before
+
+
+def test_refund_order_expired_does_not_write_db(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-expired")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _refund_graph(order_id, "refund-expired")
+    thread_id = "refund-expired"
+
+    out = _invoke_refund(graph, owner, thread_id)
+    approvals = [it.value for it in out.get("__interrupt__", []) if _approval_required(it.value)]
+    assert len(approvals) == 1
+    assert approvals[0]["expires_at"]
+
+    out = graph.invoke(
+        Command(resume={"result": "expired"}),
+        {"configurable": {"thread_id": thread_id}},
+    )
+    assert out["execution_status"] == "completed"
+    assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
+    assert "过期" in out["messages"][-1].content
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert after == before
+
+
+def test_refund_order_replay_binds_to_requester(monkeypatch, tmp_path):
+    from ai_service_agent.tools.write import refund_apply
+
+    _, db_path, owner, order_id, _ = _load_cancel_seed(
+        tmp_path, "refund-replay-boundary"
+    )
+    _use_cancel_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        different_order = conn.execute(
+            "SELECT order_id FROM orders WHERE customer_id=? AND order_id<>?",
+            (owner, order_id),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    first = refund_apply.invoke(
+        {"order_id": order_id, "request_id": "refund-replay-boundary", "user_id": owner}
+    )
+    assert first["replayed"] is False
+    replay = refund_apply.invoke(
+        {
+            "order_id": different_order,
+            "request_id": "refund-replay-boundary",
+            "user_id": owner,
+        }
+    )
+    assert replay == {"error": "data_boundary", "order_id": different_order}
+
+
+def test_refund_order_post_approval_drift_reports_failure(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-drift")
+    _use_cancel_db(monkeypatch, db_path)
+    graph = _refund_graph(order_id, "refund-drift")
+    thread_id = "refund-drift"
+
+    out = _invoke_refund(graph, owner, thread_id)
+    approvals = [it for it in out.get("__interrupt__", []) if _approval_required(it.value)]
+    assert len(approvals) == 1
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE orders SET status='shipped' WHERE order_id=?", (order_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    events = asyncio.run(_collect_events(event_stream(
+        graph,
+        {"configurable": {"thread_id": thread_id}},
+        messages=[HumanMessage(content="审批通过")],
+        resume_payload={"action": "approve"},
+    )))
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert len(tool_results) == 1
+    assert tool_results[0]["data"]["name"] == "refund_apply"
+    assert tool_results[0]["data"]["ok"] is False
+    assert "refund_not_allowed" in tool_results[0]["data"]["summary"]
+    assert events[-1]["type"] == "done"
+    assert "操作执行失败" in events[-1]["data"]["final"]
+
+    state = graph.get_state({"configurable": {"thread_id": thread_id}})
+    assert state.values["execution_status"] == "failed"
+    assert "refund_not_allowed" in state.values["messages"][-1].content
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+        status = conn.execute(
+            "SELECT status FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert status == "shipped"
+    assert len(after["refunds"]) == len(before["refunds"])
+    assert len(after["idempotency"]) == len(before["idempotency"])
 
 
 async def _collect_events(gen):

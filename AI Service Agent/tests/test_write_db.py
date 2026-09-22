@@ -50,6 +50,7 @@ def _snapshot(db_path: Path):
         return {
             "customers": conn.execute("SELECT * FROM customers ORDER BY customer_id").fetchall(),
             "orders": conn.execute("SELECT * FROM orders ORDER BY order_id").fetchall(),
+            "refunds": conn.execute("SELECT * FROM refunds ORDER BY refund_id").fetchall(),
             "invoices": conn.execute("SELECT * FROM invoices ORDER BY invoice_id").fetchall(),
             "service_tickets": conn.execute(
                 "SELECT * FROM service_tickets ORDER BY ticket_id"
@@ -483,3 +484,46 @@ def test_refund_apply_blocks_wrong_status_and_cross_user(monkeypatch, seed):
         {"order_id": other_order, "request_id": "ref-x1", "user_id": "nobody"}
     )
     assert cross == {"error": "data_boundary", "order_id": other_order}
+
+
+def test_refund_cross_user_blocked_without_pollution(monkeypatch, seed):
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        victim_owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+        attacker = "u1" if victim_owner != "u1" else "u2"
+        before_order = conn.execute(
+            "SELECT * FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        before_refunds = conn.execute("SELECT * FROM refunds ORDER BY refund_id").fetchall()
+        before_idem = conn.execute("SELECT * FROM idempotency ORDER BY tool_name, request_id").fetchall()
+    finally:
+        conn.close()
+
+    denied = write_mod.refund_apply.invoke(
+        {
+            "order_id": order_id,
+            "amount": 1.0,
+            "request_id": "refund-cross-user",
+            "user_id": attacker,
+        }
+    )
+    assert denied == {"error": "data_boundary", "order_id": order_id}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after_order = conn.execute(
+            "SELECT * FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        after_refunds = conn.execute("SELECT * FROM refunds ORDER BY refund_id").fetchall()
+        after_idem = conn.execute(
+            "SELECT * FROM idempotency ORDER BY tool_name, request_id"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert after_order == before_order
+    assert after_refunds == before_refunds
+    assert after_idem == before_idem
