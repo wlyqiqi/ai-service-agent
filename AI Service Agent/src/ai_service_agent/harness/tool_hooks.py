@@ -5,6 +5,7 @@ MVP 只做日志/观测：State 只读、不发 SSE 事件、hook 异常 fail-op
 """
 
 import logging
+import copy
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -77,7 +78,7 @@ def build_hook_context(request: Any) -> ToolHookContext:
     return ToolHookContext(
         tool_name=tool_call["name"],
         tool_call_id=tool_call["id"],
-        args=dict(tool_call.get("args") or {}),
+        args=copy.deepcopy(tool_call.get("args") or {}),
         user_id=str(state.get("user_id") or ""),
         thread_id=str(configurable.get("thread_id") or ""),
     )
@@ -135,6 +136,26 @@ def _run_after_hooks(hook_list, context, outcome):
             logger.exception("tool hook on_after failed; fail-open")
 
 
+def _ok_result(hook_list, context, start, result):
+    """构造成功 outcome 并回调 after hooks，返回工具原结果。"""
+    outcome = ToolHookOutcome(
+        ok=_is_ok(result), result_summary=_summarize(result), error=None,
+        duration_ms=(time.perf_counter() - start) * 1000,
+    )
+    _run_after_hooks(hook_list, context, outcome)
+    return result
+
+
+def _fail_result(hook_list, context, start, exc):
+    """构造失败 outcome 并回调 after hooks，然后原样抛出工具异常（fail-closed）。"""
+    outcome = ToolHookOutcome(
+        ok=False, result_summary=None, error=str(exc),
+        duration_ms=(time.perf_counter() - start) * 1000,
+    )
+    _run_after_hooks(hook_list, context, outcome)
+    raise exc
+
+
 def make_tool_hook_wrapper(hooks):
     """生成 ToolNode awrap_tool_call 兼容异步包装器；hooks 为空返回 None（零开销直通）。"""
     hook_list = list(hooks)
@@ -148,16 +169,8 @@ def make_tool_hook_wrapper(hooks):
         try:
             result = await execute(request)
         except Exception as exc:
-            duration_ms = (time.perf_counter() - start) * 1000
-            outcome = ToolHookOutcome(ok=False, result_summary=None, error=str(exc), duration_ms=duration_ms)
-            _run_after_hooks(hook_list, context, outcome)
-            raise
-        duration_ms = (time.perf_counter() - start) * 1000
-        outcome = ToolHookOutcome(
-            ok=_is_ok(result), result_summary=_summarize(result), error=None, duration_ms=duration_ms
-        )
-        _run_after_hooks(hook_list, context, outcome)
-        return result
+            _fail_result(hook_list, context, start, exc)
+        return _ok_result(hook_list, context, start, result)
 
     return wrapper
 
@@ -175,16 +188,8 @@ def make_tool_hook_wrapper_sync(hooks):
         try:
             result = execute(request)
         except Exception as exc:
-            duration_ms = (time.perf_counter() - start) * 1000
-            outcome = ToolHookOutcome(ok=False, result_summary=None, error=str(exc), duration_ms=duration_ms)
-            _run_after_hooks(hook_list, context, outcome)
-            raise
-        duration_ms = (time.perf_counter() - start) * 1000
-        outcome = ToolHookOutcome(
-            ok=_is_ok(result), result_summary=_summarize(result), error=None, duration_ms=duration_ms
-        )
-        _run_after_hooks(hook_list, context, outcome)
-        return result
+            _fail_result(hook_list, context, start, exc)
+        return _ok_result(hook_list, context, start, result)
 
     return wrapper
 
@@ -209,16 +214,8 @@ class ToolHookMiddleware(AgentMiddleware):
         try:
             result = handler(request)
         except Exception as exc:
-            duration_ms = (time.perf_counter() - start) * 1000
-            outcome = ToolHookOutcome(ok=False, result_summary=None, error=str(exc), duration_ms=duration_ms)
-            _run_after_hooks(self._hook_list, context, outcome)
-            raise
-        duration_ms = (time.perf_counter() - start) * 1000
-        outcome = ToolHookOutcome(
-            ok=_is_ok(result), result_summary=_summarize(result), error=None, duration_ms=duration_ms
-        )
-        _run_after_hooks(self._hook_list, context, outcome)
-        return result
+            _fail_result(self._hook_list, context, start, exc)
+        return _ok_result(self._hook_list, context, start, result)
 
     async def awrap_tool_call(self, request: Any, handler) -> Any:
         if not self._hook_list:
@@ -229,13 +226,5 @@ class ToolHookMiddleware(AgentMiddleware):
         try:
             result = await handler(request)
         except Exception as exc:
-            duration_ms = (time.perf_counter() - start) * 1000
-            outcome = ToolHookOutcome(ok=False, result_summary=None, error=str(exc), duration_ms=duration_ms)
-            _run_after_hooks(self._hook_list, context, outcome)
-            raise
-        duration_ms = (time.perf_counter() - start) * 1000
-        outcome = ToolHookOutcome(
-            ok=_is_ok(result), result_summary=_summarize(result), error=None, duration_ms=duration_ms
-        )
-        _run_after_hooks(self._hook_list, context, outcome)
-        return result
+            _fail_result(self._hook_list, context, start, exc)
+        return _ok_result(self._hook_list, context, start, result)

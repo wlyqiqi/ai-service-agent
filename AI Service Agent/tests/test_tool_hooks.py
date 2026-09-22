@@ -89,6 +89,18 @@ def test_build_context_tolerates_non_dict_state_and_missing_config():
     assert ctx.user_id == ""
     assert ctx.thread_id == "t1"
 
+
+def test_build_context_args_are_deep_copied():
+    args = {"text": {"k": "v"}}
+    request = FakeRequest(
+        tool_call={"name": "kb_search", "args": args, "id": "call-1"},
+        state={"user_id": "u1"},
+        runtime=FakeRuntime(config={}),
+    )
+    ctx = build_hook_context(request)
+    ctx.args["text"]["k"] = "mutated"
+    assert args["text"]["k"] == "v"
+
     runtime_no_config = FakeRuntime(config=None)
     ctx2 = build_hook_context(FakeRequest(
         tool_call={"name": "kb_search", "args": {}, "id": "call-1"},
@@ -292,7 +304,6 @@ def _patch_kb_client(monkeypatch):
 
 
 def test_make_ai_graph_default_logging_hook_wired(monkeypatch):
-    from ai_service_agent.harness.streaming import event_stream  # noqa: F401
     import ai_service_agent.harness.graph as graph_mod
 
     _patch_kb_client(monkeypatch)
@@ -359,3 +370,4 @@ def test_sse_tool_events_unchanged_with_hooks(monkeypatch):
     assert tool_results[0]["data"]["ok"] is True
     assert events[-1]["type"] == "done"
     assert recorder.events and recorder.events[0][0] == "before"
+    assert any(e[0] == "after" for e in recorder.events)
