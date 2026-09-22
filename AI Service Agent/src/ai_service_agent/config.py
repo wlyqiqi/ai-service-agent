@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 from langchain_openai import ChatOpenAI
 from pydantic import Field
@@ -52,11 +53,33 @@ class Settings(BaseSettings):
     auth_enabled: bool = Field(default=False, validation_alias="AUTH_ENABLED")
     jwt_secret: str | None = Field(default=None, validation_alias="JWT_SECRET")
     jwt_expires_minutes: int = Field(default=60, validation_alias="JWT_EXPIRES_MINUTES")
+    # LangSmith 观测（architecture.md §8.1 tracing → LangSmith；SDK 只认 os.environ，
+    # pydantic-settings 不导出 .env，故由 _sync_langsmith_env 显式回写。默认关闭。）
+    langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")
+    langsmith_api_key: str | None = Field(default=None, validation_alias="LANGSMITH_API_KEY")
+    langsmith_project: str | None = Field(default=None, validation_alias="LANGSMITH_PROJECT")
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    _sync_langsmith_env(settings)
+    return settings
+
+
+def _sync_langsmith_env(settings: Settings, environ: dict | None = None) -> None:
+    """LangSmith SDK 从 os.environ 读取配置；setdefault 保证真实 shell 环境变量优先。
+
+    tracing 关闭时不写任何 LANGSMITH_* 变量（默认零行为变化）。
+    """
+    environ = os.environ if environ is None else environ
+    if not settings.langsmith_tracing:
+        return
+    environ.setdefault("LANGSMITH_TRACING", "true")
+    if settings.langsmith_api_key:
+        environ.setdefault("LANGSMITH_API_KEY", settings.langsmith_api_key)
+    if settings.langsmith_project:
+        environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
 
 
 def make_model() -> ChatOpenAI:

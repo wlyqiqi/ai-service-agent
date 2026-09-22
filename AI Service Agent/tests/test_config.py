@@ -1,6 +1,47 @@
 from ai_service_agent.config import Settings
 
 
+def test_langsmith_env_sync_enabled():
+    from ai_service_agent.config import _sync_langsmith_env
+
+    env: dict = {}
+    s = Settings(
+        _env_file=None,
+        langsmith_tracing=True,
+        langsmith_api_key="test-key",
+        langsmith_project="test-project",
+    )
+    _sync_langsmith_env(s, environ=env)
+    assert env["LANGSMITH_TRACING"] == "true"
+    assert env["LANGSMITH_API_KEY"] == "test-key"
+    assert env["LANGSMITH_PROJECT"] == "test-project"
+
+
+def test_langsmith_env_sync_disabled_sets_nothing():
+    from ai_service_agent.config import _sync_langsmith_env
+
+    env: dict = {}
+    s = Settings(_env_file=None, langsmith_tracing=False)
+    _sync_langsmith_env(s, environ=env)
+    assert "LANGSMITH_TRACING" not in env
+    assert "LANGSMITH_API_KEY" not in env
+    assert "LANGSMITH_PROJECT" not in env
+
+
+def test_langsmith_shell_env_takes_precedence():
+    from ai_service_agent.config import _sync_langsmith_env
+
+    env = {"LANGSMITH_API_KEY": "shell-key"}
+    s = Settings(
+        _env_file=None,
+        langsmith_tracing=True,
+        langsmith_api_key="env-file-key",
+    )
+    _sync_langsmith_env(s, environ=env)
+    assert env["LANGSMITH_API_KEY"] == "shell-key"
+    assert env["LANGSMITH_TRACING"] == "true"
+
+
 def test_settings_defaults():
     s = Settings(_env_file=None)
     assert s.db_path == "data/ai_service.db"
