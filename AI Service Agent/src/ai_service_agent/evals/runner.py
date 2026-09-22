@@ -218,6 +218,8 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
             results.append({"id": case["id"], "status": "pass" if ok else "fail", "actual": "handoff"})
             continue
         user_id = "" if case["id"] in UNAUTHENTICATED_IDS else "u1"
+        if ep == "clarify":
+            user_id = "user-with-no-paid-order"
         r = asyncio.run(_run_case_graph(case, _scripted_responses(case), user_id))
         if ep == "allow":
             ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == READ_MARKER
