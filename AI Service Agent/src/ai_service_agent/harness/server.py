@@ -3,7 +3,7 @@ import json
 import logging
 import sqlite3
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from ai_service_agent.harness.approvals import (
     ApprovalNotFound,
     ApprovalService,
 )
+from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
@@ -62,7 +63,8 @@ class ConfirmBody(BaseModel):
 
 
 class LoginBody(BaseModel):
-    account: str
+    phone: str | None = None
+    account: str | None = None
     password: str
 
 
@@ -111,19 +113,27 @@ def create_app(
     simulate_approval: bool | None = None,
     chatwoot: object | None = None,
     chatwoot_webhook_secret: str | None = None,
+    auth_enabled: bool | None = None,
+    jwt_secret: str | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
     入口层例外：conversation_mode 轻量判断（handoff-spec.md §2）与 Message Store
     持久化 / 水合（state.messages 工作视图，handoff-spec.md §5.2）。
     """
-    sim = get_settings().simulate_approval if simulate_approval is None else simulate_approval
+    settings = get_settings()
+    required_auth = settings.auth_enabled if auth_enabled is None else auth_enabled
+    secret = jwt_secret or settings.jwt_secret
+    if required_auth and not secret:
+        raise ValueError("JWT_SECRET is required when authentication is enabled")
+    sim = settings.simulate_approval if simulate_approval is None else simulate_approval
     conn = sqlite3.connect(db_path, check_same_thread=False)
+    users = UserStore(conn)
     status = ConversationStatusStore(conn)
     handoff = HandoffService(conn, status)
     messages_store = MessageStore(conn)
     mapping = ChatwootMappingStore(conn)
-    settings_chatwoot = get_settings()
+    settings_chatwoot = settings
     if chatwoot is None and settings_chatwoot.chatwoot_enabled and settings_chatwoot.chatwoot_base_url \
             and settings_chatwoot.chatwoot_account_id and settings_chatwoot.chatwoot_inbox_id \
             and settings_chatwoot.chatwoot_api_token:
@@ -138,6 +148,38 @@ def create_app(
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
+
+    def _auth_user(request: Request):
+        if not required_auth:
+            return None
+        return verify_bearer(request.headers, secret)
+
+    def _ensure_conversation_owner(auth_user: str | None, conversation_id: str):
+        if auth_user is not None and status.get_user_id(conversation_id) != auth_user:
+            raise HTTPException(status_code=403, detail="conversation forbidden")
+
+    def _ensure_approval_owner(auth_user: str | None, record: dict):
+        if auth_user is not None and record["requester_user_id"] != auth_user:
+            raise HTTPException(status_code=403, detail="approval forbidden")
+
+    def _chat_ownership(request: Request, body: ChatBody):
+        _ensure_conversation_owner(_auth_user(request), body.session_id)
+
+    def _confirm_ownership(request: Request, body: ConfirmBody):
+        _ensure_conversation_owner(_auth_user(request), body.conversation_id)
+
+    def _conversation_ownership(request: Request, conversation_id: str):
+        _ensure_conversation_owner(_auth_user(request), conversation_id)
+
+    def _handoff_ownership(request: Request, handoff_id: str):
+        record = handoff.get(handoff_id)
+        if record is not None:
+            _ensure_conversation_owner(_auth_user(request), record["conversation_id"])
+
+    def _approval_ownership(request: Request, approval_id: str):
+        record = approvals.get(approval_id)
+        if record is not None:
+            _ensure_approval_owner(_auth_user(request), record)
 
     async def _emit_handoff(conv_id: str, ev: dict):
         """统一 handoff side-effect path（P0 D3）：落 NOTICE + ensure Chatwoot（失败只记日志）+ 事件流。
@@ -175,19 +217,27 @@ def create_app(
 
     @app.post("/auth/login")
     def auth_login(body: LoginBody):
-        # 占位认证（user-page-spec.md §10）：待真实认证方案定案；返回 dev token，页面据此携带 Bearer
-        return {
-            "token": "dev-" + body.account,
-            "user": {"id": body.account, "name": body.account},
-        }
+        phone = body.phone or body.account
+        if not phone:
+            raise HTTPException(status_code=422, detail="phone is required")
+        if secret is None:
+            raise HTTPException(status_code=503, detail="JWT signing is unavailable")
+        user = users.authenticate(phone, body.password)
+        if user is None:
+            raise HTTPException(status_code=401, detail="invalid credentials")
+        token = create_access_token(user["user_id"], secret, settings.jwt_expires_minutes)
+        return {"token": token, "user": {"id": user["user_id"], "name": user["name"]}}
 
     @app.post("/sessions")
-    def create_session(body: CreateSessionBody):
+    def create_session(body: CreateSessionBody, request: Request):
+        auth_user = _auth_user(request)
+        if auth_user is not None and body.user_id != auth_user:
+            raise HTTPException(status_code=403, detail="user mismatch")
         info = status.create_session(body.user_id)
         return {"session_id": info["conversation_id"], "mode": info["mode"]}
 
     @app.post("/chat")
-    async def chat(body: ChatBody):
+    async def chat(body: ChatBody, _: None = Depends(_chat_ownership)):
         conv_id = body.session_id
         thread_id = status.get_thread_id(conv_id)
         if thread_id is None:
@@ -284,7 +334,7 @@ def create_app(
         return _sse_response(ai_stream())
 
     @app.post("/actions/confirm")
-    async def action_confirm(body: ConfirmBody):
+    async def action_confirm(body: ConfirmBody, _: None = Depends(_confirm_ownership)):
         """页面确认按钮的 Transport 入口；Graph 编排与 checkpoint resume 仍在图内。"""
         conv_id = body.conversation_id
         thread_id = status.get_thread_id(conv_id)
@@ -326,13 +376,13 @@ def create_app(
         return {"ok": True, "action": normalized, "final": final, "events": events}
 
     @app.get("/conversations/{conversation_id}/messages")
-    def get_messages(conversation_id: str):
+    def get_messages(conversation_id: str, _: None = Depends(_conversation_ownership)):
         if status.get_thread_id(conversation_id) is None:
             raise HTTPException(status_code=404, detail="conversation not found")
         return {"items": messages_store.list(conversation_id), "mode": status.get_mode(conversation_id)}
 
     @app.post("/handoffs/{handoff_id}/resolve")
-    async def resolve(handoff_id: str):
+    async def resolve(handoff_id: str, _: None = Depends(_handoff_ownership)):
         pending_handoff = handoff.get(handoff_id)
         if pending_handoff is None:
             raise HTTPException(status_code=404, detail="handoff not found")
@@ -404,29 +454,33 @@ def create_app(
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
-    async def approve_approval(approval_id: str):
+    async def approve_approval(approval_id: str, _: None = Depends(_approval_ownership)):
         return await _approval_resume(approval_id, {"action": "approve"}, "approved")
 
     @app.post("/approvals/{approval_id}/reject")
-    async def reject_approval(approval_id: str, body: RejectBody | None = None):
+    async def reject_approval(approval_id: str, body: RejectBody | None = None, _: None = Depends(_approval_ownership)):
         resume = {"action": "reject"}
         if body is not None and body.note:
             resume["note"] = body.note
         return await _approval_resume(approval_id, resume, "rejected")
 
     @app.get("/approvals/{approval_id}")
-    def get_approval(approval_id: str):
+    def get_approval(approval_id: str, _: None = Depends(_approval_ownership)):
         rec = approvals.get(approval_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="approval not found")
         return rec
 
     @app.get("/approvals")
-    def list_approvals(status: str | None = None):
-        return {"items": approvals.list_pending() if status == "pending" else approvals.all()}
+    def list_approvals(request: Request, status: str | None = None):
+        auth_user = _auth_user(request)
+        items = approvals.list_pending() if status == "pending" else approvals.all()
+        if auth_user is not None:
+            items = [item for item in items if item["requester_user_id"] == auth_user]
+        return {"items": items}
 
     @app.get("/handoffs")
-    def list_handoffs(conversation_id: str):
+    def list_handoffs(conversation_id: str, _: None = Depends(_conversation_ownership)):
         rec = handoff.get_by_conversation(conversation_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="handoff not found")

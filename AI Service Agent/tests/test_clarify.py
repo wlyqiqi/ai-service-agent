@@ -1,7 +1,10 @@
 """Clarify 机制（P4 D1）：select 参数完备性触发，普通轮非 interrupt。"""
 
 import asyncio
+import importlib.util
+from pathlib import Path
 
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 
@@ -13,6 +16,32 @@ from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_seed_module():
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_clarify", ROOT / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(autouse=True)
+def isolated_mock_db(monkeypatch, tmp_path):
+    module = _load_seed_module()
+    db_path = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(db_path))
+    from ai_service_agent.tools import orders as orders_mod, write as write_mod
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
 
 
 def _graph(model):
@@ -64,7 +93,7 @@ def test_select_complete_resets_clarify_count():
 
 
 def test_highrisk_missing_required_clarifies():
-    out = _invoke(_graph(_highrisk_model({})), "退了吧", "c1")
+    out = _invoke(_graph(_highrisk_model({})), "退了吧", "c1", user_id="user-with-no-paid-order")
     assert not out.get("__interrupt__")
     assert out["execution_status"] == "clarifying"
     assert out["context"]["clarify_missing"] == ["order_id"]
@@ -73,7 +102,7 @@ def test_highrisk_missing_required_clarifies():
 
 def test_highrisk_empty_required_clarifies():
     """pydantic 接受 order_id=''，须显式判空走 clarify。"""
-    out = _invoke(_graph(_highrisk_model({"order_id": ""})), "退了吧", "c2")
+    out = _invoke(_graph(_highrisk_model({"order_id": ""})), "退了吧", "c2", user_id="user-with-no-paid-order")
     assert out["execution_status"] == "clarifying"
     assert out["context"]["clarify_missing"] == ["order_id"]
 
@@ -90,7 +119,7 @@ def test_mutation_empty_args_clarifies():
 
 
 def test_clarify_over_limit_falls_back():
-    out = _invoke(_graph(_highrisk_model({})), "退了吧", "c4", context={"clarify_count": 2})
+    out = _invoke(_graph(_highrisk_model({})), "退了吧", "c4", user_id="user-with-no-paid-order", context={"clarify_count": 2})
     assert out["execution_status"] == "completed"
     assert CLARIFY_FALLBACK_TEXT in out["messages"][-1].content
 
@@ -132,7 +161,7 @@ def test_multi_turn_clarify_then_complete_enters_highrisk():
     clarify_count 清零发生在子图内，父图视图在 resume 完成后才同步。
     """
     saver = MemorySaver()
-    t1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c7")
+    t1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c7", user_id="user-with-no-paid-order")
     assert t1["execution_status"] == "clarifying"
     assert t1["context"]["clarify_count"] == 1
     assert not t1.get("__interrupt__")
@@ -149,11 +178,11 @@ def test_multi_turn_clarify_then_complete_enters_highrisk():
 def test_multi_turn_clarify_over_limit_falls_back():
     """0076 跨 turn：连续 3 轮不补齐 -> 超过 clarify_max_turns=2 -> 确定性 fallback，绝不默认执行。"""
     saver = MemorySaver()
-    r1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c8")
+    r1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c8", user_id="user-with-no-paid-order")
     assert r1["execution_status"] == "clarifying" and r1["context"]["clarify_count"] == 1
-    r2 = _turn(_build(_highrisk_model({}), saver), "还是没有订单号", "c8")
+    r2 = _turn(_build(_highrisk_model({}), saver), "还是没有订单号", "c8", user_id="user-with-no-paid-order")
     assert r2["execution_status"] == "clarifying" and r2["context"]["clarify_count"] == 2
-    r3 = _turn(_build(_highrisk_model({}), saver), "那就这样吧", "c8")
+    r3 = _turn(_build(_highrisk_model({}), saver), "那就这样吧", "c8", user_id="user-with-no-paid-order")
     assert r3["execution_status"] == "completed"
     assert CLARIFY_FALLBACK_TEXT in r3["messages"][-1].content
     assert not r3.get("__interrupt__")

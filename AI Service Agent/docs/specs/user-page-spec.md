@@ -15,11 +15,11 @@
 | # | 决策点 | 定案 |
 |---|---|---|
 | 1 | 渠道 | 桌面 Web 为主（品牌官网 / 独立页面） |
-| 2 | 登录 | 需要登录（账号体系），页面内登录 / 会话管理；认证后端为占位 |
+| 2 | 登录 | 需要登录（账号体系），页面内登录 / 会话管理；MVP 认证后端为 SQLite + JWT |
 | 3 | 业务操作 | 纯对话驱动：所有业务操作在对话框内完成，快捷指令 chips 把指令带入输入框 |
 | 4 | 转人工 | 简单承接：对话窗继续、轮询刷新坐席回复、仅标注「人工接待中」 |
 | 5 | 视觉 | C · 干净商务（`#f6f8fb` / `#2563eb` / `#1f2937`） |
-| 6 | 登录实现 | 占位（`POST /auth/login` 假接口），会话过期回登录视图 |
+| 6 | 登录实现 | MVP 登录使用 SQLite + JWT：`POST /auth/login` 提交 `{phone, password}`；成功返回 JWT 与用户 ID。生产认证后续替换为 Supabase，前端 Bearer 契约保持不变。会话过期回登录视图 |
 | 7 | 技术栈 | 单文件 HTML（内嵌 CSS/JS），hash 路由两个视图 |
 | 8 | 布局 | 1 · 居中单栏对话（约 860px），无左栏 |
 
@@ -85,7 +85,7 @@ UX 规则：
 
 ### 6.2 四条链路
 
-1. **登录**：`POST /auth/login`（占位）→ token → `POST /sessions`（后端显式写 `mode=ai`，返回 `conversation_id`）→ `#/chat` → `GET /conversations/{id}/messages` 载入历史。
+1. **登录**：`POST /auth/login` → JWT（`Authorization: Bearer <token>`）→ `POST /sessions`（后端显式写 `mode=ai`，返回 `conversation_id`）→ `#/chat` → `GET /conversations/{id}/messages` 载入历史。
 2. **AI 对话**：用户发消息 → `POST /chat`（SSE）→ 事件逐个渲染（§5 映射）→ `done` 结束。
 3. **人工车道**：`mode == human` 时发消息 → 写 Message Store（同步给坐席）→ 回复靠轮询 `GET /conversations/{id}/messages` 刷出；收到 `handoff_resolved` → 标签回「AI 在线」。
 4. **动作接口**：确认 / 取消、审批通过 / 拒绝、澄清补全走独立 HTTP 动作（占位）；前端只调 api 层占位函数，不感知 resume 细节；返回 `confirmation_updated` / `approval_updated` 刷新卡片。
@@ -123,7 +123,7 @@ UX 规则：
 
 | 函数 | 接口 | 说明 |
 |---|---|---|
-| `login` | `POST /auth/login`（占位端点） | 后端新增占位端点返回 `{token, user:{id,name}}`；认证方案定案后替换 |
+| `login` | `POST /auth/login` | 提交 `{phone, password}`，返回 `{token, user:{id,name}}`；MVP 登录使用 SQLite + JWT，生产认证后续替换为 Supabase，前端 Bearer 契约保持不变 |
 | `createSession` | `POST /sessions` `{user_id}` | 返回 `{session_id, mode}`（显式 `mode=ai`）；页面读 `session_id` |
 | `sendMessage` | `POST /chat` `{session_id, message}`（SSE） | 事件流逐条渲染 |
 | `getMessages` | `GET /conversations/{id}/messages` | 返回 `{items, mode}`；页面归一化为 `{messages, mode}` |
@@ -140,4 +140,3 @@ UX 规则：
 - 新增事件类型：同步更新 `event-spec.md` 与本文件 §5 映射表。
 - 改页面结构 / 路由 / 数据流：更新本文件。
 - 对接真实后端后：移除 §10 占位标注并更新对应契约。
-
