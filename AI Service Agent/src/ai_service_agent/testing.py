@@ -48,9 +48,10 @@ class ApprovalFlowFakeModel(ToolCallingFakeModel):
 
         system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
         if "选择器" in system:
-            payload = '{"tool": "refund_apply", "args": {"order_id": "10086"}}'
+            payload = '{"tool": "refund_apply", "args": {"order_id": "ORD-REFUND-1"}}'
         elif "路由器" in system:
             payload = '{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'
         else:
             payload = "已受理"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
+

@@ -101,6 +101,7 @@
   选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
 - `cancel_order` 缺 `order_id` 时由确定性代码解析：本人仅 1 笔 `paid` 订单自动选中；多笔进入 `clarification_required` 并列出最多 10 笔候选；零笔同样发出 `clarification_required` 且 `candidates=[]`，继续 clarifying 流程，不进入审批。select 每次进入结果分支前清除旧候选，只有上述 cancel-order 澄清路径重新写入，避免污染其他工具的澄清。
 - `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态；由于预检只放行 `paid` 订单，进入审批时的状态预期为 `paid`。
+- efund_apply 缺 order_id 时由确定性代码解析：本人 paid/completed 订单自动选中/澄清（同 cancel_order 模式）；审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
 - 超时由下一 turn 惰性检查处理为过期。
 - **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
 

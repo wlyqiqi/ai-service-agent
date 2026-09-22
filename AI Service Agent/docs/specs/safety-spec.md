@@ -23,6 +23,7 @@
 | 退款时限（D3，P4） | 无理由退款须在签收 7 天窗口内 | 签收超 7 天 → 拒绝（CTRL-0086） |
 | 开票金额上限（2026-09-19） | `amount + 该单已开票累计 <= orders.total_amount`；一单一开，允许部分开票；多订单分别开票 | `ORD-A` 总额 100、已开 30，再开 71 → `invoice_amount_exceeds` |
 | 取消状态机（2026-09-20 起） | `cancel_order` 仅允许本人 `paid` 订单进入审批；未找到、数据源不可用、越权、已取消、非 `paid` 状态在预检拒绝，预检拒绝 token 分别为 `order_not_found`、`data_source_unavailable`、`data_boundary`、`order_already_cancelled`、`cancel_not_allowed`；审批摘要缺少有效 `paid` 预检事实时内部失败关闭 token 为 `cancel_order_facts_unavailable`；工具执行事务内再次校验 | `cancelled -> order_already_cancelled`；`shipped -> cancel_not_allowed` |
+| 退款状态机与金额上限（2026-09-21） | efund_apply 仅允许本人 paid/completed 订单进入审批；已退款/退款中/不可退状态在预检拒绝（order_already_refunded/order_already_refunding/efund_not_allowed）；退款金额不得超过 	otal_amount - 已占用退款额度（efunding + efunded 均计入），否则 efund_amount_exceeds | efunding -> order_already_refunding；mount 99999 -> refund_amount_exceeds |
 | 敏感操作复核 | 破坏性关键词/高危参数二次确认要求 | 批量删除、大额转账 |
 
 - **v1 范围（D4 定案，P3）**：先实现「参数 schema 白名单 + 权限（`min_risk_level` 匹配 + `user_id` 登录态）+ 数据边界」。

@@ -283,6 +283,7 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
         ("ORD-2", "u2", "delivered", 2, None, "MYR", 263.34, "Shopee", "MY"),
         ("ORD-10086", "u1", "delivered", 12, None, "SGD", 147.60, "Lazada", "SG"),
         ("ORD-CANCEL-1", "u1", "cancelled", 20, 3, "SGD", 65.34, "官网", "SG"),
+        ("ORD-REFUND-1", "u1", "paid", 3, None, "SGD", 199.00, "官网", "SG"),
     ]
     for j, (oid, cust, status, ago, cago, cur, amt, channel, market) in enumerate(orders):
         ordered_at = ANCHOR - timedelta(days=ago)

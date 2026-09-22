@@ -400,3 +400,28 @@ def test_approve_resume_persists_final_to_message_store(tmp_path):
     rows = MessageStore(conn).list(session_id)
     conn.close()
     assert any(row["role"] == "assistant" and "审批通过" in row["content"] for row in rows)
+
+import importlib.util
+import pytest
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+def _load_seed_module():
+    spec = importlib.util.spec_from_file_location(
+        'seed_mock_db_shared', _ROOT / 'scripts' / 'seed_mock_db.py'
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+@pytest.fixture(autouse=True)
+def isolated_mock_db(monkeypatch, tmp_path):
+    module = _load_seed_module()
+    db_path = tmp_path / 'mock_ecommerce.db'
+    module.build_database(str(db_path))
+    from ai_service_agent.tools import write as _write, orders as _orders
+    class _S:
+        mock_ecommerce_db_path = str(db_path)
+    monkeypatch.setattr(_write, 'get_settings', lambda: _S())
+    monkeypatch.setattr(_orders, 'get_settings', lambda: _S())
