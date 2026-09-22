@@ -21,6 +21,7 @@ from langgraph.prebuilt import ToolNode
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.approval import make_approval_request
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
 from ai_service_agent.graph.workflows.safety import (
     PRECHECK_REJECT_TEXT,
     make_precheck_fetch_node,
@@ -34,7 +35,7 @@ from ai_service_agent.tools.orders import order_items_summary
 from ai_service_agent.tools.registry import ToolRegistry
 
 
-def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
+def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=None):
     def prepare_approval(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
         if pending["tool"] == "cancel_order":
@@ -198,7 +199,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry):
     builder.add_node("approval_pause", approval_pause)
     builder.add_node("recheck", make_recheck_node("high_risk", registry))
     builder.add_node("execute", execute)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("tools", ToolNode(tools, wrap_tool_call=make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None, awrap_tool_call=make_tool_hook_wrapper(tool_hooks) if tool_hooks else None))
     builder.add_node("finalize_ok", finalize_ok)
     builder.add_node("finalize_rejected", finalize_rejected)
     builder.add_node("finalize_expired", finalize_expired)

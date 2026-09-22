@@ -7,6 +7,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.harness.tool_hooks import ToolHookMiddleware
 from ai_service_agent.prompts import READ_SYSTEM_PROMPT
 
 class ReadAgentState(TypedDict):
@@ -14,10 +15,11 @@ class ReadAgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     user_id: str
 
-def make_read_graph(model, tools: list):
+def make_read_graph(model, tools: list, tool_hooks=None):
     """ReadGraph：create_agent + 只读工具集（graph-spec.md §6.1），无业务 interrupt。
     传入 state_schema 使 ToolNode 能注入 user_id（InjectedState），属主校验留在工具层。"""
-    agent = create_agent(model, tools=tools, system_prompt=READ_SYSTEM_PROMPT, state_schema=ReadAgentState)
+    middleware = [ToolHookMiddleware(tool_hooks)] if tool_hooks else []
+    agent = create_agent(model, tools=tools, system_prompt=READ_SYSTEM_PROMPT, state_schema=ReadAgentState, middleware=middleware)
     tools_node = ToolNode(tools)
 
     def finalize(state: dict) -> dict:
