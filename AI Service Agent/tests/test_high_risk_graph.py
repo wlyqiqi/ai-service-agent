@@ -354,8 +354,8 @@ def test_refund_precheck_rejects_over_amount(monkeypatch, tmp_path):
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
 
 
-def test_refund_precheck_allows_completed_order(monkeypatch, tmp_path):
-    """refund_apply on a recent completed order reaches approval, not precheck rejection."""
+def test_refund_precheck_rejects_completed_order(monkeypatch, tmp_path):
+    """refund_apply on a completed order is rejected before approval."""
     _, db_path = _load_refund_seed(tmp_path, "completed-allowed")
     _use_cancel_db(monkeypatch, db_path)
 
@@ -384,10 +384,8 @@ def test_refund_precheck_allows_completed_order(monkeypatch, tmp_path):
         {"configurable": {"thread_id": thread_id}},
     )
 
-    assert out["context"].get("precheck_reason") is None
-    assert any(
-        it.value.get("type") == "approval_required" for it in out.get("__interrupt__", [])
-    )
+    assert out["context"].get("precheck_reason") == "refund_not_allowed"
+    assert [it for it in out.get("__interrupt__", []) if it.value.get("type") == "approval_required"] == []
 
 
 def test_refund_order_approval_summary_contains_amount(monkeypatch, tmp_path):
@@ -895,6 +893,26 @@ def test_refund_order_rejected_does_not_write_db(monkeypatch, tmp_path):
     finally:
         conn.close()
     assert after == before
+
+
+def test_refund_rejected_when_completed(monkeypatch, tmp_path):
+    from ai_service_agent.graph.workflows.safety import _apply_business_rules
+
+    pending = {"tool": "refund_apply", "args": {"order_id": "ORD-X", "amount": 10.0}}
+    facts = {"order_id": "ORD-X", "user_id": "u1", "status": "completed",
+             "total_amount": 100.0, "occupied_refund_amount": 0.0}
+    assert _apply_business_rules(pending, facts, "u1") == "refund_not_allowed"
+
+
+def test_refund_allowed_when_signed_within_window():
+    from datetime import datetime, timedelta, timezone
+    from ai_service_agent.graph.workflows.safety import _apply_business_rules
+
+    pending = {"tool": "refund_apply", "args": {"order_id": "ORD-X", "amount": 10.0}}
+    facts = {"order_id": "ORD-X", "user_id": "u1", "status": "signed",
+             "signed_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+             "total_amount": 100.0, "occupied_refund_amount": 0.0}
+    assert _apply_business_rules(pending, facts, "u1") is None
 
 
 def test_refund_order_expired_does_not_write_db(monkeypatch, tmp_path):

@@ -35,6 +35,9 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
     if precheck_data.get("user_id") and user_id and precheck_data["user_id"] != user_id:
         return "data_boundary"
     if tool_name == "create_invoice":
+        status = precheck_data.get("status")
+        if status in ("cancelled", "refunded", "refunding"):
+            return "invoice_not_allowed"
         amount = (pending.get("args") or {}).get("amount")
         total_amount = precheck_data.get("total_amount")
         invoiced_amount = precheck_data.get("invoiced_amount")
@@ -45,6 +48,10 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
             and amount > float(total_amount) - float(invoiced_amount) + 1e-9
         ):
             return "invoice_amount_exceeds"
+    if tool_name == "update_address":
+        status = precheck_data.get("status")
+        if status in ("shipped", "signed", "completed", "cancelled", "refunding", "refunded"):
+            return "address_not_editable"
     if tool_name == "refund_apply" and precheck_data.get("status") == "signed":
         signed_at = precheck_data.get("signed_at")
         if isinstance(signed_at, datetime):
@@ -59,7 +66,7 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
             return "order_not_found"
         if status in ("refunded", "refunding"):
             return "order_already_refunded" if status == "refunded" else "order_already_refunding"
-        if status not in ("paid", "completed"):
+        if status not in ("paid", "signed"):
             return "refund_not_allowed"
         amount = (pending.get("args") or {}).get("amount")
         total_amount = precheck_data.get("total_amount")

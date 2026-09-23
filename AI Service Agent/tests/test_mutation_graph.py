@@ -343,3 +343,30 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
     assert clarification["type"] == "clarification_required"
     assert "candidates" not in clarification["data"]
     assert clarified["messages"][-1].content == clarify_text(selected["context"]["clarify_missing"])
+
+
+def test_update_address_rejected_after_shipped(seed, monkeypatch):
+    """已发货订单不可修改地址（业务规则 address_not_editable）。"""
+    from ai_service_agent.graph.workflows.safety import _apply_business_rules
+
+    pending = {"tool": "update_address", "args": {"order_id": "ORD-2026-10031"}}
+    facts = {"order_id": "ORD-2026-10031", "user_id": "u0026", "status": "shipped"}
+    reason = _apply_business_rules(pending, facts, "u0026")
+    assert reason == "address_not_editable"
+
+
+def test_update_address_allowed_when_paid(seed, monkeypatch):
+    from ai_service_agent.graph.workflows.safety import _apply_business_rules
+
+    pending = {"tool": "update_address", "args": {"order_id": "ORD-2026-10031"}}
+    facts = {"order_id": "ORD-2026-10031", "user_id": "u0026", "status": "paid"}
+    assert _apply_business_rules(pending, facts, "u0026") is None
+
+
+def test_create_invoice_rejected_when_cancelled(seed, monkeypatch):
+    from ai_service_agent.graph.workflows.safety import _apply_business_rules
+
+    pending = {"tool": "create_invoice", "args": {"order_id": "ORD-X", "amount": 10.0}}
+    facts = {"order_id": "ORD-X", "user_id": "u1", "status": "cancelled",
+             "total_amount": 100.0, "invoiced_amount": 0.0}
+    assert _apply_business_rules(pending, facts, "u1") == "invoice_not_allowed"
