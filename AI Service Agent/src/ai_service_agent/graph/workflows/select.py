@@ -96,19 +96,21 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         t for t in tools
         if (meta := registry.meta_for(t.name)) is not None and meta.min_risk_level == tier
     ]
-    allowed = {t.name for t in tier_tools}
-    lines = []
+    tier_allowed = {t.name for t in tier_tools}
+    lines_by_name = {}
     for t in tier_tools:
         line = f"- {t.name}: {t.description}"
         contract = _describe_args_schema(registry.meta_for(t.name))
         if contract:
             line += f"\n  参数：{contract}"
-        lines.append(line)
-    tool_list = "\n".join(lines)
+        lines_by_name[t.name] = line
     bound = _bind_json(model)
 
     def _reject(state: dict, reason: str) -> dict:
-        get_stream_writer()({"type": "safety_rejected", "data": {"rule": "precheck", "reason": reason}})
+        try:
+            get_stream_writer()({"type": "safety_rejected", "data": {"rule": "precheck", "reason": reason}})
+        except RuntimeError:
+            pass
         # 普通 dict 返回 + 条件边路由（LangGraph 1.2.11 实测：Command(goto) 不会抑制静态出边，
         # 静态后继与 goto 目标会并发执行导致双写；决策路由一律走条件边）
         return {"context": {**state.get("context", {}), "precheck_reason": reason}, "execution_status": "completed"}
@@ -140,6 +142,14 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         current_context = {**state.get("context", {})}
         current_context.pop("cancellation_candidates", None)
         state = {**state, "context": current_context}
+        route_allowed = state.get("allowed_tools")
+        if route_allowed is None:
+            selected_tools = tier_tools
+        else:
+            route_allowed = {str(name) for name in route_allowed}
+            selected_tools = [t for t in tier_tools if t.name in route_allowed]
+        allowed = {t.name for t in selected_tools}
+        tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
         last = ""
         for m in reversed(state.get("messages", [])):
             if getattr(m, "type", "") == "human":
@@ -148,7 +158,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         resp = bound.invoke([
             SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
                 tool_list=tool_list,
-                examples=_build_examples(tier_tools, registry),
+                examples=_build_examples(selected_tools, registry),
             )),
             HumanMessage(content=last),
         ])
@@ -190,6 +200,9 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:
             return _reject(state, "unknown_tool")
+        route_allowed = state.get("allowed_tools")
+        if route_allowed is not None and tool_name not in route_allowed:
+            return _reject(state, "tool_not_allowed")
         if tool_name not in allowed:
             if RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
                 return _tier_clarify(state, tool_name)

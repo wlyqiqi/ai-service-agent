@@ -16,6 +16,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.allowed_tools import (
+    make_allowed_tool_boundary_wrapper_async,
+    make_allowed_tool_boundary_wrapper_sync,
+)
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
 from ai_service_agent.graph.workflows.copy import (
     completion_text,
@@ -102,7 +106,11 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=N
     builder.add_node("confirm_pause", confirm_pause)
     builder.add_node("recheck", make_recheck_node("mutation", registry))
     builder.add_node("execute", execute)
-    builder.add_node("tools", ToolNode(tools, wrap_tool_call=make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None, awrap_tool_call=make_tool_hook_wrapper(tool_hooks) if tool_hooks else None))
+    hook_sync = make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None
+    hook_async = make_tool_hook_wrapper(tool_hooks) if tool_hooks else None
+    boundary_sync = make_allowed_tool_boundary_wrapper_sync(next_wrapper=hook_sync)
+    boundary_async = make_allowed_tool_boundary_wrapper_async(next_wrapper=hook_async)
+    builder.add_node("tools", ToolNode(tools, wrap_tool_call=boundary_sync, awrap_tool_call=boundary_async))
     builder.add_node("finalize_ok", finalize_ok)
     builder.add_node("finalize_rejected", finalize_rejected)
     builder.add_node("finalize_aborted", finalize_aborted)
