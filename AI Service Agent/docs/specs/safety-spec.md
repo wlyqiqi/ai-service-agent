@@ -62,7 +62,7 @@
 | 类别 | 规则 | 可配置项 |
 |---|---|---|
 | 显式请求 | 用户明确要求"转人工/人工客服/找真人"等意图 | 关键词/意图列表 |
-| 连续失败（路由级） | 连续 N 次 `unknown` 或低置信度路由 | N（默认 3） |
+| 连续失败（路由级 / 兜底级） | 连续 N 次 `unknown`、低置信度路由或 fallback 兜底 | N=5（`fallback_max_turns`）；最多 5 次 fallback 回复，第 6 次 fallback 触发 handoff |
 | 连续失败（工具级） | 同一工具连续失败 N 次 | N（默认 3），计数存 `context` |
 | 重复未解决 | 同一诉求重复提出超过 X 次仍未解决 | X（默认 3） |
 | 情绪信号 | 负向情绪（愤怒/投诉高频词）且连续出现 | 检测开关 |
@@ -80,7 +80,7 @@
        -> 通知用户（含工单号/排队说明）-> 本 turn 结束
 ```
 
-- 触发判定节点：`check_handoff`（确定性规则）检测信号并置位 `handoff` / `execution_status=waiting_handoff`，随后抛出 `interrupt(handoff_request)`；工具级失败计数在 `context` 中维护。Concierge / 审批拒绝分支可复用同一机制置位转人工信号。
+- 触发判定节点：`check_handoff`（确定性规则）检测信号并置位 `handoff` / `execution_status=waiting_handoff`，随后抛出 `interrupt(handoff_request)`。连续 fallback 当前使用 `context["fallback_count"]`，触发后清零；工具级失败后续应复用同一 `check_handoff` 消费入口和 `context` 计数语义，禁止各自维护独立计数。Concierge / 审批拒绝分支可复用同一机制置位转人工信号。
 - 转人工后 `conversation_mode=human`，后续用户消息在入口直接进入**人工车道**（写 Message Store + 通知坐席，见 `handoff-spec.md` §1），不触发 checkpointer / Graph / Guard / Router；人工 Resolve 回切 mode=ai 后恢复 AI 路径。
 
 ### 2.3 边界

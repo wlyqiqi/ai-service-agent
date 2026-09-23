@@ -7,7 +7,7 @@ from ai_service_agent.testing import ToolCallingFakeModel
 
 def test_check_handoff_ignores_normal_input():
     out = check_handoff({"messages": [], "context": {}, "user_id": "u1", "session_id": "s1"})
-    assert out == {"handoff": False, "execution_status": "completed"}
+    assert out == {"handoff": False, "execution_status": "completed", "context": {"fallback_count": 1}}
 
 
 def test_check_handoff_detects_keyword():
@@ -41,6 +41,30 @@ def test_fallback_non_handoff_routes_to_explain_llm():
     assert out["messages"][-1].content == "抱歉，暂时无法直接处理，您可以换个说法，或让我为您转接人工客服。"
 
 
+def test_fallback_allows_five_turns_then_triggers_handoff():
+    """同一 thread 允许 5 次 fallback 回复；第 6 次 fallback 必须确定性转人工。"""
+    graph = make_fallback_graph(ToolCallingFakeModel(
+        responses=[AIMessage(content=f"兜底回复 {index}") for index in range(1, 6)]
+    ))
+    context = {}
+    for index in range(1, 6):
+        out = graph.invoke(
+            {"messages": [HumanMessage(content=f"第 {index} 次")], "context": context, "handoff": False}
+        )
+        assert out["execution_status"] == "completed"
+        assert out["context"]["fallback_count"] == index
+        context = out["context"]
+
+    sixth = graph.invoke(
+        {"messages": [HumanMessage(content="第 6 次")], "context": context, "handoff": False}
+    )
+    interrupt_values = [item.value for item in sixth.get("__interrupt__", [])]
+    assert sixth["execution_status"] == "waiting_handoff"
+    assert sixth["handoff"] is True
+    assert any(item.get("reason") == "fallback limit exceeded" for item in interrupt_values)
+    assert sixth["context"]["fallback_count"] == 0
+
+
 def test_fallback_handoff_path_generates_no_in_graph_text():
     graph = make_fallback_graph(ToolCallingFakeModel(responses=[]))
     out = graph.invoke({"messages": [HumanMessage(content="我要转人工")], "context": {}, "user_id": "u1", "session_id": "s1", "handoff": False})
@@ -61,4 +85,8 @@ def test_check_handoff_no_false_positive_on_topic():
     out = check_handoff(
         {"messages": [HumanMessage(content="人工客服培训需要多久")], "context": {}, "user_id": "u1", "session_id": "s1"}
     )
-    assert out == {"handoff": False, "execution_status": "completed"}
+    assert out == {
+        "handoff": False,
+        "execution_status": "completed",
+        "context": {"fallback_count": 1},
+    }

@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     simulate_approval: bool = False
     # P4（D1）：Clarify 最大澄清轮次，超限转 fallback
     clarify_max_turns: int = 2
+    # 同一会话最多 fallback 回复次数；第 fallback_max_turns + 1 次触发转人工。
+    fallback_max_turns: int = 5
     # Chatwoot 坐席端（API inbox；仅人工车道启用；未配置则 chatwoot_enabled=False）
     chatwoot_enabled: bool = False
     chatwoot_base_url: str | None = Field(default=None, validation_alias="CHATWOOT_BASE_URL")

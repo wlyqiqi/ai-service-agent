@@ -28,3 +28,4 @@ class CustomerServiceState(TypedDict):
         "waiting_handoff", "completed", "failed",
     ]
     handoff: bool
+    handoff_reason: str

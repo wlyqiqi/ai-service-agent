@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from ai_service_agent.config import get_settings
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.prompts import FALLBACK_SYSTEM_PROMPT
@@ -18,18 +19,37 @@ def _last_user_content(state: dict) -> str:
 
 
 def check_handoff(state: dict) -> dict | Command:
-    """确定性规则：显式转人工意图（入口层 detector）命中才置位（safety-spec.md §2）；LLM 无权临时决定。
+    """确定性规则：显式转人工 / 连续 fallback 超限才置位（safety-spec.md §2）；LLM 无权临时决定。
 
     命中时先置位再中断：Command(update) 保证 execution_status=waiting_handoff
     在中断时刻生效（state-spec.md §1），随后路由到 pause 节点抛 interrupt。
     """
     last_content = _last_user_content(state)
-    if detect_handoff_intent(last_content):
+    fallback_count = int(state.get("context", {}).get("fallback_count", 0))
+    if fallback_count >= get_settings().fallback_max_turns:
         return Command(
-            update={"handoff": True, "execution_status": "waiting_handoff"},
+            update={
+                "handoff": True,
+                "handoff_reason": "fallback limit exceeded",
+                "execution_status": "waiting_handoff",
+                "context": {**state.get("context", {}), "fallback_count": 0},
+            },
             goto="pause",
         )
-    return {"handoff": False, "execution_status": "completed"}
+    if detect_handoff_intent(last_content):
+        return Command(
+            update={
+                "handoff": True,
+                "handoff_reason": "用户显式请求转人工",
+                "execution_status": "waiting_handoff",
+            },
+            goto="pause",
+        )
+    return {
+        "handoff": False,
+        "execution_status": "completed",
+        "context": {**state.get("context", {}), "fallback_count": fallback_count + 1},
+    }
 
 
 def pause(state: dict) -> dict:
@@ -38,7 +58,7 @@ def pause(state: dict) -> dict:
     _lg_types.interrupt(
         {
             "type": "handoff_request",
-            "reason": "用户显式请求转人工",
+            "reason": state.get("handoff_reason", "用户显式请求转人工"),
             "summary": str(last_content)[:80],
         }
     )
