@@ -24,6 +24,15 @@ class ToolMeta:
   只读工具不进入写图 select 允许集与系统提示，若模型仍选中已注册低档工具 → `tier_clarify` 澄清
   （普通轮，见 graph-spec.md §6.2/§6.3），未知工具仍拒绝。ToolNode 工具注入保持分层。
 
+## Allowed Tools（Router v2）
+
+- Router v2 不选择工具。
+- Policy Gate 根据 `route_intent` 输出 `allowed_tools`。
+- `allowed_tools` 是候选工具边界，子图仍负责最终工具选择与参数提取。
+- 子图模型可见工具集必须与 `allowed_tools` 相交。
+- ToolNode 执行前必须拒绝不在 `allowed_tools` 内的工具调用。
+- 现有 risk-tier 校验、schema 校验、业务预检、审批和 recheck 全部保留。
+
 ## 2. 工具实现约定
 
 - 工具函数签名：参数带类型注解与描述；通过 `InjectedState` / `InjectedStore` / `ToolRuntime` 访问会话/记忆/运行时。

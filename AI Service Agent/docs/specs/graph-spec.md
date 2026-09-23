@@ -64,17 +64,28 @@
 
 ## 4. Router 节点
 
-- LLM 结构化输出：`capability`（faq / order / account / smalltalk / unknown）+ `risk_level` + `confidence`（0-1）。
-- 低置信度（阈值可配置）→ `unknown` → 走 Fallback，不硬猜。
+- Router v1（默认关闭前的兼容路径）：结构化输出 `capability` + `risk_level` + `confidence`。
+- Router v2（`JEV_ROUTE_INTENT_ENABLED=true`）：Jev 只执行一次 `Choice(route_intent)`，输出 `route_intent` + `confidence`。
+- v2 `route_intent` 是稳定业务意图标签，不是 `tool_name`，也不是 `target_graph`。
+- DeepSeek Router fallback 必须输出同一个 v2 契约。
+- Jev 超时、HTTP 错误、非法输出或置信度不足时 fallback 到 DeepSeek；DeepSeek 置信度不足时归为 `unknown`。
 - 每轮执行；多轮中用户可切换意图。
-- 仅写入自身分类字段（`capability` / `risk_level` / `confidence`），不得修改 `context` 等业务状态。
+- v2 仅写入自身分类字段（`route_intent` / `confidence`），不得修改 `context` 等业务状态。
 - Router 失败/超时 → 直接走 Fallback。
 
 ## 5. Policy 映射（纯确定性）
 
-- `capability x risk_level -> 子图` 静态映射表，不调 LLM，可审计。
-- 例：`order x read -> ReadGraph(order 只读工具)`；`account x mutation -> MutationGraph`；`order x high_risk -> HighRiskGraph`。
-- 无法映射 → Concierge 兜底。
+- Policy Gate 不调用 LLM，并且是 `target_graph` / `execution_class` / `allowed_tools` / `requires_approval` 的唯一确定性写入方。
+- v1 路径继续使用 `capability x risk_level -> 子图`。
+- v2 路径使用 `route_intent -> PolicyDecision`。
+- v2 `PolicyDecision` 派生：
+  - `target_graph`
+  - `execution_class`（`read_only` / `standard_write` / `high_risk`）
+  - `allowed_tools`
+  - `requires_approval`
+- `allowed_tools` 是候选工具边界；子图 LLM 只能在该边界内选择最终工具。
+- 未注册 intent、`unsupported_action`、`unknown` 一律 fallback；例如 `update_phone` 有意不注册为 route intent，账户资料变更使用 `account_profile_update`。
+- 高风险操作继续保留安全预检与人工审批。
 
 ## 6. 子图
 
