@@ -24,6 +24,16 @@ def router_json_message(capability: str, risk_level: str, confidence: float) -> 
     )
 
 
+def route_intent_json_message(route_intent: str, confidence: float) -> AIMessage:
+    """Route Intent Router v2 的 json_mode 离线契约。"""
+    return AIMessage(
+        content=json.dumps(
+            {"route_intent": route_intent, "confidence": confidence},
+            ensure_ascii=False,
+        )
+    )
+
+
 def make_fake_model() -> ToolCallingFakeModel:
     """服务端 model='fake' 的默认离线模型（Router json_mode 结构 + FAQ 回复）。"""
     return ToolCallingFakeModel(

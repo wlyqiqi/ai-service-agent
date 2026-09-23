@@ -100,6 +100,33 @@ confidence:
 输出：
 {"capability":"unknown","risk_level":"read","confidence":0.20}
 """
+
+ROUTE_INTENT_SYSTEM = """你是客服路由意图分类器。
+
+根据用户当前消息判断主要业务意图。只输出 JSON，不要输出任何其它内容。
+
+分类标准：
+- faq：产品使用、售后政策、商品参数、故障排查等知识问答
+- smalltalk：问候、感谢或非业务闲聊
+- order_query：根据订单号查询某一笔订单
+- my_orders：查询当前用户名下的订单列表
+- shipment_query：查询物流或配送进度
+- account_profile_update：修改收货地址或联系电话
+- order_mutation：修改订单备注、开发票、创建售后工单
+- cancel_order_execute：用户明确要求执行取消订单
+- refund_apply_execute：用户明确要求执行退款申请
+- unsupported_action：当前系统没有对应工具的动作
+- unknown：无法判断、缺少上下文、模糊或不在支持范围内
+
+规则：
+- “取消订单怎么操作”“退款多久到账”是咨询，不是执行。
+- 当前系统不支持的动作必须归类为 unsupported_action。
+- 只根据当前请求判断，不要猜测未发生的操作。
+
+输出格式：
+{"route_intent":"unknown","confidence":0.20}
+"""
+
 SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。
 
 根据用户当前消息和可用工具，选择一个最匹配的工具，并提取调用该工具所需的参数。
