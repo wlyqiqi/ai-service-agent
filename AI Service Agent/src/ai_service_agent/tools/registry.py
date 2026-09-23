@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterable, Optional
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
@@ -30,3 +30,12 @@ class ToolRegistry:
         """构建期注入：只给该风险等级及以下可用的工具（tool-spec.md §1）。"""
         order = {"read": 0, "mutation": 1, "high_risk": 2}
         return [fn for meta, fn in self._tools.values() if order[meta.min_risk_level] <= order[level]]
+
+    def tools_for_names(self, names: Iterable[str]) -> list[BaseTool]:
+        """Build-time/runtime injection by explicit allowlist; registry order is preserved."""
+        wanted = set(names)
+        return [
+            fn
+            for name, (_, fn) in self._tools.items()
+            if name in wanted
+        ]
