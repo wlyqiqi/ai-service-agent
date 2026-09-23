@@ -1,5 +1,3 @@
-import pytest
-
 from ai_service_agent.graph.route_policy import (
     ROUTE_POLICY,
     resolve_route_policy,
@@ -48,8 +46,8 @@ def test_unknown_and_unsupported_routes_fall_back():
 def test_execution_class_confidence_thresholds():
     assert route_intent_is_confident("faq", 0.60) is True
     assert route_intent_is_confident("faq", 0.59) is False
-    assert route_intent_is_confident("update_phone", 0.70) is True
-    assert route_intent_is_confident("update_phone", 0.69) is False
+    assert route_intent_is_confident("account_profile_update", 0.70) is True
+    assert route_intent_is_confident("account_profile_update", 0.69) is False
     assert route_intent_is_confident("cancel_order_execute", 0.80) is True
     assert route_intent_is_confident("cancel_order_execute", 0.79) is False
 

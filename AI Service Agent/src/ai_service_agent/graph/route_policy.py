@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from langchain_core.tools import BaseTool
+
 from ai_service_agent.tools.registry import ToolRegistry
 
 
@@ -11,7 +13,6 @@ RouteIntent = Literal[
     "my_orders",
     "shipment_query",
     "account_profile_update",
-    "update_phone",
     "order_mutation",
     "cancel_order_execute",
     "refund_apply_execute",
@@ -72,11 +73,6 @@ ROUTE_POLICY: dict[str, RoutePolicy] = {
         execution_class="standard_write",
         allowed_tools=("update_address", "update_phone"),
     ),
-    "update_phone": RoutePolicy(
-        target_graph="mutation_graph",
-        execution_class="standard_write",
-        allowed_tools=("update_phone",),
-    ),
     "order_mutation": RoutePolicy(
         target_graph="mutation_graph",
         execution_class="standard_write",
@@ -125,6 +121,6 @@ def route_intent_is_confident(route_intent: str, confidence: float) -> bool:
     return float(confidence) >= EXECUTION_CLASS_THRESHOLDS[policy.execution_class]
 
 
-def tools_for_policy(registry: ToolRegistry, policy: RoutePolicy):
+def tools_for_policy(registry: ToolRegistry, policy: RoutePolicy) -> list[BaseTool]:
     """Resolve the policy allowlist into concrete tools using registry order."""
     return registry.tools_for_names(policy.allowed_tools)
