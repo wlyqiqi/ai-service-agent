@@ -18,6 +18,15 @@ class CustomerServiceState(TypedDict):
     session_id: str
     capability: str
     risk_level: Literal["read", "mutation", "high_risk"]
+    route_intent: str
+    target_graph: Literal[
+        "read_graph", "mutation_graph", "high_risk_graph", "fallback"
+    ]
+    execution_class: Literal[
+        "read_only", "standard_write", "high_risk"
+    ]
+    allowed_tools: list[str]
+    requires_approval: bool
     confidence: float
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（graph-spec §2）
     context: dict

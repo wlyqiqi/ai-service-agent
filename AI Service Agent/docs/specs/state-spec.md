@@ -11,6 +11,11 @@ class CustomerServiceState(TypedDict):
     session_id: str
     capability: str                # Router 输出的能力标签
     risk_level: Literal["read", "mutation", "high_risk"]
+    route_intent: str              # Router v2 输出的稳定路由意图
+    target_graph: Literal["read_graph", "mutation_graph", "high_risk_graph", "fallback"]
+    execution_class: Literal["read_only", "standard_write", "high_risk"]
+    allowed_tools: list[str]       # Policy 派生的候选工具边界
+    requires_approval: bool        # Policy 派生的高风险审批标记
     confidence: float
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（每轮覆盖，见 graph-spec.md §2）
     context: dict                  # 业务上下文：订单、账户、工单等
@@ -33,6 +38,9 @@ class CustomerServiceState(TypedDict):
 - 子图抛出 `handoff_request` 后 `execution_status` **必须**置 `waiting_handoff`，**不得**置 `completed` 或 `failed`；人工 Resolve 回切 `conversation_mode=ai` 后由服务端主动 resume 完成被中断子图，最终由 `final` 节点置 `completed`（`running` 为 resume 执行中的中间态，不落最终态；见 `graph-spec.md` §3、§6.5）。
 - **P0（2026-09-18）入口层显式转人工**：命中入口层 `detect_handoff_intent` 时不进入 LangGraph，该 turn 不产生图内 checkpoint，故 `execution_status` 不被置位（无图执行，`final` 节点不参与）；仅入口层 `conversation_status` 记 `conversation_mode=human`。图内动态转人工（子图抛 `handoff_request`）仍按上一段语义置 `waiting_handoff`，并由 resolve 主动 resume 至 `completed`。
 - `conversation_mode` **不在此 State 中**：它属于入口层轻量 `conversation_status` 存储（`handoff-spec.md` §2），图内不维护；`handoff` 字段是图内转人工信号标记，与 `conversation_mode` 分层。
+- `route_intent` 是 Router v2 的唯一语义输出；`target_graph`、`execution_class`、`allowed_tools`、`requires_approval` 必须由 Policy Gate 确定性派生。
+- `allowed_tools` 是候选工具边界，不是最终工具选择；最终工具调用仍由子图完成。
+- 旧 `capability` / `risk_level` 字段仅在 Router v1 路径继续使用；v2 路径不得依赖它们做路由。
 
 ## 2. 子图局部状态
 
