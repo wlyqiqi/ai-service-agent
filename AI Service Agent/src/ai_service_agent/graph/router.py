@@ -110,7 +110,10 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
     data = response.json()
     if not isinstance(data, dict):
         return None
-    answer = data.get("answers", {}).get("route_intent")
+    answers = data.get("answers")
+    if not isinstance(answers, dict):
+        return None
+    answer = answers.get("route_intent")
     if not isinstance(answer, dict) or answer.get("type") != "choice":
         return None
 
@@ -196,11 +199,10 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
     if not settings.jev_enabled or not settings.jev_api_key or settings.fake_model:
         return deepseek_route
 
-    jev_client = httpx.Client(timeout=settings.jev_timeout_seconds)
-
     def route(state: dict) -> dict:
         try:
-            candidate = _classify_route_intent_with_jev(jev_client, state, settings)
+            with httpx.Client(timeout=settings.jev_timeout_seconds) as jev_client:
+                candidate = _classify_route_intent_with_jev(jev_client, state, settings)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             return deepseek_route(state)
         if candidate is not None and route_intent_is_confident(

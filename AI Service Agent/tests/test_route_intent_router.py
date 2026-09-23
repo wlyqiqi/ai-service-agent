@@ -38,6 +38,12 @@ class _JevClient:
     def __init__(self, data: dict):
         self.data = data
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
     def post(self, *args, **kwargs):
         return _JevResponse(self.data)
 
@@ -121,6 +127,12 @@ def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatc
         def post(self, *args, **kwargs):
             raise httpx.ConnectTimeout("timeout")
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
     monkeypatch.setattr("ai_service_agent.graph.router.httpx.Client", lambda timeout: _TimeoutClient())
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("faq", 0.91)]
@@ -145,10 +157,26 @@ def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, 
     assert out["confidence"] == 0.95
 
 
+def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeypatch):
+    payload = _jev_route_payload("cancel_order_execute", 0.95)
+    payload["answers"] = []
+    client = _JevClient(payload)
+    monkeypatch.setattr("ai_service_agent.graph.router.httpx.Client", lambda timeout: client)
+    model = ToolCallingFakeModel(
+        responses=[route_intent_json_message("cancel_order_execute", 0.95)]
+    )
+    node = make_router(model)
+    out = node({"messages": [], "user_id": "u1", "context": {}})
+    assert out["route_intent"] == "cancel_order_execute"
+    assert out["confidence"] == 0.95
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
+        lambda payload: payload["answers"]["route_intent"].pop("type"),
         lambda payload: payload["answers"]["route_intent"].update({"type": "noul"}),
+        lambda payload: payload["answers"]["route_intent"].update({"choice": "tool_name"}),
         lambda payload: payload["answers"]["route_intent"].pop("probabilities"),
         lambda payload: payload["answers"]["route_intent"]["probabilities"].pop("cancel_order_execute"),
         lambda payload: payload["answers"]["route_intent"].update({"confidence": 1.2}),
@@ -170,6 +198,42 @@ def test_jev_invalid_choice_shape_falls_back_to_deepseek(
     out = node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "cancel_order_execute"
     assert out["confidence"] == 0.95
+
+
+def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings, monkeypatch):
+    created_clients = []
+    payload = _jev_route_payload("cancel_order_execute", 0.95)
+
+    class _CleanupClient:
+        def __init__(self, data):
+            self.data = data
+            self.closed = False
+            created_clients.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self.closed = True
+            return False
+
+        def post(self, *args, **kwargs):
+            return _JevResponse(self.data)
+
+    monkeypatch.setattr(
+        "ai_service_agent.graph.router.httpx.Client",
+        lambda timeout: _CleanupClient(payload),
+    )
+    model = ToolCallingFakeModel(
+        responses=[route_intent_json_message("cancel_order_execute", 0.95)]
+    )
+    node = make_router(model)
+    state = {"messages": [], "user_id": "u1", "context": {}}
+    node(state)
+    node(state)
+
+    assert len(created_clients) == 2
+    assert all(client.closed for client in created_clients)
 
 
 def test_feature_off_keeps_legacy_router(monkeypatch):
