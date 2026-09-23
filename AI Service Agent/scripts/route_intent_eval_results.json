@@ -1,0 +1,197 @@
+{
+  "settings": {
+    "route_intent_enabled": true,
+    "jev_enabled": false,
+    "fake_model": true
+  },
+  "summary": {
+    "total": 20,
+    "route_intent_accuracy": 1.0,
+    "mean_ms": 1.1,
+    "min_ms": 0.7,
+    "max_ms": 5.2,
+    "confusion": {}
+  },
+  "results": [
+    {
+      "id": "RI-001",
+      "input": "这个产品怎么安装？",
+      "expected_route_intent": "faq",
+      "predicted_route_intent": "faq",
+      "confidence": 0.95,
+      "latency_ms": 5.2,
+      "correct": true
+    },
+    {
+      "id": "RI-002",
+      "input": "谢谢你啊",
+      "expected_route_intent": "smalltalk",
+      "predicted_route_intent": "smalltalk",
+      "confidence": 0.95,
+      "latency_ms": 1.0,
+      "correct": true
+    },
+    {
+      "id": "RI-003",
+      "input": "帮我查订单 ORD-1",
+      "expected_route_intent": "order_query",
+      "predicted_route_intent": "order_query",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-004",
+      "input": "ORD-10086 现在什么状态？",
+      "expected_route_intent": "order_query",
+      "predicted_route_intent": "order_query",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-005",
+      "input": "我的订单有哪些？",
+      "expected_route_intent": "my_orders",
+      "predicted_route_intent": "my_orders",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-006",
+      "input": "帮我看看最近买过什么",
+      "expected_route_intent": "my_orders",
+      "predicted_route_intent": "my_orders",
+      "confidence": 0.95,
+      "latency_ms": 1.2,
+      "correct": true
+    },
+    {
+      "id": "RI-007",
+      "input": "我的快递到哪了？",
+      "expected_route_intent": "shipment_query",
+      "predicted_route_intent": "shipment_query",
+      "confidence": 0.95,
+      "latency_ms": 1.0,
+      "correct": true
+    },
+    {
+      "id": "RI-008",
+      "input": "帮我改收货地址",
+      "expected_route_intent": "account_profile_update",
+      "predicted_route_intent": "account_profile_update",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-009",
+      "input": "我要换绑手机号",
+      "expected_route_intent": "account_profile_update",
+      "predicted_route_intent": "account_profile_update",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-010",
+      "input": "给订单加个备注：放驿站就行",
+      "expected_route_intent": "order_mutation",
+      "predicted_route_intent": "order_mutation",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-011",
+      "input": "这笔订单帮我开发票",
+      "expected_route_intent": "order_mutation",
+      "predicted_route_intent": "order_mutation",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-012",
+      "input": "屏幕有裂痕，创建一个售后工单",
+      "expected_route_intent": "order_mutation",
+      "predicted_route_intent": "order_mutation",
+      "confidence": 0.95,
+      "latency_ms": 0.9,
+      "correct": true
+    },
+    {
+      "id": "RI-013",
+      "input": "订单 ORD-PAID-1 不要了，帮我取消",
+      "expected_route_intent": "cancel_order_execute",
+      "predicted_route_intent": "cancel_order_execute",
+      "confidence": 0.95,
+      "latency_ms": 1.1,
+      "correct": true
+    },
+    {
+      "id": "RI-014",
+      "input": "ORD-1 申请退款，金额 99 元",
+      "expected_route_intent": "refund_apply_execute",
+      "predicted_route_intent": "refund_apply_execute",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-015",
+      "input": "取消订单的流程是什么？",
+      "expected_route_intent": "faq",
+      "predicted_route_intent": "faq",
+      "confidence": 0.95,
+      "latency_ms": 0.8,
+      "correct": true
+    },
+    {
+      "id": "RI-016",
+      "input": "退款一般多久到账？",
+      "expected_route_intent": "faq",
+      "predicted_route_intent": "faq",
+      "confidence": 0.95,
+      "latency_ms": 1.1,
+      "correct": true
+    },
+    {
+      "id": "RI-017",
+      "input": "清空我的订单历史",
+      "expected_route_intent": "unsupported_action",
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 0.95,
+      "latency_ms": 0.7,
+      "correct": true
+    },
+    {
+      "id": "RI-018",
+      "input": "把订单所有权转给我朋友",
+      "expected_route_intent": "unsupported_action",
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 0.95,
+      "latency_ms": 0.7,
+      "correct": true
+    },
+    {
+      "id": "RI-019",
+      "input": "取消我的会员预约",
+      "expected_route_intent": "unsupported_action",
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 0.95,
+      "latency_ms": 0.7,
+      "correct": true
+    },
+    {
+      "id": "RI-020",
+      "input": "帮我把那个东西处理一下",
+      "expected_route_intent": "unknown",
+      "predicted_route_intent": "unknown",
+      "confidence": 0.95,
+      "latency_ms": 0.7,
+      "correct": true
+    }
+  ]
+}
