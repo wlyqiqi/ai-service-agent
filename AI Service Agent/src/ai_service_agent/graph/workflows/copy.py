@@ -4,6 +4,8 @@
 状态关键词（完成/取消/过期/拒绝）不可弱化；拒绝文案必须含原因与补救建议。
 """
 
+import hashlib
+
 
 FIELD_LABELS = {
     "order_id": "订单号", "amount": "金额", "reason": "原因",
@@ -75,7 +77,11 @@ def approval_approved_text(tool: str) -> str:
 
 
 def approval_failed_text(tool: str, error: str) -> str:
-    return f"审核已通过，但执行时遇到问题（{error}）。请不要担心，您可以稍后重试，或输入「转人工」由人工客服为您跟进。"
+    operation_reference = hashlib.sha256(error.encode("utf-8")).hexdigest()[:8]
+    return (
+        f"审核已通过，但执行时遇到问题（处理编号：{operation_reference}）。"
+        "请不要担心，您可以稍后重试，或输入「转人工」由人工客服为您跟进。"
+    )
 
 
 def approval_rejected_text(tool: str) -> str:
@@ -105,14 +111,17 @@ def precheck_reject_text(reason: str, status: str | None = None) -> str:
                     "如地址有误需要退换，我可以帮您发起售后流程。")
         if status == "cancelled":
             return "抱歉，该订单已取消，无需修改地址。如需重新购买，我可以帮您确认商品信息。"
-        if status in ("refunding", "refunded"):
+        if status == "refunded":
+            return ("抱歉，该订单已完成退款，无法修改收货地址。"
+                    "如涉及收货或账户信息需要跟进，请输入「转人工」，人工客服会为您处理。")
+        if status == "refunding":
             return "抱歉，该订单正在退款流程中，暂无法修改地址。退款完成后如仍有需要，欢迎再次咨询。"
         return "抱歉，当前订单状态暂不支持修改收货地址。您可以提供订单号，我帮您确认一下具体状态。"
     if reason == "invoice_not_allowed":
         if status == "cancelled":
             return "抱歉，已取消的订单无法开具发票。如您已支付但订单被取消，款项会按原路退回，请留意到账通知。"
         if status == "refunded":
-            return "抱歉，已退款的订单无法开具发票。"
+            return "抱歉，已退款的订单无法开具发票。如需核对退款凭证或账务信息，请提供订单号，我帮您进一步确认。"
         if status == "refunding":
             return "抱歉，该订单正在退款处理中，需暂停开票；退款完成后如您仍需要，可以重新申请。"
         return "抱歉，当前订单状态暂不支持开具发票。您可以提供订单号，我帮您确认一下。"

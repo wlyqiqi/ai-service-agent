@@ -66,7 +66,10 @@ def test_approval_texts_keep_status_keywords():
     assert "未通过" in approval_rejected_text("refund_apply")
     assert "过期" in approval_expired_text("refund_apply") and "取消" in approval_expired_text("refund_apply")
     failed = approval_failed_text("refund_apply", "db_error")
-    assert "遇到问题" in failed and "db_error" in failed and "人工" in failed
+    assert "遇到问题" in failed and "人工" in failed
+    assert "db_error" not in failed
+    assert approval_failed_text("refund_apply", "db_error") == failed
+    assert approval_failed_text("refund_apply", "connection_timeout") != failed
 
 
 def test_recheck_failed_text():
@@ -84,11 +87,16 @@ def test_precheck_reject_address_by_status():
     assert "已签收" in signed and "售后" in signed
     cancelled = precheck_reject_text("address_not_editable", "cancelled")
     assert "已取消" in cancelled
+    refunded = precheck_reject_text("address_not_editable", "refunded")
+    assert "完成退款" in refunded and "无法修改收货地址" in refunded
+    assert "人工" in refunded
 
 
 def test_precheck_reject_invoice_by_status():
     assert "无法开具发票" in precheck_reject_text("invoice_not_allowed", "cancelled")
-    assert "无法开具发票" in precheck_reject_text("invoice_not_allowed", "refunded")
+    refunded = precheck_reject_text("invoice_not_allowed", "refunded")
+    assert "无法开具发票" in refunded
+    assert "请提供订单号" in refunded or "联系人工客服" in refunded
     assert "退款" in precheck_reject_text("invoice_not_allowed", "refunding")
 
 
