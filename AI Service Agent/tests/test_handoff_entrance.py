@@ -7,6 +7,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.messages import AIMessage
 
 from ai_service_agent.harness.server import create_app
+from ai_service_agent.harness.handoff import HANDOFF_NOTICE
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ToolCallingFakeModel
 
@@ -65,7 +66,7 @@ def test_explicit_handoff_writes_user_and_notice_to_store(tmp_path):
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
         "".join(resp.iter_text())
     rows = MessageStore(sqlite3.connect(str(tmp_path / "s.db"))).list(sid)
-    assert [m["content"] for m in rows] == ["我要转人工", "已为你转接人工客服，坐席将尽快回复。"]
+    assert [m["content"] for m in rows] == ["我要转人工", HANDOFF_NOTICE]
 
 
 def test_non_handoff_message_still_uses_ai_lane(tmp_path):

@@ -107,7 +107,7 @@ def test_stream_emits_tool_events_from_nested_subgraph(monkeypatch):
 # ---- D7（P4 Task 5）：resume 轮 final 提取（pre/post message diff）----
 
 def test_stream_resume_done_final_from_new_message():
-    """mutation confirm resume 轮 done.final == '操作已完成。'（diff 取本轮新增，不回落历史）。"""
+    """mutation confirm resume 轮 done.final 含完成结果（diff 取本轮新增，不回落历史）。"""
     from langgraph.checkpoint.memory import MemorySaver
     from ai_service_agent.testing import router_json_message, select_json_message
 

@@ -255,7 +255,7 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
             # D8/OQ-3：普通轮澄清——execution_status=clarifying、无 interrupt、确定性模板文案
             ok = (r["state"].get("execution_status") == "clarifying"
                   and not r["interrupts"]
-                  and "请提供" in _last_ai_text(r["state"]))
+                  and ("请补充" in _last_ai_text(r["state"]) or "订单号" in _last_ai_text(r["state"])))
         else:
             raise ValueError(f"unexpected expected_policy: {ep}")
         results.append({"id": case["id"], "status": "pass" if ok else "fail", "actual": ep})
