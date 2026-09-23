@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     # 模拟电商库（order_lookup 等 read 工具的真实数据源替代品；工具对外接口不变）
     mock_ecommerce_db_path: str = "data/mock_ecommerce.db"
     fake_model: bool = False
+    jev_enabled: bool = Field(default=False, validation_alias="JEV_ENABLED")
+    jev_api_key: str | None = Field(default=None, validation_alias="TYPESAFE_API_KEY")
+    jev_api_url: str = Field(
+        default="https://api.typesafe.ai/v1/systemone", validation_alias="JEV_API_URL"
+    )
+    jev_model: str = Field(default="jev-latest", validation_alias="JEV_MODEL")
+    jev_timeout_seconds: float = Field(
+        default=2.5, validation_alias="JEV_TIMEOUT_SECONDS"
+    )
     # 真实运行走 ARK（OpenAI 兼容）：字段与 .env 的 ARK_* 对齐
     model_name: str = Field(default="deepseek-v4-flash", validation_alias="ARK_MODEL")
     model_endpoint: str | None = Field(default=None, validation_alias="ARK_BASE_URL")
