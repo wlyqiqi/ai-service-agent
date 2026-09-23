@@ -1,5 +1,6 @@
-import sqlite3
 import asyncio
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -869,6 +870,74 @@ def test_refund_order_approved_writes_db_once(monkeypatch, tmp_path):
     assert next(row for row in after["orders"] if row["order_id"] == order_id)["status"] == "refunding"
 
 
+def test_signed_refund_approval_path_writes_db_once(monkeypatch, tmp_path):
+    _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "signed-refund-approved")
+    _use_cancel_db(monkeypatch, db_path)
+    signed_at = datetime.now(timezone.utc) - timedelta(days=2)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE orders SET status='signed', signed_at=? WHERE order_id=?",
+            (signed_at.isoformat(), order_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    graph = _refund_graph(order_id, "signed-refund-approved")
+    thread_id = "signed-refund-approved"
+    request_id = "signed-refund-approved"
+
+    out = _invoke_refund(graph, owner, thread_id)
+    approvals = [
+        it.value for it in out.get("__interrupt__", []) if _approval_required(it.value)
+    ]
+    assert len(approvals) == 1
+    assert "已签收" in approvals[0]["summary"]
+
+    events = asyncio.run(_collect_events(event_stream(
+        graph,
+        {"configurable": {"thread_id": thread_id}},
+        messages=[HumanMessage(content="审批通过")],
+        resume_payload={"action": "approve"},
+    )))
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert [(result["data"]["name"], result["data"]["ok"]) for result in tool_results] == [
+        ("refund_apply", True)
+    ]
+
+    state = graph.get_state({"configurable": {"thread_id": thread_id}}).values
+    assert state["execution_status"] == "completed"
+    assert state["context"]["approval_summary"].endswith("已签收")
+    tool_msgs = [m for m in state["messages"] if getattr(m, "type", "") == "tool"]
+    assert [getattr(m, "name", "") for m in tool_msgs] == ["refund_apply"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        status = conn.execute(
+            "SELECT status FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()[0]
+        refund = conn.execute(
+            "SELECT amount, status FROM refunds WHERE order_id=?", (order_id,)
+        ).fetchone()
+        idem = conn.execute(
+            "SELECT tool_name, request_id FROM idempotency WHERE tool_name='refund_apply'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert status == "refunding"
+    assert refund == (1.0, "refunding")
+    assert idem == [("refund_apply", request_id)]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        after = _db_snapshot(conn)
+    finally:
+        conn.close()
+    assert len(after["refunds"]) == len(before["refunds"]) + 1
+    assert len(after["idempotency"]) == len(before["idempotency"]) + 1
+
+
 def test_refund_order_rejected_does_not_write_db(monkeypatch, tmp_path):
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-rejected")
     _use_cancel_db(monkeypatch, db_path)
@@ -913,6 +982,20 @@ def test_refund_allowed_when_signed_within_window():
              "signed_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
              "total_amount": 100.0, "occupied_refund_amount": 0.0}
     assert _apply_business_rules(pending, facts, "u1") is None
+
+
+def test_transaction_prechecks_reject_signed_address_and_refunded_refunding_invoice():
+    address_pending = {"tool": "update_address", "args": {"order_id": "ORD-X"}}
+    signed_facts = {"order_id": "ORD-X", "status": "signed"}
+    assert _apply_business_rules(address_pending, signed_facts, "u1") == "address_not_editable"
+
+    invoice_pending = {"tool": "create_invoice", "args": {"order_id": "ORD-X"}}
+    assert _apply_business_rules(
+        invoice_pending, {"order_id": "ORD-X", "status": "refunded"}, "u1"
+    ) == "invoice_not_allowed"
+    assert _apply_business_rules(
+        invoice_pending, {"order_id": "ORD-X", "status": "refunding"}, "u1"
+    ) == "invoice_not_allowed"
 
 
 def test_refund_order_expired_does_not_write_db(monkeypatch, tmp_path):

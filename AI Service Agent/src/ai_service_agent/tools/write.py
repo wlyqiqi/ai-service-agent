@@ -66,9 +66,10 @@ class RefundApplyArgs(BaseModel):
 
 
 _WRITE_STORE: dict[str, dict] = {}
-_REFUNDABLE_STATUSES = ("paid", "completed")
+_REFUNDABLE_STATUSES = ("paid", "signed")
 _CUMULATIVE_REFUND_STATUSES = _REFUNDABLE_STATUSES + ("refunding",)
 _OCCUPIED_REFUND_STATUSES = ("refunding", "refunded")
+_REFUND_WINDOW_DAYS = 7
 
 
 def _write_connect() -> sqlite3.Connection:
@@ -297,21 +298,33 @@ def refund_apply(
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """退款申请（high_risk；需人工审批；仅 paid/completed -> refunding；金额 ≤ 订单总额 - 已累计退款）。"""
+    """退款申请（high_risk；需人工审批；paid/7 日内 signed -> refunding；金额 ≤ 订单总额 - 已累计退款）。"""
     def _produce(conn: sqlite3.Connection) -> dict:
         boundary = _own_order(conn, order_id, user_id)
         if boundary is not None:
             return boundary
         row = conn.execute(
-            "SELECT total_amount, status FROM orders WHERE order_id=?", (order_id,)
+            "SELECT total_amount, status, signed_at FROM orders WHERE order_id=?", (order_id,)
         ).fetchone()
         if row is None:
             return {"error": "not_found", "order_id": order_id}
-        total, status = row
+        total, status, signed_at = row
         if status == "refunded":
             return {"error": "order_already_refunded", "order_id": order_id}
         if status not in _CUMULATIVE_REFUND_STATUSES:
             return {"error": "refund_not_allowed", "order_id": order_id, "status": status}
+        if status == "signed":
+            try:
+                signed_time = datetime.fromisoformat(signed_at)
+                if signed_time.tzinfo is None:
+                    signed_time = signed_time.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                return {"error": "refund_not_allowed", "order_id": order_id, "status": status}
+            age_seconds = (
+                datetime.now(timezone.utc) - signed_time
+            ).total_seconds()
+            if age_seconds > _REFUND_WINDOW_DAYS * 86400:
+                return {"error": "refund_window_expired", "order_id": order_id}
         occupied = conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM refunds"
             " WHERE order_id=? AND status IN ('refunding','refunded')",
@@ -331,7 +344,8 @@ def refund_apply(
             (refund_id, order_id, user_id, resolved_amount, reason, "refunding", _now()),
         )
         conn.execute(
-            "UPDATE orders SET status='refunding' WHERE order_id=? AND status IN ('paid','completed')",
+            "UPDATE orders SET status='refunding'"
+            " WHERE order_id=? AND status IN ('paid','signed')",
             (order_id,),
         )
         if conn.execute("SELECT status FROM orders WHERE order_id=?", (order_id,)).fetchone()[0] != "refunding":

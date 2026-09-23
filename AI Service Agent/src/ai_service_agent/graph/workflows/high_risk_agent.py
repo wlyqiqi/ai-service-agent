@@ -76,7 +76,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
                 isinstance(facts, dict)
                 and facts.get("order_id") == order_id
                 and facts.get("user_id") == state.get("user_id", "")
-                and facts.get("status") in ("paid", "completed")
+                and facts.get("status") in ("paid", "signed")
             )
             if valid_refund_facts:
                 amount = pending["args"].get("amount")
@@ -93,7 +93,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
                     f"已占用退款 {occupied}｜"
                     f"商品：{order_items_summary(order_id)}｜"
                     f"申请人 {state.get('user_id', '')}｜"
-                    f"状态 {'已付款' if facts['status'] == 'paid' else '已完成'}"
+                    f"状态 {'已付款' if facts['status'] == 'paid' else '已签收'}"
                 )
             else:
                 summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
