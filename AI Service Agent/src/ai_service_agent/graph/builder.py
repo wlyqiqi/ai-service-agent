@@ -2,8 +2,9 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from ai_service_agent.config import make_model
+from ai_service_agent.config import get_settings, make_model
 from ai_service_agent.graph.agents.read_agent import make_read_graph
+from ai_service_agent.graph.route_policy import resolve_route_policy
 from ai_service_agent.graph.router import make_router
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
@@ -30,6 +31,8 @@ POLICY = {
 
 
 def _route_target(state: dict) -> str:
+    if get_settings().route_intent_enabled:
+        return state.get("target_graph", "fallback")
     return POLICY.get((state.get("capability", "unknown"), state.get("risk_level", "read")), "fallback")
 
 
@@ -41,8 +44,17 @@ def _guard_aware_target(state: dict) -> str:
 
 
 def _policy_gate(state: dict) -> dict:
-    """router 与 guard 的并行汇合点（join），不产生业务字段。"""
-    return {}
+    """Router/Guard join. v2 deterministically derives the route policy; v1 is a no-op join."""
+    if not get_settings().route_intent_enabled:
+        return {}
+    policy = resolve_route_policy(state.get("route_intent", "unknown"))
+    return {
+        "route_intent": state.get("route_intent", "unknown"),
+        "target_graph": policy.target_graph,
+        "execution_class": policy.execution_class,
+        "allowed_tools": list(policy.allowed_tools),
+        "requires_approval": policy.requires_approval,
+    }
 
 
 def _safety_final(state: dict) -> dict:
