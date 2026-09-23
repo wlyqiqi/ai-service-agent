@@ -1001,11 +1001,11 @@ def test_refund_order_post_approval_drift_reports_failure(monkeypatch, tmp_path)
     assert tool_results[0]["data"]["ok"] is False
     assert "refund_not_allowed" in tool_results[0]["data"]["summary"]
     assert events[-1]["type"] == "done"
-    assert "操作执行失败" in events[-1]["data"]["final"]
+    assert "遇到问题" in events[-1]["data"]["final"]
 
     state = graph.get_state({"configurable": {"thread_id": thread_id}})
     assert state.values["execution_status"] == "failed"
-    assert "refund_not_allowed" in state.values["messages"][-1].content
+    assert "处理编号" in state.values["messages"][-1].content
 
     conn = sqlite3.connect(db_path)
     try:
@@ -1059,15 +1059,15 @@ def test_cancel_order_post_approval_drift_reports_failure(monkeypatch, tmp_path)
     assert tool_results[0]["data"]["ok"] is False
     assert "cancel_not_allowed" in tool_results[0]["data"]["summary"]
     assert events[-1]["type"] == "done"
-    assert "操作执行失败" in events[-1]["data"]["final"]
+    assert "遇到问题" in events[-1]["data"]["final"]
     assert "操作已完成" not in events[-1]["data"]["final"]
 
     state = graph.get_state({"configurable": {"thread_id": thread_id}})
     assert state.values["execution_status"] == "failed"
     tool_msgs = [m for m in state.values["messages"] if getattr(m, "type", "") == "tool"]
     assert [getattr(m, "name", "") for m in tool_msgs] == ["cancel_order"]
-    assert "操作执行失败" in state.values["messages"][-1].content
-    assert "cancel_not_allowed" in state.values["messages"][-1].content
+    assert "遇到问题" in state.values["messages"][-1].content
+    assert "处理编号" in state.values["messages"][-1].content
     assert "操作已完成" not in state.values["messages"][-1].content
 
     conn = sqlite3.connect(db_path)

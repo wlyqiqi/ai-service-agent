@@ -22,8 +22,14 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.graph.approval import make_approval_request
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
+from ai_service_agent.graph.workflows.copy import (
+    approval_approved_text,
+    approval_expired_text,
+    approval_failed_text,
+    approval_rejected_text,
+    recheck_failed_text,
+)
 from ai_service_agent.graph.workflows.safety import (
-    PRECHECK_REJECT_TEXT,
     make_precheck_fetch_node,
     make_recheck_node,
     make_safety_check_node,
@@ -155,19 +161,21 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
             break
         if tool_error:
             return {
-                "messages": [AIMessage(content=f"审批通过，但操作执行失败。（{tool_error}）")],
+                "messages": [AIMessage(content=approval_failed_text(pending["tool"], tool_error))],
                 "execution_status": "failed",
             }
-        return {"messages": [AIMessage(content="审批通过，操作已完成。")], "execution_status": "completed"}
+        return {"messages": [AIMessage(content=approval_approved_text(pending["tool"]))], "execution_status": "completed"}
 
     def finalize_rejected(state: dict) -> dict:
-        return {"messages": [AIMessage(content="审批未通过，操作已取消。")], "execution_status": "completed"}
+        pending = state["context"]["pending_tool"]
+        return {"messages": [AIMessage(content=approval_rejected_text(pending["tool"]))], "execution_status": "completed"}
 
     def finalize_expired(state: dict) -> dict:
-        return {"messages": [AIMessage(content="审批已过期，操作已取消。")], "execution_status": "completed"}
+        pending = state["context"]["pending_tool"]
+        return {"messages": [AIMessage(content=approval_expired_text(pending["tool"]))], "execution_status": "completed"}
 
     def finalize_aborted(state: dict) -> dict:
-        return {"messages": [AIMessage(content=f"{PRECHECK_REJECT_TEXT}（recheck 失败）")], "execution_status": "completed"}
+        return {"messages": [AIMessage(content=recheck_failed_text())], "execution_status": "completed"}
 
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})

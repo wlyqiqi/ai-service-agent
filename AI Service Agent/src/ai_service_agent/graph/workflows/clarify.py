@@ -12,29 +12,13 @@ from langgraph.config import get_stream_writer
 
 from ai_service_agent.config import get_settings
 
-CLARIFY_FALLBACK_TEXT = "抱歉，暂时无法确定您的需求，请换个说法或联系人工客服。"
-
-TIER_CLARIFY_TEXT = "您的请求涉及较高风险操作，但我无法确定具体要执行哪一项业务（如：申请退款、取消订单），请明确说明。"
-
-FIELD_LABELS = {
-    "order_id": "订单号",
-    "amount": "金额",
-    "reason": "原因",
-    "phone": "手机号",
-    "email": "邮箱",
-    "address": "收货地址",
-    "text": "检索内容",
-    "company": "公司名",
-    "tax_no": "税号",
-    "note": "订单备注",
-}
-
-
-def clarify_text(missing: list[str]) -> str:
-    """确定性模板：字段名 -> 中文 label（未映射字段回落原字段名）。"""
-    labels = [FIELD_LABELS.get(f, f) for f in missing]
-    return "请提供：" + "、".join(labels) + "。"
-
+from ai_service_agent.graph.workflows.copy import (
+    clarify_candidates_text,
+    clarify_fallback_text,
+    clarify_missing_text,
+    clarify_no_candidates_text,
+    clarify_tier_text,
+)
 
 def make_clarify_node() -> Callable[[dict], dict]:
     def clarify(state: dict) -> dict:
@@ -43,13 +27,13 @@ def make_clarify_node() -> Callable[[dict], dict]:
         max_turns = get_settings().clarify_max_turns
         if count >= max_turns:
             return {
-                "messages": [AIMessage(content=CLARIFY_FALLBACK_TEXT)],
+                "messages": [AIMessage(content=clarify_fallback_text())],
                 "context": {**ctx, "clarify_count": count + 1},
                 "execution_status": "completed",
             }
         if ctx.get("tier_clarify"):
             data = {"missing": [], "reason": "tier_mismatch"}
-            text = TIER_CLARIFY_TEXT
+            text = clarify_tier_text()
         else:
             missing = ctx.get("clarify_missing") or []
             candidates = ctx.get("cancellation_candidates")
@@ -62,11 +46,11 @@ def make_clarify_node() -> Callable[[dict], dict]:
                     f"{item['order_id']}（{item.get('product_summary', '商品信息不可用')}）"
                     for item in candidates
                 )
-                text = f"您有多笔符合条件的订单，请选择订单号：{options}。"
+                text = clarify_candidates_text(candidates)
             elif is_cancel_selection:
-                text = "当前没有可取消的已付款订单。"
+                text = clarify_no_candidates_text()
             else:
-                text = clarify_text(missing)
+                text = clarify_missing_text(missing)
         get_stream_writer()({"type": "clarification_required", "data": data})
         return {
             "messages": [AIMessage(content=text)],

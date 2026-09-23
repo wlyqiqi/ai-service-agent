@@ -10,7 +10,8 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.builder import build_graph
-from ai_service_agent.graph.workflows.clarify import CLARIFY_FALLBACK_TEXT, clarify_text
+from ai_service_agent.graph.workflows.copy import clarify_missing_text
+from ai_service_agent.graph.workflows.copy import clarify_fallback_text
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
@@ -64,9 +65,10 @@ def _highrisk_model(args: dict):
 
 
 def test_clarify_text_maps_labels():
-    assert clarify_text(["order_id"]) == "请提供：订单号。"
-    assert clarify_text(["order_id", "amount"]) == "请提供：订单号、金额。"
-    assert "order_no" in clarify_text(["order_no"])  # 未映射字段回落原字段名
+    assert "订单号" in clarify_missing_text(["order_id"])
+    assert "订单号" in clarify_missing_text(["order_id", "amount"])
+    assert "金额" in clarify_missing_text(["order_id", "amount"])
+    assert "order_no" in clarify_missing_text(["order_no"])  # 未映射字段回落原字段名
 
 
 def test_config_clarify_max_turns_default():
@@ -121,7 +123,7 @@ def test_mutation_empty_args_clarifies():
 def test_clarify_over_limit_falls_back():
     out = _invoke(_graph(_highrisk_model({})), "退了吧", "c4", user_id="user-with-no-paid-order", context={"clarify_count": 2})
     assert out["execution_status"] == "completed"
-    assert CLARIFY_FALLBACK_TEXT in out["messages"][-1].content
+    assert clarify_fallback_text() in out["messages"][-1].content
 
 
 async def _acollect(gen):
@@ -184,7 +186,7 @@ def test_multi_turn_clarify_over_limit_falls_back():
     assert r2["execution_status"] == "clarifying" and r2["context"]["clarify_count"] == 2
     r3 = _turn(_build(_highrisk_model({}), saver), "那就这样吧", "c8", user_id="user-with-no-paid-order")
     assert r3["execution_status"] == "completed"
-    assert CLARIFY_FALLBACK_TEXT in r3["messages"][-1].content
+    assert clarify_fallback_text() in r3["messages"][-1].content
     assert not r3.get("__interrupt__")
 
 
@@ -203,7 +205,7 @@ def test_highrisk_read_tool_selected_tier_clarifies():
     assert not out.get("__interrupt__")
     assert out["context"].get("tier_clarify") == "order_lookup"
     assert "pending_tool" not in out["context"]
-    assert "请明确" in out["messages"][-1].content
+    assert "明确说明" in out["messages"][-1].content
 
 
 def test_mutation_read_tool_selected_tier_clarifies():
@@ -231,5 +233,9 @@ def test_tier_clarify_streams_event_with_reason():
 
 def test_clarify_labels_invoice_fields():
     """2026-09-17 工具集定案：create_invoice 必填字段标签可读，update_order_note 字段 note 标签。"""
-    assert clarify_text(["order_id", "amount", "company", "tax_no"]) == "请提供：订单号、金额、公司名、税号。"
-    assert clarify_text(["note"]) == "请提供：订单备注。"
+    labels_text = clarify_missing_text(["order_id", "amount", "company", "tax_no", "note"])
+    assert "订单号" in labels_text
+    assert "金额" in labels_text
+    assert "公司名" in labels_text
+    assert "税号" in labels_text
+    assert "订单备注" in labels_text

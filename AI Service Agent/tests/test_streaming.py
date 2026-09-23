@@ -127,7 +127,7 @@ def test_stream_resume_done_final_from_new_message():
     ))
     done = events[-1]
     assert done["type"] == "done"
-    assert done["data"]["final"] == "操作已完成。"
+    assert "收货地址已更新" in done["data"]["final"]
     assert done["data"]["message_id"]
 
 
@@ -181,7 +181,7 @@ def test_stream_done_final_null_on_interrupt_turn():
 
     ev1 = _collect(event_stream(graph, config, [HumanMessage(content="我要改个地址")], extra_state=extra))
     assert ev1[-1]["type"] == "done"
-    assert ev1[-1]["data"]["final"] == "请提供：收货地址。"
+    assert "收货地址" in ev1[-1]["data"]["final"]
 
     ev2 = _collect(event_stream(
         graph, config, [HumanMessage(content="新地址是北京市朝阳区")],

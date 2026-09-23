@@ -10,7 +10,9 @@ from typing import Callable
 
 from ai_service_agent.config import get_settings
 
-GUARD_REJECT_TEXT = "该请求存在安全风险，已停止处理。如有疑问请联系人工客服。"
+from ai_service_agent.graph.workflows.copy import guard_reject_text
+
+GUARD_REJECT_TEXT = guard_reject_text()
 
 
 def make_guard_node(patterns: list[str] | None = None) -> Callable[[dict], dict]:

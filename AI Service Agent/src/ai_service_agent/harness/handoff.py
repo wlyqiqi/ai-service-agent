@@ -5,7 +5,7 @@ from typing import Callable
 from ai_service_agent.harness.session import ConversationStatusStore
 
 
-HANDOFF_NOTICE = "已为你转接人工客服，坐席将尽快回复。"
+HANDOFF_NOTICE = "好的，已为您转接人工客服，请稍候。人工客服会继续在这个对话里为您服务。"
 
 
 SCHEMA = """

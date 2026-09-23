@@ -17,8 +17,13 @@ from langgraph.prebuilt import ToolNode
 
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
+from ai_service_agent.graph.workflows.copy import (
+    completion_text,
+    confirmation_summary,
+    operation_cancelled_text,
+    recheck_failed_text,
+)
 from ai_service_agent.graph.workflows.safety import (
-    PRECHECK_REJECT_TEXT,
     make_precheck_fetch_node,
     make_recheck_node,
     make_safety_check_node,
@@ -32,7 +37,7 @@ from ai_service_agent.tools.registry import ToolRegistry
 def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=None):
     def prepare_confirm(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
-        summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
+        summary = confirmation_summary(pending["tool"], pending["args"])
         get_stream_writer()({"type": "confirmation_required", "data": {"summary": summary}})
         return {"context": {**state.get("context", {}), "confirm_summary": summary}, "execution_status": "waiting_confirmation"}
 
@@ -61,13 +66,14 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=N
         }
 
     def finalize_ok(state: dict) -> dict:
-        return {"messages": [AIMessage(content="操作已完成。")], "execution_status": "completed"}
+        pending = state["context"]["pending_tool"]
+        return {"messages": [AIMessage(content=completion_text(pending["tool"]))], "execution_status": "completed"}
 
     def finalize_rejected(state: dict) -> dict:
-        return {"messages": [AIMessage(content="已取消该操作。")], "execution_status": "completed"}
+        return {"messages": [AIMessage(content=operation_cancelled_text())], "execution_status": "completed"}
 
     def finalize_aborted(state: dict) -> dict:
-        return {"messages": [AIMessage(content=f"{PRECHECK_REJECT_TEXT}（recheck 失败）")], "execution_status": "completed"}
+        return {"messages": [AIMessage(content=recheck_failed_text())], "execution_status": "completed"}
 
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})

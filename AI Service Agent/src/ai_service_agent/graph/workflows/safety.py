@@ -14,8 +14,7 @@ from langgraph.config import get_stream_writer
 
 from ai_service_agent.tools.orders import lookup_order_state_with_availability
 from ai_service_agent.tools.registry import ToolRegistry
-
-PRECHECK_REJECT_TEXT = "该操作未能通过安全校验，已拒绝执行。"
+from ai_service_agent.graph.workflows.copy import precheck_reject_text
 
 RISK_ORDER = {"read": 0, "mutation": 1, "high_risk": 2}
 from datetime import datetime, timezone
@@ -186,5 +185,8 @@ def make_recheck_node(tier: str, registry: ToolRegistry) -> Callable[[dict], dic
 
 
 def safety_final(state: dict) -> dict:
-    reason = state.get("context", {}).get("precheck_reason", "precheck")
-    return {"messages": [AIMessage(content=f"{PRECHECK_REJECT_TEXT}（{reason}）")], "execution_status": "completed"}
+    context = state.get("context", {})
+    reason = context.get("precheck_reason", "precheck")
+    facts = context.get("precheck_data") or {}
+    status = facts.get("status") if isinstance(facts, dict) else None
+    return {"messages": [AIMessage(content=precheck_reject_text(reason, status))], "execution_status": "completed"}

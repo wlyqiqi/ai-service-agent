@@ -265,13 +265,13 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True and body["action"] == "confirm"
-    assert body["final"] == "操作已完成。"
+    assert "收货地址已更新" in body["final"]
 
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
     assert rows[-1]["role"] == "assistant"
-    assert rows[-1]["content"] == "操作已完成。"
+    assert "收货地址已更新" in rows[-1]["content"]
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
@@ -399,7 +399,7 @@ def test_approve_resume_persists_final_to_message_store(tmp_path):
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
-    assert any(row["role"] == "assistant" and "审批通过" in row["content"] for row in rows)
+    assert any(row["role"] == "assistant" and "通过审核" in row["content"] for row in rows)
 
 import importlib.util
 import pytest

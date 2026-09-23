@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.graph.workflows import clarify as clarify_mod
-from ai_service_agent.graph.workflows.clarify import clarify_text
+from ai_service_agent.graph.workflows.copy import clarify_missing_text
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
@@ -195,14 +195,14 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     assert t1["execution_status"] == "clarifying"
     assert not t1.get("__interrupt__")
     assert t1["context"]["clarify_missing"] == ["address"]
-    assert "请提供：收货地址。" in t1["messages"][-1].content
+    assert "收货地址" in t1["messages"][-1].content
 
     # 轮2：补地址 -> 完整 select -> 确认中断（参数已进 summary，本轮不执行工具）
     t2 = _turn(_build(complete_model), "新地址是北京市朝阳区", tid)
     values = [it.value for it in t2.get("__interrupt__", [])]
     confirm = next((v for v in values if v.get("type") == "confirmation_required"), None)
     assert confirm is not None
-    assert "update_address" in confirm["summary"]
+    assert "收货地址修改" in confirm["summary"]
     assert "北京市朝阳区" in confirm["summary"]
 
     # 轮3：confirm -> recheck -> execute -> 工具只执行一次
@@ -210,7 +210,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     assert t3["execution_status"] == "completed"
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
-    assert "操作已完成" in t3["messages"][-1].content
+    assert "收货地址已更新" in t3["messages"][-1].content
 
 
 def _cancel_model(payload: dict):
@@ -295,7 +295,7 @@ def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
         {"configurable": {"thread_id": thread_id}},
     )
     assert out["context"]["cancellation_candidates"] == []
-    assert "没有可取消" in out["messages"][-1].content
+    assert "没有查询到可取消" in out["messages"][-1].content
 
 
 def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, seed):
@@ -319,7 +319,7 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
         config,
     )
     assert first["context"]["cancellation_candidates"] == []
-    assert "没有可取消" in first["messages"][-1].content
+    assert "没有查询到可取消" in first["messages"][-1].content
 
     select_node = make_select_node(
         ToolCallingFakeModel(responses=[select_json_message("refund_apply", {})]),
@@ -342,7 +342,7 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
     clarification = clarification_events[0]
     assert clarification["type"] == "clarification_required"
     assert "candidates" not in clarification["data"]
-    assert clarified["messages"][-1].content == clarify_text(selected["context"]["clarify_missing"])
+    assert clarified["messages"][-1].content == clarify_missing_text(selected["context"]["clarify_missing"])
 
 
 def test_update_address_rejected_after_shipped(seed, monkeypatch):
