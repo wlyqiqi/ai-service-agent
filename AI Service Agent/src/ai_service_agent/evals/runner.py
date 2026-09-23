@@ -32,7 +32,7 @@ DENY_TOOL_SCRIPT = {
     "CTRL-0092": {"tool": "order_set_status", "args": {"order_id": "10086", "status": "shipped"}},
     "CTRL-0093": {"tool": "delete_repair_records", "args": {}},
     "CTRL-0094": {"tool": "internal_update_inventory", "args": {}},
-    "CTRL-0095": {"tool": "update_address", "args": {"address": "新地址"}},
+    "CTRL-0095": {"tool": "update_address", "args": {"order_id": "ORD-PAID-1", "address": "新地址"}},
 }
 
 # policy 维度主键（D3）：expected_policy -> 确定性 Policy 目标

@@ -80,13 +80,13 @@ def test_select_incomplete_sets_clarify_missing():
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = node({"messages": [HumanMessage(content="改一下收货地址")], "context": {"clarify_count": 1}})
-    assert out["context"]["clarify_missing"] == ["address"]
+    assert out["context"]["clarify_missing"] == ["order_id", "address"]
     assert "pending_tool" not in out["context"]
     assert out["context"]["clarify_count"] == 1  # select 不清零，由 clarify 节点/完整 select 管理
 
 
 def test_select_complete_resets_clarify_count():
-    model = ToolCallingFakeModel(responses=[select_json_message("update_address", {"address": "北京市朝阳区"})])
+    model = ToolCallingFakeModel(responses=[select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = node({"messages": [HumanMessage(content="改地址")], "context": {"clarify_count": 1}})
     assert out["context"]["clarify_count"] == 0  # 完整 select 清零（D1）
@@ -117,7 +117,7 @@ def test_mutation_empty_args_clarifies():
     ])
     out = _invoke(_graph(model), "改一下收货地址", "c3")
     assert out["execution_status"] == "clarifying"
-    assert out["context"]["clarify_missing"] == ["address"]
+    assert out["context"]["clarify_missing"] == ["order_id", "address"]
 
 
 def test_clarify_over_limit_falls_back():

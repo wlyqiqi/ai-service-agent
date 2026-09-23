@@ -217,7 +217,7 @@ def test_mutation_graph_runs_tool_hooks(hook_seed, monkeypatch):
     recorder = Recorder()
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("update_address", {"address": "Beijing Chaoyang"}),
+        select_json_message("update_address", {"order_id": "ORD-REFUND-1", "address": "Beijing Chaoyang"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
     config = {"configurable": {"thread_id": "t-hook-m"}}

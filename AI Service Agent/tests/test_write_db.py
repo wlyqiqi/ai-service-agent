@@ -85,10 +85,10 @@ def test_account_updates_write_db_and_replay(monkeypatch, seed):
     _, db_path = seed
     _use_db(monkeypatch, db_path)
     first = write_mod.update_address.invoke(
-        {"address": "北京市朝阳区测试路 1 号", "request_id": "addr-1", "user_id": "u1"}
+        {"order_id": "ORD-REFUND-1", "address": "北京市朝阳区测试路 1 号", "request_id": "addr-1", "user_id": "u1"}
     )
     replay = write_mod.update_address.invoke(
-        {"address": "故意不同的地址", "request_id": "addr-1", "user_id": "u1"}
+        {"order_id": "ORD-REFUND-1", "address": "故意不同的地址", "request_id": "addr-1", "user_id": "u1"}
     )
     assert first["replayed"] is False and replay["replayed"] is True
     assert first["result"] == replay["result"]
@@ -118,7 +118,7 @@ def test_account_updates_write_db_and_replay(monkeypatch, seed):
 def test_composite_idempotency_prevents_cross_tool_replay(monkeypatch, seed):
     _, db_path = seed
     _use_db(monkeypatch, db_path)
-    a = write_mod.update_address.invoke({"address": "复合键地址", "request_id": "same-1", "user_id": "u1"})
+    a = write_mod.update_address.invoke({"order_id": "ORD-REFUND-1", "address": "复合键地址", "request_id": "same-1", "user_id": "u1"})
     b = write_mod.update_phone.invoke({"phone": "+65-81111111", "request_id": "same-1", "user_id": "u1"})
     assert a["replayed"] is False and b["replayed"] is False
 

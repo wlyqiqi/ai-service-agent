@@ -43,6 +43,7 @@ ORDER_STORE: dict[str, dict] = {
     "ORD-1": {"order_id": "ORD-1", "user_id": "u1", "status": "signed", "signed_at": _days_ago(2), "amount": 99.0},
     "ORD-2": {"order_id": "ORD-2", "user_id": "u2", "status": "signed", "signed_at": _days_ago(2), "amount": 99.0},  # 同事订单（跨用户边界，D4）
     "ORD-10086": {"order_id": "ORD-10086", "user_id": "u1", "status": "signed", "signed_at": _days_ago(10), "amount": 99.0},
+    "ORD-PAID-1": {"order_id": "ORD-PAID-1", "user_id": "u1", "status": "paid", "signed_at": None, "amount": 99.0},
     "ORD-CANCEL-1": {
         "order_id": "ORD-CANCEL-1",
         "user_id": "u1",

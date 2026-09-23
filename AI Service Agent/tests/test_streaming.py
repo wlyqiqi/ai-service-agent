@@ -113,7 +113,7 @@ def test_stream_resume_done_final_from_new_message():
 
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("update_address", {"address": "北京市朝阳区"}),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     graph.invoke(
@@ -168,7 +168,7 @@ def test_stream_done_final_null_on_interrupt_turn():
         select_json_message("update_address", {}),
         # turn2：补参 -> confirmation interrupt（无新 assistant）
         router_json_message("account", "mutation", 0.9),
-        select_json_message("update_address", {"address": "北京市朝阳区"}),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "interrupt-null"}}

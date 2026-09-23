@@ -69,12 +69,12 @@ def test_tool_meta_carries_schema_field():
 
 
 def test_write_tools_not_logged_in():
-    result = update_address.invoke({"address": "北京市朝阳区", "request_id": "rq-1"})
+    result = update_address.invoke({"order_id": "ORD-REFUND-1", "address": "北京市朝阳区", "request_id": "rq-1"})
     assert result == {"error": "not_logged_in"}
 
 
 def test_write_tool_schemas():
-    assert UpdateAddressArgs(address="a", request_id="rq").address == "a"
+    assert UpdateAddressArgs(order_id="ORD-1", address="a", request_id="rq").address == "a"
     assert UpdatePhoneArgs(phone="13800000000", request_id="rq").phone == "13800000000"
     assert UpdateOrderNoteArgs(order_id="ORD-1", note="n", request_id="rq").note == "n"
     inv = CreateInvoiceArgs(order_id="10086", amount=99.0, company="c", tax_no="t", request_id="rq")

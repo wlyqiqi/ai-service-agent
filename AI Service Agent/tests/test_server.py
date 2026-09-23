@@ -252,7 +252,7 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
     model = ToolCallingFakeModel(responses=[
         router_json_message("account", "mutation", 0.9),
-        select_json_message("update_address", {"address": "北京市朝阳区测试路 99 号"}),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区测试路 99 号"}),
     ])
     db = str(tmp_path / "confirm.db")
     client = TestClient(create_app(db, model=model))

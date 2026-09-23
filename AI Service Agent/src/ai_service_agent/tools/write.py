@@ -17,6 +17,7 @@ from ai_service_agent.config import get_settings
 
 class UpdateAddressArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    order_id: str
     address: str
     request_id: str
 
@@ -146,19 +147,23 @@ def _run_idempotent(key: str, produce) -> dict:
 
 @tool
 def update_address(
+    order_id: str,
     address: str,
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """修改登录用户收货地址（mutation，幂等）。"""
+    """修改本人订单关联收货地址（mutation，幂等；订单状态由安全预检裁决）。"""
     def _produce(conn: sqlite3.Connection) -> dict:
+        boundary = _own_order(conn, order_id, user_id)
+        if boundary is not None:
+            return boundary
         exists = conn.execute(
             "SELECT 1 FROM customers WHERE customer_id=?", (user_id,)
         ).fetchone()
         if exists is None:
             return {"error": "not_found", "user_id": user_id}
         conn.execute("UPDATE customers SET address=? WHERE customer_id=?", (address, user_id))
-        return {"field": "update_address", "address": address}
+        return {"field": "update_address", "order_id": order_id, "address": address}
     return _run_db_mutation("update_address", request_id or str(uuid4()), user_id, _produce)
 
 

@@ -53,7 +53,7 @@ def _use_db(monkeypatch, db_path: Path):
 def _mutation_model():
     return ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("update_address", {"address": "北京市朝阳区"}),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
 
 
@@ -107,7 +107,7 @@ def test_mutation_unknown_tool_rejected_no_interrupt():
 def test_mutation_precheck_rejects_unauthenticated():
     model = ToolCallingFakeModel(responses=[
         router_json_message("order", "mutation", 0.9),
-        select_json_message("update_address", {"address": "新地址"}),
+            select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "新地址"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     out = graph.invoke(
@@ -186,7 +186,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     ])
     complete_model = ToolCallingFakeModel(responses=[
         router_json_message("account", "mutation", 0.9),
-        select_json_message("update_address", {"address": "北京市朝阳区"}),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     tid = "mt-clarify-1"
 
@@ -194,7 +194,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     t1 = _turn(_build(clarify_model), "我要改个地址", tid)
     assert t1["execution_status"] == "clarifying"
     assert not t1.get("__interrupt__")
-    assert t1["context"]["clarify_missing"] == ["address"]
+    assert t1["context"]["clarify_missing"] == ["order_id", "address"]
     assert "收货地址" in t1["messages"][-1].content
 
     # 轮2：补地址 -> 完整 select -> 确认中断（参数已进 summary，本轮不执行工具）

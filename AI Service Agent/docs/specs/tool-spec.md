@@ -44,7 +44,7 @@ class ToolMeta:
 | `order_lookup` | 订单查询 | read | **数据源替换（2026-09-19，同 `kb_search` stub→真实检索模式）**：内部实现从写死 stub 改为查询模拟电商库 `data/mock_ecommerce.db`（`scripts/seed_mock_db.py` 确定性生成，配置 `mock_ecommerce_db_path`，只读连接，库缺失/损坏确定性降级）；解析顺序 = `ORDER_STORE` 评测夹具（相对时间语义，CTRL-0086/0090 依赖，永远优先）→ 模拟电商库 → `not_found`；ToolMeta.schema 与对外接口/返回字段不变；**P4（D4）属主校验**不变：`user_id` 经 `langgraph.prebuilt.InjectedState` 注入，仅返回本人订单，越权拒绝 |
 | `my_orders` | 我的订单列表 | read | 登录用户名下最近 10 单（倒序）；`status` 可选过滤（paid/shipped/delivered/completed/refunding/refunded/cancelled）；零业务参数即可用——身份即授权（`user_id` 经 InjectedState 注入，不由模型/用户提供）；只读连接（mode=ro），库缺失降级 `data_source_unavailable`（2026-09-19） |
 | `shipment_query` | 物流查询 | read | 登录用户订单物流；`order_id` 可选（提供则精确查 + D4 属主校验，缺省优先返回在途订单物流，最多 5 条）；cancelled 单返回「已取消，无物流信息」；只读连接（mode=ro），库缺失降级 `data_source_unavailable`（2026-09-19） |
-| `update_address` | 修改收货地址 | mutation | 幂等；内部实现写模拟电商库 `customers.address`，`user_id` 经 InjectedState 注入；状态规则由 safety_check 裁决：`paid` 允许，`shipped` / `signed` / `completed` / `cancelled` / `refunding` / `refunded` 返回 `address_not_editable` |
+| `update_address` | 修改收货地址 | mutation | 幂等；schema 必填 `order_id` + `address`；内部实现校验本人订单后写 `customers.address`，`user_id` 经 InjectedState 注入；状态规则由 safety_check 裁决：`paid` 允许，`shipped` / `signed` / `completed` / `cancelled` / `refunding` / `refunded` 返回 `address_not_editable` |
 | `update_phone` | 修改联系电话 | mutation | 幂等；内部实现写模拟电商库 `customers.phone`，`user_id` 经 InjectedState 注入 |
 | `update_order_note` | 修改订单备注 | mutation | 幂等；内部实现写模拟电商库 `orders.note`；仅限本人订单（D4） |
 | `create_invoice` | 开具发票 | mutation | 幂等；内部实现写模拟电商库 `invoices`；仅限本人订单；状态规则由 safety_check 裁决：`cancelled` / `refunding` / `refunded` 返回 `invoice_not_allowed`；金额规则由 safety_check 裁决（`amount + 已开票累计 <= orders.total_amount`），一单一开、允许部分开票 |

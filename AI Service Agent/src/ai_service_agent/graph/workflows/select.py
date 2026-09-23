@@ -31,7 +31,7 @@ def _describe_args_schema(meta) -> str:
 
 _EXAMPLE_TEXTS = {
     # 真实业务话术 + 严格对应 schema 的参数（示例生成用；args 不得含 schema 之外字段）
-    "update_address": ("收货地址改成北京市朝阳区望京SOHO", {"address": "北京市朝阳区望京SOHO"}),
+    "update_address": ("订单 ORD-10086 收货地址改成北京市朝阳区望京SOHO", {"order_id": "ORD-10086", "address": "北京市朝阳区望京SOHO"}),
     "update_phone": ("帮我换个手机号，新号 13800138000", {"phone": "13800138000"}),
     "update_order_note": ("给订单 ORD-10086 加个备注：放驿站就行", {"order_id": "ORD-10086", "note": "放驿站就行"}),
     "create_invoice": ("订单 ORD-10086 开票，抬头星辰科技有限公司，税号 91110108MA01AB12CD",
