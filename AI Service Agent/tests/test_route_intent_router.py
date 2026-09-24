@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.graph.router import make_router
+from ai_service_agent.graph.router import _JEV_ROUTE_INTENT_QUESTION, make_router
 from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_message
 
 
@@ -264,3 +264,14 @@ def test_feature_off_keeps_legacy_router(monkeypatch):
         assert out["risk_level"] == "read"
     finally:
         get_settings.cache_clear()
+
+
+def test_jev_route_choice_pins_profile_update_boundary():
+    criteria = _JEV_ROUTE_INTENT_QUESTION["route_intent"]["criteria"]
+    assert "收货地址" in criteria["account_profile_update"]
+    assert "联系电话" in criteria["account_profile_update"]
+    assert "手机号" in criteria["account_profile_update"]
+    assert "即使输入包含订单号" in criteria["account_profile_update"]
+    assert criteria["order_mutation"] == "修改订单备注、开发票或创建售后工单"
+    assert "取消预约" in criteria["unsupported_action"]
+    assert "清空订单历史" in criteria["unsupported_action"]

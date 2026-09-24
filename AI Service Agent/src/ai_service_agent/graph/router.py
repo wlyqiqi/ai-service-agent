@@ -37,11 +37,17 @@ _JEV_ROUTE_INTENT_QUESTION = {
             "order_query": "根据订单号查询某一笔订单",
             "my_orders": "查询当前用户名下的订单列表",
             "shipment_query": "查询物流或配送进度",
-            "account_profile_update": "修改收货地址或联系电话",
+            "account_profile_update": (
+                "修改收货地址、联系电话或手机号。"
+                "即使输入包含订单号，也不能因订单号进入 order_mutation。"
+            ),
             "order_mutation": "修改订单备注、开发票或创建售后工单",
             "cancel_order_execute": "用户明确要求执行取消订单",
             "refund_apply_execute": "用户明确要求执行退款申请",
-            "unsupported_action": "当前系统没有对应工具的动作",
+            "unsupported_action": (
+                "当前系统没有对应工具的动作。"
+                "不要把取消预约、清空订单历史、订单所有权转移或人工流程类请求映射到 mutation。"
+            ),
             "unknown": "无法判断、缺少上下文、模糊或不在支持范围内",
         },
     }
