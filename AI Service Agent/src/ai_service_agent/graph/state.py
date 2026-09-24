@@ -28,6 +28,8 @@ class CustomerServiceState(TypedDict):
     allowed_tools: list[str]
     requires_approval: bool
     confidence: float
+    routing_backend: str | None
+    routing_fallback: bool
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（graph-spec §2）
     context: dict
     pending_approval: ApprovalRequest | None       # 派生业务字段（approval-spec §2）
