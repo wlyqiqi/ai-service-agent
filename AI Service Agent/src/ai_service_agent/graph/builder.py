@@ -1,3 +1,5 @@
+import re
+
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -30,6 +32,22 @@ POLICY = {
 }
 
 
+_PROFILE_UPDATE_PATTERN = re.compile(
+    r"(收货地址|联系电话|手机号)[^。\n]{0,24}(修改|改成|改为|换成|换绑|更新)"
+    r"|(修改|改成|改为|换成|换绑|更新)[^。\n]{0,24}(收货地址|联系电话|手机号)"
+)
+
+
+def _latest_user_text(state: dict) -> str:
+    messages = state.get("messages") or []
+    for message in reversed(messages):
+        role = getattr(message, "type", "")
+        content = getattr(message, "content", "")
+        if role == "human":
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
 def _route_target(state: dict) -> str:
     if get_settings().route_intent_enabled:
         return state.get("target_graph", "fallback")
@@ -47,9 +65,17 @@ def _policy_gate(state: dict) -> dict:
     """Router/Guard join. v2 deterministically derives the route policy; v1 is a no-op join."""
     if not get_settings().route_intent_enabled:
         return {}
-    policy = resolve_route_policy(state.get("route_intent", "unknown"))
+
+    route_intent = state.get("route_intent", "unknown")
+    if (
+        route_intent == "order_mutation"
+        and _PROFILE_UPDATE_PATTERN.search(_latest_user_text(state))
+    ):
+        route_intent = "account_profile_update"
+
+    policy = resolve_route_policy(route_intent)
     return {
-        "route_intent": state.get("route_intent", "unknown"),
+        "route_intent": route_intent,
         "target_graph": policy.target_graph,
         "execution_class": policy.execution_class,
         "allowed_tools": list(policy.allowed_tools),
