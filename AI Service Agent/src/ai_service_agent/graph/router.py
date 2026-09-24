@@ -149,6 +149,8 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
         "route_intent": choice,
         "confidence": confidence,
         "execution_status": "routing",
+        "routing_backend": "jev",
+        "routing_fallback": False,
     }
 
 def make_router(model) -> Callable[[dict], dict]:
@@ -193,6 +195,8 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
             "route_intent": intent,
             "confidence": confidence,
             "execution_status": "routing",
+            "routing_backend": "deepseek",
+            "routing_fallback": True,
         }
 
     settings = get_settings()
@@ -205,10 +209,18 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
                 candidate = _classify_route_intent_with_jev(jev_client, state, settings)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             return deepseek_route(state)
-        if candidate is not None and route_intent_is_confident(
-            candidate["route_intent"], candidate["confidence"]
-        ):
-            return candidate
+        if candidate is not None:
+            if route_intent_is_confident(
+                candidate["route_intent"], candidate["confidence"]
+            ):
+                return candidate
+            return {
+                "route_intent": "unknown",
+                "confidence": candidate["confidence"],
+                "execution_status": "routing",
+                "routing_backend": "jev",
+                "routing_fallback": False,
+            }
         return deepseek_route(state)
 
     return route
