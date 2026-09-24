@@ -223,7 +223,7 @@ class TestCoreScenarios:
         """Mutation：改地址 -> confirmation_required -> 确认 -> update_address 执行。"""
         sid = new_session(client)
 
-        code1, ev1 = chat_sse(client, sid, "把收货地址改成北京市朝阳区")
+        code1, ev1 = chat_sse(client, sid, "订单10086的收货地址改成北京市朝阳区")
         types1 = event_types(ev1)
         confirm = any(e.get("type") == "confirmation_required" for e in ev1)
         done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
