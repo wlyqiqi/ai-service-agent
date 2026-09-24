@@ -1,4 +1,4 @@
-"""工具选择（OQ-2）：LLM json_mode 结构化输出 {tool, args} + 确定性校验兜底。
+"""工具选择（OQ-2）：LLM 结构化输出 {tool, args} + 确定性校验兜底。
 
 LLM 负责理解，确定性代码负责校验（AGENTS.md §18）：工具必须在档内 + args 必须过 schema。
 校验失败 -> writer safety_rejected(rule=precheck) + 置 precheck_reason + 条件边路由 safety_final，不进入 interrupt。
@@ -6,11 +6,11 @@ LLM 负责理解，确定性代码负责校验（AGENTS.md §18）：工具必�
 
 import json
 import uuid
-from typing import Callable
+from typing import Callable, Literal
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 from langgraph.config import get_stream_writer
 
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
@@ -89,6 +89,16 @@ def _bind_json(model):
         return model
     return model.bind(response_format={"type": "json_object"})
 
+
+def _build_select_schema(allowed_names: list[str]) -> type[BaseModel]:
+    """根据当前 tier 允许的工具 ID 动态生成 Literal 枚举 schema（方案1：with_structured_output）。"""
+    tool_type = Literal[tuple(sorted(allowed_names))]  # type: ignore[valid-type]
+    return create_model(
+        "SelectOutput",
+        tool=(tool_type, Field(description="英文工具ID，必须从允许列表中选择")),
+        args=(dict, Field(default_factory=dict, description="工具调用参数")),
+    )
+
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], dict]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
     # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
@@ -104,7 +114,12 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         if contract:
             line += f"\n  参数：{contract}"
         lines_by_name[t.name] = line
-    bound = _bind_json(model)
+    is_fake = isinstance(model, FakeMessagesListChatModel)
+    if not is_fake:
+        select_schema = _build_select_schema(sorted(tier_allowed))
+        bound = model.with_structured_output(select_schema)
+    else:
+        bound = _bind_json(model)
 
     def _reject(state: dict, reason: str) -> dict:
         try:
@@ -155,19 +170,29 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if getattr(m, "type", "") == "human":
                 last = m.content if isinstance(m.content, str) else str(m.content)
                 break
-        resp = bound.invoke([
+        messages = [
             SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
                 tool_list=tool_list,
                 examples=_build_examples(selected_tools, registry),
             )),
             HumanMessage(content=last),
-        ])
-        try:
-            payload = json.loads(resp.content)
-            tool_name = payload["tool"]
-            args = dict(payload.get("args") or {})
-        except Exception:
-            return _reject(state, "select_parse_failed")
+        ]
+        if is_fake:
+            resp = bound.invoke(messages)
+            try:
+                payload = json.loads(resp.content)
+                tool_name = payload["tool"]
+                args = dict(payload.get("args") or {})
+            except Exception:
+                return _reject(state, "select_parse_failed")
+        else:
+            try:
+                result = bound.invoke(messages)
+                tool_name = result.tool
+                args = dict(result.args or {})
+            except Exception:
+                return _reject(state, "select_parse_failed")
+
         if tool_name == "cancel_order" and not args.get("order_id"):
             candidates = find_own_cancellable_paid_orders(state.get("user_id", ""))
             if isinstance(candidates, dict):
