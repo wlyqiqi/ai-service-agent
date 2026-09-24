@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AI Service Agent",
+    "subtitle": "LangGraph 确定性工作流 + 智能体混合架构",
+    "output": "archify-architecture.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "views": [
+      {
+        "id": "request-path",
+        "label": "主请求路径",
+        "focus": [
+          "users",
+          "chatwoot",
+          "fastapi",
+          "langgraph",
+          "read_graph",
+          "tools",
+          "ark"
+        ],
+        "note": "从客户端到模型调用的完整读路径。"
+      },
+      {
+        "id": "mutation-path",
+        "label": "变更路径",
+        "focus": [
+          "fastapi",
+          "langgraph",
+          "mutation_graph",
+          "tools",
+          "sqlite"
+        ],
+        "note": "MutationGraph 显式工作流执行变更操作。"
+      },
+      {
+        "id": "high-risk-path",
+        "label": "高风险路径",
+        "focus": [
+          "fastapi",
+          "langgraph",
+          "high_risk_graph",
+          "tools",
+          "sqlite"
+        ],
+        "note": "HighRiskGraph 经过人工审批后执行。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "users",
+      "type": "external",
+      "label": "用户",
+      "sublabel": "Web UI / Mobile",
+      "pos": [
+        40,
+        320
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "chatwoot",
+      "type": "external",
+      "label": "Chatwoot",
+      "sublabel": "消息平台",
+      "pos": [
+        40,
+        500
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "fastapi",
+      "type": "backend",
+      "label": "FastAPI Harness",
+      "sublabel": "REST / SSE / WS",
+      "pos": [
+        270,
+        400
+      ],
+      "size": [
+        160,
+        70
+      ]
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "JWT Auth",
+      "sublabel": "Bearer Token",
+      "pos": [
+        270,
+        170
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "tag": "Auth"
+    },
+    {
+      "id": "session",
+      "type": "database",
+      "label": "Session Store",
+      "sublabel": "conversation_mode",
+      "pos": [
+        270,
+        640
+      ],
+      "size": [
+        160,
+        60
+      ]
+    },
+    {
+      "id": "langgraph",
+      "type": "backend",
+      "label": "LangGraph Core",
+      "sublabel": "Guard ∥ Router → Policy",
+      "pos": [
+        540,
+        400
+      ],
+      "size": [
+        170,
+        70
+      ]
+    },
+    {
+      "id": "read_graph",
+      "type": "backend",
+      "label": "ReadGraph",
+      "sublabel": "ReAct Agent",
+      "pos": [
+        810,
+        200
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "mutation_graph",
+      "type": "backend",
+      "label": "MutationGraph",
+      "sublabel": "显式 Workflow",
+      "pos": [
+        810,
+        380
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "high_risk_graph",
+      "type": "backend",
+      "label": "HighRiskGraph",
+      "sublabel": "人工 Approval",
+      "pos": [
+        810,
+        560
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "tag": "Approval"
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "Tools Layer",
+      "sublabel": "KB / Orders / Write",
+      "pos": [
+        1070,
+        380
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite Checkpointer",
+      "sublabel": "thread_id 持久化",
+      "pos": [
+        540,
+        640
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "ark",
+      "type": "cloud",
+      "label": "ARK Model API",
+      "sublabel": "火山方舟 LLM",
+      "pos": [
+        1070,
+        170
+      ],
+      "size": [
+        140,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Harness (Transport)",
+      "wraps": [
+        "fastapi",
+        "auth",
+        "session"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "LangGraph Workflow",
+      "wraps": [
+        "langgraph",
+        "read_graph",
+        "mutation_graph",
+        "high_risk_graph"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Data & Model",
+      "wraps": [
+        "tools",
+        "sqlite",
+        "ark"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "users-to-fastapi",
+      "from": "users",
+      "to": "fastapi",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "chatwoot-to-fastapi",
+      "from": "chatwoot",
+      "to": "fastapi",
+      "label": "Webhook"
+    },
+    {
+      "id": "auth-to-fastapi",
+      "from": "auth",
+      "to": "fastapi",
+      "label": "verify JWT",
+      "variant": "security",
+      "labelDy": 24
+    },
+    {
+      "id": "fastapi-to-langgraph",
+      "from": "fastapi",
+      "to": "langgraph",
+      "label": "invoke graph",
+      "variant": "emphasis"
+    },
+    {
+      "id": "fastapi-to-session",
+      "from": "fastapi",
+      "to": "session",
+      "label": "mode check",
+      "labelDy": 24
+    },
+    {
+      "id": "langgraph-to-read",
+      "from": "langgraph",
+      "to": "read_graph",
+      "label": "read"
+    },
+    {
+      "id": "langgraph-to-mutation",
+      "from": "langgraph",
+      "to": "mutation_graph"
+    },
+    {
+      "id": "langgraph-to-highrisk",
+      "from": "langgraph",
+      "to": "high_risk_graph",
+      "label": "high_risk"
+    },
+    {
+      "id": "read-to-tools",
+      "from": "read_graph",
+      "to": "tools",
+      "label": "tool call"
+    },
+    {
+      "id": "mutation-to-tools",
+      "from": "mutation_graph",
+      "to": "tools"
+    },
+    {
+      "id": "highrisk-to-tools",
+      "from": "high_risk_graph",
+      "to": "tools",
+      "label": "tool call"
+    },
+    {
+      "id": "langgraph-to-sqlite",
+      "from": "langgraph",
+      "to": "sqlite",
+      "label": "checkpoint",
+      "labelDy": 24
+    },
+    {
+      "id": "tools-to-ark",
+      "from": "tools",
+      "to": "ark",
+      "label": "LLM call"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Transport",
+      "items": [
+        "FastAPI 仅负责 Transport（REST/SSE/WS）",
+        "JWT Bearer 认证保护所有接口",
+        "conversation_mode 在入口层轻量判断"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "LangGraph 编排",
+      "items": [
+        "Guard 安全预检与 Router 并行执行",
+        "Policy Gate 确定性映射 (capability × risk_level)",
+        "ReadGraph 用 ReAct；MutationGraph 显式 Workflow；HighRiskGraph 需人工审批"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "数据与模型",
+      "items": [
+        "SQLite Checkpointer 按 thread_id 持久化图状态",
+        "Tools 按 min_risk_level 分层注入",
+        "ARK 提供底层 LLM 推理能力"
+      ]
+    }
+  ]
+}

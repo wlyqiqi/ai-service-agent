@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "execution_status 状态机",
+    "subtitle": "LangGraph 图执行生命周期",
+    "output": "archify-lifecycle-execution.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [1060, 700]
+  },
+  "lanes": [
+    { "id": "main", "label": "execution_status" },
+    { "id": "terminal", "label": "Terminal" }
+  ],
+  "states": [
+    { "id": "running", "type": "start", "label": "running", "sublabel": "图执行中", "lane": "main", "col": 0, "step": "01", "tag": "entry" },
+    { "id": "clarifying", "type": "waiting", "label": "clarifying", "sublabel": "等待澄清", "lane": "main", "col": 1, "tag": "clarify" },
+    { "id": "waiting_approval", "type": "waiting", "label": "waiting_approval", "sublabel": "等待审批", "lane": "main", "col": 2, "tag": "pause" },
+    { "id": "waiting_handoff", "type": "waiting", "label": "waiting_handoff", "sublabel": "等待人工", "lane": "main", "col": 3, "tag": "handoff" },
+    { "id": "completed", "type": "success", "label": "completed", "sublabel": "执行完成", "lane": "main", "col": 4, "step": "05", "tag": "done" },
+    { "id": "failed", "type": "failure", "label": "failed", "sublabel": "执行失败", "lane": "terminal", "col": 0, "tag": "error" }
+  ],
+  "transitions": [
+    { "id": "t-clarify", "from": "running", "to": "clarifying" },
+    { "id": "t-highrisk", "from": "running", "to": "waiting_approval", "label": "HighRisk", "route": "top-channel", "channelY": 60 },
+    { "id": "t-handoff", "from": "running", "to": "waiting_handoff", "label": "Handoff", "route": "top-channel", "channelY": 30 },
+    { "id": "t-clarify-done", "from": "clarifying", "to": "completed", "route": "bottom-channel" },
+    { "id": "t-appr-done", "from": "waiting_approval", "to": "completed", "route": "bottom-channel" },
+    { "id": "t-handoff-done", "from": "waiting_handoff", "to": "completed" },
+    { "id": "t-failed", "from": "running", "to": "failed", "label": "异常", "variant": "security", "route": "drop" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "非终态暂停", "items": ["clarifying / waiting_approval / waiting_handoff 均为可恢复暂停", "审批通过后 Command(resume) 恢复", "人工 Resolve 后自然恢复"] },
+    { "dot": "rose", "title": "终态", "items": ["completed 为正常终态", "failed 为异常终态，每 turn 必发 done 事件"] }
+  ]
+}
+

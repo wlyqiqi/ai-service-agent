@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Approval 审批状态机",
+    "subtitle": "高风险操作审批流程",
+    "output": "archify-lifecycle-approval.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [900, 700]
+  },
+  "lanes": [
+    { "id": "main", "label": "Approval" },
+    { "id": "terminal", "label": "Terminal" }
+  ],
+  "states": [
+    { "id": "pending", "type": "start", "label": "pending", "sublabel": "待审批", "lane": "main", "col": 0, "step": "01", "tag": "entry" },
+    { "id": "approved", "type": "success", "label": "approved", "sublabel": "已批准", "lane": "main", "col": 1, "step": "02", "tag": "pass" },
+    { "id": "rejected", "type": "failure", "label": "rejected", "sublabel": "已拒绝", "lane": "main", "col": 2, "step": "03", "tag": "deny" },
+    { "id": "expired", "type": "failure", "label": "expired", "sublabel": "已过期", "lane": "terminal", "col": 0, "tag": "timeout" }
+  ],
+  "transitions": [
+    { "id": "t-approve", "from": "pending", "to": "approved", "label": "批准", "variant": "emphasis", "labelDx": 10, "labelDy": -30 },
+    { "id": "t-reject", "from": "pending", "to": "rejected", "label": "拒绝", "variant": "security", "route": "top-channel" },
+    { "id": "t-expire", "from": "pending", "to": "expired", "label": "超时", "variant": "security", "route": "drop" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "审批规则", "items": ["HighRisk 必须先过安全预检再发起审批", "pending 为唯一非终态", "approved 后通过 Command(resume) 恢复执行", "操作幂等：重复审批不产生副作用"] }
+  ]
+}
+
+
+
+

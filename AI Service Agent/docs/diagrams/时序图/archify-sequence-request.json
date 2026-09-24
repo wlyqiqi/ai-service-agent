@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "请求生命周期时序图",
+    "subtitle": "POST /chat → LangGraph → SubGraph → SSE 响应",
+    "output": "archify-sequence-request.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [
+      1060,
+      900
+    ],
+    "column_fit": "spread",
+    "views": [
+      {
+        "id": "entry",
+        "label": "入口层",
+        "focus": [
+          "client",
+          "fastapi",
+          "status",
+          "msg_store"
+        ],
+        "note": "mode 判断、显式 handoff 检测、消息持久化。"
+      },
+      {
+        "id": "graph-exec",
+        "label": "图执行",
+        "focus": [
+          "fastapi",
+          "graph",
+          "policy",
+          "subgraph",
+          "tools",
+          "ark"
+        ],
+        "note": "LangGraph 编排：Guard ∥ Router → PolicyGate → 子图。"
+      },
+      {
+        "id": "response",
+        "label": "响应",
+        "focus": [
+          "graph",
+          "fastapi",
+          "msg_store",
+          "client"
+        ],
+        "note": "SSE 事件流、mode 复检、assistant 消息持久化。"
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "client",
+      "type": "external",
+      "label": "Client",
+      "sublabel": "Web UI / Chatwoot"
+    },
+    {
+      "id": "fastapi",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "POST /chat"
+    },
+    {
+      "id": "status",
+      "type": "database",
+      "label": "StatusStore",
+      "sublabel": "mode / thread_id"
+    },
+    {
+      "id": "msg_store",
+      "type": "database",
+      "label": "MessageStore",
+      "sublabel": "SQLite"
+    },
+    {
+      "id": "graph",
+      "type": "backend",
+      "label": "build_graph()",
+      "sublabel": "LangGraph"
+    },
+    {
+      "id": "policy",
+      "type": "backend",
+      "label": "PolicyGate",
+      "sublabel": "Guard ∥ Router"
+    },
+    {
+      "id": "subgraph",
+      "type": "backend",
+      "label": "SubGraph"
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "ToolNode"
+    },
+    {
+      "id": "ark",
+      "type": "cloud",
+      "label": "ARK Model",
+      "sublabel": "火山方舟 LLM"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 320,
+      "label": "入口层 Entry"
+    },
+    {
+      "from": 320,
+      "to": 430,
+      "label": "图构建与状态检查"
+    },
+    {
+      "from": 430,
+      "to": 720,
+      "label": "LangGraph 执行"
+    },
+    {
+      "from": 720,
+      "to": 850,
+      "label": "SSE 响应"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m01",
+      "from": "client",
+      "to": "fastapi",
+      "y": 170,
+      "label": "POST /chat {session_id, message}",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m02",
+      "from": "fastapi",
+      "to": "status",
+      "y": 198,
+      "label": "get_mode()",
+      "note": "alt: mode=human → 写 MessageStore + Chatwoot → done（不进 Graph）"
+    },
+    {
+      "id": "m03",
+      "from": "status",
+      "to": "fastapi",
+      "y": 226,
+      "label": "mode = 'ai'",
+      "variant": "return"
+    },
+    {
+      "id": "m04",
+      "from": "fastapi",
+      "to": "msg_store",
+      "y": 254,
+      "label": "append(conv_id, 'user', message)",
+      "note": "detect_handoff_intent() 命中 → request_handoff() → 不进 Graph"
+    },
+    {
+      "id": "m05",
+      "from": "fastapi",
+      "to": "msg_store",
+      "y": 282,
+      "label": "hydrate(conv_id)"
+    },
+    {
+      "id": "m06",
+      "from": "msg_store",
+      "to": "fastapi",
+      "y": 310,
+      "label": "history: list[BaseMessage]",
+      "variant": "return"
+    },
+    {
+      "id": "m07",
+      "from": "fastapi",
+      "to": "graph",
+      "y": 338,
+      "label": "make_ai_graph() → aget_state(cfg)",
+      "note": "alt: pending approval → yield approval_required + done"
+    },
+    {
+      "id": "m08",
+      "from": "graph",
+      "to": "fastapi",
+      "y": 366,
+      "label": "无挂起中断",
+      "variant": "return"
+    },
+    {
+      "id": "m09",
+      "from": "fastapi",
+      "to": "graph",
+      "y": 394,
+      "label": "astream(messages=history)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m10",
+      "from": "graph",
+      "to": "policy",
+      "y": 422,
+      "label": "guard(state) ∥ route(state)"
+    },
+    {
+      "id": "m11",
+      "from": "policy",
+      "to": "graph",
+      "y": 450,
+      "label": "policy_gate → read_graph",
+      "variant": "return",
+      "note": "alt: guard fail → safety_final"
+    },
+    {
+      "id": "m12",
+      "from": "graph",
+      "to": "subgraph",
+      "y": 478,
+      "label": "invoke read_graph"
+    },
+    {
+      "id": "m13",
+      "from": "subgraph",
+      "to": "ark",
+      "y": 506,
+      "label": "agent_llm(state.messages)"
+    },
+    {
+      "id": "m14",
+      "from": "ark",
+      "to": "subgraph",
+      "y": 534,
+      "label": "AIMessage(tool_calls)",
+      "variant": "return"
+    },
+    {
+      "id": "m15",
+      "from": "subgraph",
+      "to": "tools",
+      "y": 562,
+      "label": "ToolNode(ToolCall)"
+    },
+    {
+      "id": "m16",
+      "from": "tools",
+      "to": "subgraph",
+      "y": 590,
+      "label": "ToolMessage(result)",
+      "variant": "return"
+    },
+    {
+      "id": "m17",
+      "from": "subgraph",
+      "to": "ark",
+      "y": 618,
+      "label": "agent_llm(tool_results)"
+    },
+    {
+      "id": "m18",
+      "from": "ark",
+      "to": "subgraph",
+      "y": 646,
+      "label": "AIMessage(final_text)",
+      "variant": "return"
+    },
+    {
+      "id": "m19",
+      "from": "subgraph",
+      "to": "graph",
+      "y": 674,
+      "label": "execution_status = completed",
+      "variant": "return"
+    },
+    {
+      "id": "m20",
+      "from": "graph",
+      "to": "fastapi",
+      "y": 702,
+      "label": "token / tool_call / tool_result / done"
+    },
+    {
+      "id": "m21",
+      "from": "fastapi",
+      "to": "status",
+      "y": 730,
+      "label": "get_mode() // 发送前复检",
+      "note": "alt: mode 已切 human → 丢弃回复"
+    },
+    {
+      "id": "m22",
+      "from": "status",
+      "to": "fastapi",
+      "y": 758,
+      "label": "'ai'",
+      "variant": "return"
+    },
+    {
+      "id": "m23",
+      "from": "fastapi",
+      "to": "msg_store",
+      "y": 786,
+      "label": "append('assistant', final)"
+    },
+    {
+      "id": "m24",
+      "from": "fastapi",
+      "to": "client",
+      "y": 814,
+      "label": "SSE: data: {type: done}",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "fastapi",
+      "from": 168,
+      "to": 838
+    },
+    {
+      "participant": "status",
+      "from": 195,
+      "to": 232
+    },
+    {
+      "participant": "msg_store",
+      "from": 250,
+      "to": 312
+    },
+    {
+      "participant": "graph",
+      "from": 330,
+      "to": 722
+    },
+    {
+      "participant": "policy",
+      "from": 415,
+      "to": 458
+    },
+    {
+      "participant": "subgraph",
+      "from": 475,
+      "to": 692
+    },
+    {
+      "participant": "tools",
+      "from": 563,
+      "to": 603
+    },
+    {
+      "participant": "ark",
+      "from": 505,
+      "to": 545
+    },
+    {
+      "participant": "status",
+      "from": 739,
+      "to": 776
+    },
+    {
+      "participant": "msg_store",
+      "from": 794,
+      "to": 806
+    },
+    {
+      "participant": "ark",
+      "from": 621,
+      "to": 661
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "入口层分支",
+      "items": [
+        "mode=human → 不进 Graph，直接写 MessageStore + Chatwoot",
+        "detect_handoff_intent() 命中 → HandoffService.request_handoff() → 原子切换 mode",
+        "pending approval → yield approval_required，不 resume 不新起 run"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "LangGraph 并行",
+      "items": [
+        "START 同时分发到 guard 与 router_llm（并行节点）",
+        "policy_gate 为确定性 join 点，按 (capability, risk_level) 查映射表",
+        "guard fail → safety_final（不进子图）"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "响应安全",
+      "items": [
+        "done 事件触发前实时复检 conversation_mode",
+        "已被切走则丢弃回复且不持久化",
+        "MessageStore 为会话消息唯一真相源"
+      ]
+    }
+  ]
+}

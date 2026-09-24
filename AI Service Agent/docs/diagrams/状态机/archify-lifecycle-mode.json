@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "conversation_mode 状态机",
+    "subtitle": "AI / Human 双态切换",
+    "output": "archify-lifecycle-mode.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [900, 566]
+  },
+  "lanes": [
+    { "id": "main", "label": "conversation_mode" }
+  ],
+  "states": [
+    { "id": "mode-ai", "type": "start", "label": "AI", "sublabel": "AI 接管", "lane": "main", "col": 0, "step": "01", "tag": "default" },
+    { "id": "mode-human", "type": "waiting", "label": "Human", "sublabel": "人工接管", "lane": "main", "col": 2, "step": "02", "tag": "handoff" }
+  ],
+  "transitions": [
+    { "id": "t-to-human", "from": "mode-ai", "to": "mode-human", "label": "Handoff", "variant": "security" },
+    { "id": "t-to-ai", "from": "mode-human", "to": "mode-ai", "label": "Resolve", "variant": "emphasis", "route": "bottom-channel" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "关键规则", "items": ["POST /sessions 时显式写入 ai", "ai → human 必须与创建 Handoff Record 处于同一数据库事务", "human → ai 由人工 Resolve 触发", "pending 审批继续挂起，AI 重新接管后自然恢复"] }
+  ]
+}
+
+
+

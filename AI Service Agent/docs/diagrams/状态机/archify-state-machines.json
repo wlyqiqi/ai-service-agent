@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "AI Service Agent 状态机",
+    "subtitle": "execution_status · conversation_mode · Approval",
+    "output": "archify-state-machines.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [1160, 860],
+    "views": [
+      { "id": "exec", "label": "执行状态", "focus": ["running", "clarifying", "waiting_approval", "waiting_handoff", "completed"], "note": "主执行路径" },
+      { "id": "mode", "label": "会话模式", "focus": ["mode-ai", "mode-human"], "note": "AI 与人工切换" },
+      { "id": "appr", "label": "审批", "focus": ["waiting_approval", "appr-pending", "appr-approved", "appr-rejected"], "note": "高风险审批流" }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "execution_status" },
+    { "id": "mode", "label": "conversation_mode" },
+    { "id": "approval", "label": "Approval" },
+    { "id": "terminal", "label": "Terminal" }
+  ],
+  "states": [
+    { "id": "running", "type": "start", "label": "running", "sublabel": "图执行中", "lane": "main", "col": 0, "step": "01", "tag": "entry" },
+    { "id": "clarifying", "type": "waiting", "label": "clarifying", "sublabel": "等待澄清", "lane": "main", "col": 1, "tag": "clarify" },
+    { "id": "waiting_approval", "type": "waiting", "label": "waiting_approval", "sublabel": "等待审批", "lane": "main", "col": 2, "tag": "pause" },
+    { "id": "waiting_handoff", "type": "waiting", "label": "waiting_handoff", "sublabel": "等待人工", "lane": "main", "col": 3, "tag": "handoff" },
+    { "id": "completed", "type": "success", "label": "completed", "sublabel": "执行完成", "lane": "main", "col": 4, "step": "05", "tag": "done" },
+    { "id": "mode-ai", "type": "active", "label": "AI", "sublabel": "AI 接管", "lane": "mode", "col": 0, "yOffset": 0, "tag": "default" },
+    { "id": "mode-human", "type": "waiting", "label": "Human", "sublabel": "人工接管", "lane": "mode", "col": 2, "yOffset": 0, "tag": "handoff" },
+    { "id": "appr-pending", "type": "active", "label": "pending", "sublabel": "待审批", "lane": "approval", "col": 0, "yOffset": 78, "tag": "waiting" },
+    { "id": "appr-approved", "type": "success", "label": "approved", "sublabel": "已批准", "lane": "approval", "col": 1, "yOffset": 78, "tag": "pass" },
+    { "id": "appr-rejected", "type": "failure", "label": "rejected", "sublabel": "已拒绝", "lane": "approval", "col": 2, "yOffset": 78, "tag": "deny" },
+    { "id": "expired", "type": "failure", "label": "expired", "sublabel": "审批超时", "lane": "terminal", "col": 0, "tag": "timeout" },
+    { "id": "failed", "type": "failure", "label": "failed", "sublabel": "执行失败", "lane": "terminal", "col": 2, "tag": "error" }
+  ],
+  "transitions": [
+    { "id": "t-clarify", "from": "running", "to": "clarifying", "label": "需要澄清" },
+    { "id": "t-highrisk", "from": "running", "to": "waiting_approval", "label": "HighRisk", "route": "top-channel", "channelY": 60 },
+    { "id": "t-handoff", "from": "running", "to": "waiting_handoff", "label": "Handoff", "route": "top-channel", "channelY": 35 },
+    { "id": "t-direct", "from": "running", "to": "completed", "label": "直接完成", "variant": "emphasis", "route": "top-channel", "channelY": 15 },
+    { "id": "t-clarify-done", "from": "clarifying", "to": "completed", "route": "top-channel", "channelY": 80 },
+    { "id": "t-handoff-done", "from": "waiting_handoff", "to": "completed" },
+    { "id": "t-mode-out", "from": "mode-ai", "to": "mode-human", "label": "Handoff 创建", "variant": "security" },
+    { "id": "t-appr-ok", "from": "appr-pending", "to": "appr-approved", "label": "批准", "variant": "emphasis" },
+    { "id": "t-appr-no", "from": "appr-pending", "to": "appr-rejected", "label": "拒绝", "variant": "security", "fromSide": "bottom", "toSide": "bottom", "via": [[181, 430], [781, 430]] },
+    { "id": "t-appr-exp", "from": "appr-pending", "to": "expired", "label": "超时", "variant": "security", "route": "drop" },
+    { "id": "t-init-appr", "from": "waiting_approval", "to": "appr-pending", "label": "发起", "variant": "dashed", "fromSide": "left", "toSide": "top", "via": [[330, 200], [330, 320], [181, 320]] },
+    { "id": "t-resume", "from": "appr-approved", "to": "running", "label": "resume", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "via": [[481, 200], [94, 200]] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "会话模式", "items": ["POST /sessions 显式写入 ai", "ai → human 与创建 Handoff Record 同一事务", "human → ai 由人工 Resolve 触发"] },
+    { "dot": "emerald", "title": "执行状态", "items": ["running 为每次 turn 的入口", "clarifying / waiting_approval / waiting_handoff 为非终态暂停", "completed 为终态，failed 为异常终态"] },
+    { "dot": "rose", "title": "审批状态", "items": ["pending 为唯一非终态", "approved / rejected / expired 为终态", "approved 后通过 Command(resume) 恢复执行"] }
+  ]
+}

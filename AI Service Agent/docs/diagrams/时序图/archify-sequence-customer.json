@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "AI 客服如何处理您的消息",
+    "subtitle": "从发送到回复的完整流程",
+    "output": "archify-sequence-customer.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [900, 520],
+    "column_fit": "spread"
+  },
+  "participants": [
+    { "id": "client", "type": "external", "label": "您" },
+    { "id": "platform", "type": "backend", "label": "客服平台", "sublabel": "消息接收与安全" },
+    { "id": "engine", "type": "backend", "label": "AI 引擎", "sublabel": "智能调度" },
+    { "id": "model", "type": "cloud", "label": "AI 模型", "sublabel": "理解与生成" },
+    { "id": "executor", "type": "backend", "label": "业务系统", "sublabel": "订单 · 知识库" }
+  ],
+  "segments": [
+    { "from": 150, "to": 218, "label": "发送消息" },
+    { "from": 218, "to": 390, "label": "AI 智能处理" },
+    { "from": 390, "to": 470, "label": "返回结果" }
+  ],
+  "messages": [
+    { "id": "s01", "from": "client", "to": "platform", "y": 170, "label": "① 发送消息", "variant": "emphasis" },
+    { "id": "s02", "from": "platform", "to": "engine", "y": 200, "label": "② 启动 AI 处理", "note": "需要人工客服时，平台直接转接，AI 不参与" },
+    { "id": "s03", "from": "engine", "to": "model", "y": 230, "label": "③ 安全检查 · 理解需求" },
+    { "id": "s04", "from": "model", "to": "engine", "y": 258, "label": "④ 识别意图与风险", "variant": "return", "note": "高风险操作需人工审批后才执行" },
+    { "id": "s05", "from": "engine", "to": "executor", "y": 288, "label": "⑤ 查询信息 / 执行操作", "note": "信息不足时 AI 会主动追问" },
+    { "id": "s06", "from": "executor", "to": "engine", "y": 316, "label": "⑥ 返回结果", "variant": "return" },
+    { "id": "s07", "from": "engine", "to": "model", "y": 346, "label": "⑦ 基于结果生成回复" },
+    { "id": "s08", "from": "model", "to": "engine", "y": 374, "label": "⑧ 回复内容", "variant": "return" },
+    { "id": "s09", "from": "engine", "to": "platform", "y": 404, "label": "⑨ 逐步返回处理过程" },
+    { "id": "s10", "from": "platform", "to": "client", "y": 432, "label": "⑩ 显示回复", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "platform", "from": 168, "to": 438 },
+    { "participant": "engine", "from": 195, "to": 410 },
+    { "participant": "model", "from": 225, "to": 265 },
+    { "participant": "model", "from": 341, "to": 381 },
+    { "participant": "executor", "from": 283, "to": 322 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "什么时候转人工？", "items": ["您明确要求转人工时，平台立即响应", "AI 判断无法继续服务时，自动为您转接", "转人工后您的消息直达坐席，AI 不干预"] },
+    { "dot": "emerald", "title": "AI 如何保证安全？", "items": ["每条消息先经过安全检查，拦截风险请求", "涉及资金操作（退款、取消订单）需人工审批", "权限校验确保您只能操作自己的数据"] },
+    { "dot": "rose", "title": "您会看到什么？", "items": ["AI 实时逐步返回回复，无需等待全部完成", "查询订单、查知识库等操作过程透明可见", "完整对话自动保存，下次继续无需重复描述"] }
+  ]
+}
