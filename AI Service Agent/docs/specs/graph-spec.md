@@ -68,7 +68,9 @@
 - Router v2（`JEV_ROUTE_INTENT_ENABLED=true`）：Jev 只执行一次 `Choice(route_intent)`，输出 `route_intent` + `confidence`。
 - v2 `route_intent` 是稳定业务意图标签，不是 `tool_name`，也不是 `target_graph`。
 - DeepSeek Router fallback 必须输出同一个 v2 契约。
-- Jev 超时、HTTP 错误、非法输出或置信度不足时 fallback 到 DeepSeek；DeepSeek 置信度不足时归为 `unknown`。
+- Jev 超时、HTTP 错误或非法输出时 fallback 到 DeepSeek。
+- Jev 返回合法 Choice 但置信度低于执行档阈值时，直接归为 `unknown`，不得再调用 DeepSeek。
+- `routing_backend` / `routing_fallback` 只用于观测和评估，不参与路由。
 - 每轮执行；多轮中用户可切换意图。
 - v2 仅写入自身分类字段（`route_intent` / `confidence`），不得修改 `context` 等业务状态。
 - Router 失败/超时 → 直接走 Fallback。
@@ -86,6 +88,8 @@
 - `allowed_tools` 是候选工具边界；子图 LLM 只能在该边界内选择最终工具。
 - 未注册 intent、`unsupported_action`、`unknown` 一律 fallback；例如 `update_phone` 有意不注册为 route intent，账户资料变更使用 `account_profile_update`。
 - 高风险操作继续保留安全预检与人工审批。
+- v2 Policy Gate 允许一个极窄归一化：LLM 输出为 `order_mutation` 且当前 turn 用户文本明确表达修改收货地址、联系电话或手机号时，Policy Gate 将 `route_intent` 修正为 `account_profile_update`。
+- 该归一化不得 rescue `unsupported_action` 或 `unknown`，不得调用 LLM，不得扩大 `allowed_tools`。
 
 ## 6. 子图
 
