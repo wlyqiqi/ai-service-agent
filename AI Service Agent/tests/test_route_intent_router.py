@@ -277,3 +277,7 @@ def test_jev_route_choice_pins_profile_update_boundary():
     assert criteria["order_mutation"] == "修改订单备注、开发票或创建售后工单"
     assert "取消预约" in criteria["unsupported_action"]
     assert "清空订单历史" in criteria["unsupported_action"]
+    assert "没有对应工具" in criteria["unsupported_action"]
+    assert "不归 unknown" in criteria["unsupported_action"]
+    assert "不在支持范围内" not in criteria["unknown"]
+    assert "unsupported_action" in criteria["unknown"]

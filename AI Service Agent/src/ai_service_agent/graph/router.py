@@ -54,10 +54,11 @@ _JEV_ROUTE_INTENT_QUESTION = {
             "cancel_order_execute": "用户明确要求执行取消订单",
             "refund_apply_execute": "用户明确要求执行退款申请",
             "unsupported_action": (
-                "当前系统没有对应工具的动作。"
+                "用户意图清晰但当前系统没有对应工具可执行。"
                 "不要把取消预约、清空订单历史、订单所有权转移或人工流程类请求映射到 mutation。"
+                "这些动作归为 unsupported_action，不归 unknown。"
             ),
-            "unknown": "无法判断、缺少上下文、模糊或不在支持范围内",
+            "unknown": "无法理解用户在说什么、缺少上下文或意图模糊。系统不支持的可理解操作应归为 unsupported_action，不归 unknown。",
         },
     }
 }

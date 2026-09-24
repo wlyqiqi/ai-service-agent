@@ -1,27 +1,24 @@
 {
   "summary": {
     "total": 36,
-    "route_intent_accuracy": 0.9722,
+    "route_intent_accuracy": 1.0,
     "account_profile_update_recall": 1.0,
     "account_profile_update_to_order_mutation_rate": 0.0,
     "cancel_order_execute_recall": 1.0,
     "refund_apply_execute_recall": 1.0,
     "high_risk_recall": 1.0,
     "unsupported_action_mutation_or_high_risk_leakage": 0.0,
-    "fallback_rate": 0.0278,
+    "fallback_rate": 0.0,
     "backend_counts": {
-      "jev": 35,
-      "deepseek": 1
+      "jev": 36
     },
-    "confusion": {
-      "unsupported_action -> unknown": 1
-    },
+    "confusion": {},
     "latency": {
       "n": 36,
-      "p50_ms": 1998.1,
-      "p95_ms": 3034.5,
-      "mean_ms": 2275.8,
-      "max_ms": 10025.5
+      "p50_ms": 1677.5,
+      "p95_ms": 2619.5,
+      "mean_ms": 1826.2,
+      "max_ms": 2739.2
     }
   },
   "results": [
@@ -30,10 +27,10 @@
       "input": "这个产品怎么安装？",
       "expected_route_intent": "faq",
       "predicted_route_intent": "faq",
-      "confidence": 0.99,
+      "confidence": 0.98,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2509.1,
+      "latency_ms": 2446.7,
       "correct": true
     },
     {
@@ -44,7 +41,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2011.7,
+      "latency_ms": 2011.0,
       "correct": true
     },
     {
@@ -55,7 +52,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1807.0,
+      "latency_ms": 2467.2,
       "correct": true
     },
     {
@@ -63,10 +60,10 @@
       "input": "ORD-10086 现在什么状态？",
       "expected_route_intent": "order_query",
       "predicted_route_intent": "order_query",
-      "confidence": 1.0,
+      "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2242.1,
+      "latency_ms": 1771.5,
       "correct": true
     },
     {
@@ -77,7 +74,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1941.3,
+      "latency_ms": 1696.7,
       "correct": true
     },
     {
@@ -88,7 +85,7 @@
       "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1747.0,
+      "latency_ms": 1910.5,
       "correct": true
     },
     {
@@ -99,7 +96,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2400.8,
+      "latency_ms": 1705.7,
       "correct": true
     },
     {
@@ -107,10 +104,10 @@
       "input": "帮我改收货地址",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 0.99,
+      "confidence": 0.97,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2097.8,
+      "latency_ms": 1648.0,
       "correct": true
     },
     {
@@ -118,10 +115,10 @@
       "input": "我要换绑手机号",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 1.0,
+      "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1890.2,
+      "latency_ms": 1526.8,
       "correct": true
     },
     {
@@ -129,10 +126,10 @@
       "input": "给订单加个备注：放驿站就行",
       "expected_route_intent": "order_mutation",
       "predicted_route_intent": "order_mutation",
-      "confidence": 0.99,
+      "confidence": 0.98,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1911.9,
+      "latency_ms": 1598.0,
       "correct": true
     },
     {
@@ -140,10 +137,10 @@
       "input": "这笔订单帮我开发票",
       "expected_route_intent": "order_mutation",
       "predicted_route_intent": "order_mutation",
-      "confidence": 0.96,
+      "confidence": 0.9,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2001.1,
+      "latency_ms": 1579.7,
       "correct": true
     },
     {
@@ -151,10 +148,10 @@
       "input": "屏幕有裂痕，创建一个售后工单",
       "expected_route_intent": "order_mutation",
       "predicted_route_intent": "order_mutation",
-      "confidence": 0.97,
+      "confidence": 0.94,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1998.1,
+      "latency_ms": 2322.8,
       "correct": true
     },
     {
@@ -162,10 +159,10 @@
       "input": "订单 ORD-PAID-1 不要了，帮我取消",
       "expected_route_intent": "cancel_order_execute",
       "predicted_route_intent": "cancel_order_execute",
-      "confidence": 0.99,
+      "confidence": 0.97,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2152.2,
+      "latency_ms": 1687.5,
       "correct": true
     },
     {
@@ -173,10 +170,10 @@
       "input": "ORD-1 申请退款，金额 99 元",
       "expected_route_intent": "refund_apply_execute",
       "predicted_route_intent": "refund_apply_execute",
-      "confidence": 0.98,
+      "confidence": 0.96,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1924.5,
+      "latency_ms": 1664.3,
       "correct": true
     },
     {
@@ -184,10 +181,10 @@
       "input": "取消订单的流程是什么？",
       "expected_route_intent": "faq",
       "predicted_route_intent": "faq",
-      "confidence": 0.95,
-      "routing_backend": "deepseek",
-      "routing_fallback": true,
-      "latency_ms": 10025.5,
+      "confidence": 0.71,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1796.9,
       "correct": true
     },
     {
@@ -195,10 +192,10 @@
       "input": "退款一般多久到账？",
       "expected_route_intent": "faq",
       "predicted_route_intent": "faq",
-      "confidence": 1.0,
+      "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2015.8,
+      "latency_ms": 1674.1,
       "correct": true
     },
     {
@@ -209,7 +206,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1811.7,
+      "latency_ms": 1699.8,
       "correct": true
     },
     {
@@ -220,7 +217,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1775.1,
+      "latency_ms": 1638.7,
       "correct": true
     },
     {
@@ -228,10 +225,10 @@
       "input": "取消我的会员预约",
       "expected_route_intent": "unsupported_action",
       "predicted_route_intent": "unsupported_action",
-      "confidence": 0.88,
+      "confidence": 0.89,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1714.6,
+      "latency_ms": 1654.6,
       "correct": true
     },
     {
@@ -239,10 +236,10 @@
       "input": "帮我把那个东西处理一下",
       "expected_route_intent": "unknown",
       "predicted_route_intent": "unknown",
-      "confidence": 0.9,
+      "confidence": 0.89,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1962.5,
+      "latency_ms": 1621.6,
       "correct": true
     },
     {
@@ -250,10 +247,10 @@
       "input": "订单 ORD-2026-10015 的收货地址改成北京市朝阳区测试路 99 号",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 0.87,
+      "confidence": 0.86,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1811.4,
+      "latency_ms": 1634.3,
       "correct": true
     },
     {
@@ -261,10 +258,10 @@
       "input": "帮我把订单 ORD-2026-10015 的收货地址改成上海市浦东新区",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 0.91,
+      "confidence": 0.87,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1961.7,
+      "latency_ms": 1641.7,
       "correct": true
     },
     {
@@ -272,10 +269,10 @@
       "input": "我的收货地址改成上海市浦东新区",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 1.0,
+      "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1779.1,
+      "latency_ms": 1677.5,
       "correct": true
     },
     {
@@ -283,10 +280,10 @@
       "input": "把我的手机号换成 18600001111",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 1.0,
+      "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1735.2,
+      "latency_ms": 1612.2,
       "correct": true
     },
     {
@@ -294,10 +291,10 @@
       "input": "订单 ORD-2026-10015 的联系电话换成 13900002222",
       "expected_route_intent": "account_profile_update",
       "predicted_route_intent": "account_profile_update",
-      "confidence": 0.96,
+      "confidence": 0.93,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1895.7,
+      "latency_ms": 1701.9,
       "correct": true
     },
     {
@@ -305,10 +302,10 @@
       "input": "给订单 ORD-2026-10015 加个备注：放驿站就行",
       "expected_route_intent": "order_mutation",
       "predicted_route_intent": "order_mutation",
-      "confidence": 0.99,
+      "confidence": 0.98,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2039.3,
+      "latency_ms": 1630.4,
       "correct": true
     },
     {
@@ -316,10 +313,10 @@
       "input": "给订单 ORD-2026-10015 开发票，抬头测试公司",
       "expected_route_intent": "order_mutation",
       "predicted_route_intent": "order_mutation",
-      "confidence": 0.98,
+      "confidence": 0.94,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2105.7,
+      "latency_ms": 1619.8,
       "correct": true
     },
     {
@@ -327,10 +324,10 @@
       "input": "订单 ORD-2026-10015 商品坏了，创建售后工单",
       "expected_route_intent": "order_mutation",
       "predicted_route_intent": "order_mutation",
-      "confidence": 0.99,
+      "confidence": 0.95,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2729.3,
+      "latency_ms": 1816.4,
       "correct": true
     },
     {
@@ -338,10 +335,10 @@
       "input": "订单 ORD-2026-10015 不要了，帮我取消",
       "expected_route_intent": "cancel_order_execute",
       "predicted_route_intent": "cancel_order_execute",
-      "confidence": 0.99,
+      "confidence": 0.97,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 3034.5,
+      "latency_ms": 1616.5,
       "correct": true
     },
     {
@@ -349,10 +346,10 @@
       "input": "订单 ORD-2026-10015 申请退款 88 元",
       "expected_route_intent": "refund_apply_execute",
       "predicted_route_intent": "refund_apply_execute",
-      "confidence": 0.99,
+      "confidence": 0.96,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1997.8,
+      "latency_ms": 1578.3,
       "correct": true
     },
     {
@@ -363,7 +360,7 @@
       "confidence": 1.0,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 1944.2,
+      "latency_ms": 1645.5,
       "correct": true
     },
     {
@@ -374,7 +371,7 @@
       "confidence": 0.99,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2305.8,
+      "latency_ms": 1686.3,
       "correct": true
     },
     {
@@ -382,10 +379,10 @@
       "input": "取消我的会员预约",
       "expected_route_intent": "unsupported_action",
       "predicted_route_intent": "unsupported_action",
-      "confidence": 0.86,
+      "confidence": 0.87,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2222.6,
+      "latency_ms": 1816.2,
       "correct": true
     },
     {
@@ -393,32 +390,32 @@
       "input": "把订单状态改成已发货",
       "expected_route_intent": "unsupported_action",
       "predicted_route_intent": "unsupported_action",
-      "confidence": 0.6,
+      "confidence": 0.72,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2007.0,
+      "latency_ms": 2584.9,
       "correct": true
     },
     {
       "id": "RI-035",
       "input": "帮我把订单里的收货地址记录删除",
       "expected_route_intent": "unsupported_action",
-      "predicted_route_intent": "unknown",
-      "confidence": 0.48,
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 0.64,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2040.8,
-      "correct": false
+      "latency_ms": 2739.2,
+      "correct": true
     },
     {
       "id": "RI-036",
       "input": "帮我处理一下那个订单",
       "expected_route_intent": "unknown",
       "predicted_route_intent": "unknown",
-      "confidence": 0.89,
+      "confidence": 0.74,
       "routing_backend": "jev",
       "routing_fallback": false,
-      "latency_ms": 2378.5,
+      "latency_ms": 2619.5,
       "correct": true
     }
   ]
