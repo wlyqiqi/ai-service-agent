@@ -41,8 +41,12 @@ _PROFILE_UPDATE_PATTERN = re.compile(
 def _latest_user_text(state: dict) -> str:
     messages = state.get("messages") or []
     for message in reversed(messages):
-        role = getattr(message, "type", "")
-        content = getattr(message, "content", "")
+        if isinstance(message, dict):
+            role = message.get("type", message.get("role", ""))
+            content = message.get("content", "")
+        else:
+            role = getattr(message, "type", "")
+            content = getattr(message, "content", "")
         if role == "human":
             return content if isinstance(content, str) else str(content)
     return ""

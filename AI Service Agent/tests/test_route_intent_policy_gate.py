@@ -105,6 +105,15 @@ def test_policy_gate_does_not_rescue_unsupported(enabled):
     assert update["allowed_tools"] == []
 
 
+def test_policy_gate_corrects_dict_message_address(enabled):
+    state = {
+        "route_intent": "order_mutation",
+        "messages": [{"type": "human", "content": "订单 ORD-2026-10015 的收货地址改成北京市朝阳区测试路 99 号"}],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "account_profile_update"
+    assert update["allowed_tools"] == ["update_address", "update_phone"]
+
 def test_policy_gate_uses_current_turn_only(enabled):
     state = {
         "route_intent": "order_mutation",

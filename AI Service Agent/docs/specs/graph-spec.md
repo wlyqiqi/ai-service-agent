@@ -154,7 +154,7 @@
 | 节点/子图 | 读 | 写 |
 |---|---|---|
 | GuardNode | `messages`（原始输入）、`user_id` | `guard_status` |
-| Router | `messages`、`user_id` | `capability`、`risk_level`、`confidence` |
+| Router | `messages`、`user_id` | v2: `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`；v1（兼容）: `capability`、`risk_level` |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
