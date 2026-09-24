@@ -1,7 +1,7 @@
 """LLM 节点提示词唯一权威存放处（禁止在流程代码内硬编码提示词文本）。
 
 命名约定见 graph-spec.md §0（`_llm` 后缀节点）；节点 -> 常量映射：
-- router_llm  -> ROUTER_SYSTEM
+- router_deepseek -> ROUTER_SYSTEM / ROUTE_INTENT_SYSTEM
 - select_llm  -> SELECT_SYSTEM_TEMPLATE
 - agent_llm   -> READ_SYSTEM_PROMPT（ReadGraph）
 Guard v1 为关键词/正则，无 LLM 提示词。

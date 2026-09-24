@@ -23,6 +23,13 @@ def _route_intent_result(route_intent: str, confidence: float, backend: str, fal
         "routing_fallback": fallback,
     }
 
+def _jev_fallback_result() -> dict:
+    return {
+        "execution_status": "routing",
+        "routing_backend": "jev",
+        "routing_fallback": True,
+    }
+
 class RouterSchema(BaseModel):
     capability: str
     risk_level: Literal["read", "mutation", "high_risk"]
@@ -163,35 +170,26 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
 
     return _route_intent_result(choice, confidence, "jev", False)
 
-def make_router(model) -> Callable[[dict], dict]:
-    """生产用 create_agent + json_object 结构化输出；fake model 下解析其 JSON 文本。
+def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict], dict]:
+    """DeepSeek fallback node; retry policy is attached by the root graph."""
+    system_prompt = ROUTE_INTENT_SYSTEM if route_intent_enabled else ROUTER_SYSTEM
+    agent = create_agent(_router_model(model), tools=[], system_prompt=system_prompt)
 
-    两条路径（真实 json_object / fake 直接 JSON 字符串）产出结构一致，均经 RouterSchema 校验。
-    """
-    settings = get_settings()
-    if settings.route_intent_enabled:
-        return make_route_intent_router(model)
+    if not route_intent_enabled:
+        def deepseek_route(state: dict) -> dict:
+            result = agent.invoke({"messages": state["messages"]})
+            payload = _parse_router_content(result["messages"][-1].content)
+            parsed = RouterSchema.model_validate(payload)
+            confidence = float(parsed.confidence)
+            threshold = get_settings().router_conf_threshold
+            return {
+                "capability": parsed.capability if confidence >= threshold else "unknown",
+                "risk_level": parsed.risk_level,
+                "confidence": confidence,
+                "execution_status": "routing",
+            }
 
-    agent = create_agent(_router_model(model), tools=[], system_prompt=ROUTER_SYSTEM)
-
-    def route(state: dict) -> dict:
-        result = agent.invoke({"messages": state["messages"]})
-        payload = _parse_router_content(result["messages"][-1].content)
-        parsed = RouterSchema.model_validate(payload)
-        conf = float(parsed.confidence)
-        threshold = get_settings().router_conf_threshold
-        return {
-            "capability": parsed.capability if conf >= threshold else "unknown",
-            "risk_level": parsed.risk_level,
-            "confidence": conf,
-            "execution_status": "routing",
-        }
-
-    return route
-
-def make_route_intent_router(model) -> Callable[[dict], dict]:
-    """Route Intent Router v2：Jev primary，DeepSeek fallback，Policy 仍负责路由。"""
-    agent = create_agent(_router_model(model), tools=[], system_prompt=ROUTE_INTENT_SYSTEM)
+        return deepseek_route
 
     def deepseek_route(state: dict) -> dict:
         result = agent.invoke({"messages": state["messages"]})
@@ -203,22 +201,25 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
             intent = "unknown"
         return _route_intent_result(intent, confidence, "deepseek", True)
 
+    return deepseek_route
+
+
+def make_jev_router() -> Callable[[dict], dict]:
+    """JEV primary node; failures transition to fallback without chain retry."""
     settings = get_settings()
-    if not settings.jev_enabled or not settings.jev_api_key or settings.fake_model:
-        return deepseek_route
 
     def route(state: dict) -> dict:
         try:
             with httpx.Client(timeout=settings.jev_timeout_seconds) as jev_client:
                 candidate = _classify_route_intent_with_jev(jev_client, state, settings)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
-            return deepseek_route(state)
-        if candidate is not None:
-            if route_intent_is_confident(
-                candidate["route_intent"], candidate["confidence"]
-            ):
-                return candidate
-            return _route_intent_result("unknown", candidate["confidence"], "jev", False)
-        return deepseek_route(state)
+            return _jev_fallback_result()
+        if candidate is None:
+            return _jev_fallback_result()
+        if route_intent_is_confident(
+            candidate["route_intent"], candidate["confidence"]
+        ):
+            return candidate
+        return _route_intent_result("unknown", candidate["confidence"], "jev", False)
 
     return route

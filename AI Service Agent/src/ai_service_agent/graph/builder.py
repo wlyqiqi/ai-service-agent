@@ -7,7 +7,8 @@ from langgraph.graph import END, START, StateGraph
 from ai_service_agent.config import get_settings, make_model
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.route_policy import resolve_route_policy
-from ai_service_agent.graph.router import make_router
+from ai_service_agent.graph.fault_tolerance import RETRY_DEEPSEEK_ROUTER
+from ai_service_agent.graph.router import make_deepseek_router, make_jev_router
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
@@ -92,13 +93,16 @@ def _safety_final(state: dict) -> dict:
     return {"messages": [AIMessage(content=GUARD_REJECT_TEXT)], "execution_status": "completed"}
 
 
+def _router_join(state: dict) -> dict:
+    return {}
+
+
 def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks=None):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
     """
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
-    router = make_router(model)
     guard = make_guard_node()
     read_graph = make_read_graph(model, tools, tool_hooks=tool_hooks)
     fallback = make_fallback_graph(model)
@@ -114,19 +118,48 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
         return {"execution_status": "completed"}
 
     builder = StateGraph(CustomerServiceState)
-    builder.add_node("router_llm", router)
+    settings = get_settings()
+    use_jev = (
+        settings.route_intent_enabled
+        and settings.jev_enabled
+        and bool(settings.jev_api_key)
+        and not settings.fake_model
+    )
+    if use_jev:
+        builder.add_node("router_jev", make_jev_router())
+        builder.add_node(
+            "router_deepseek",
+            make_deepseek_router(model, route_intent_enabled=True),
+            retry_policy=RETRY_DEEPSEEK_ROUTER,
+        )
+    else:
+        builder.add_node(
+            "router_deepseek",
+            make_deepseek_router(model, route_intent_enabled=settings.route_intent_enabled),
+            retry_policy=RETRY_DEEPSEEK_ROUTER,
+        )
     builder.add_node("guard", guard)
     builder.add_node("policy_gate", _policy_gate)
     builder.add_node("safety_final", _safety_final)
+    builder.add_node("router_join", _router_join)
     builder.add_node("read_graph", read_graph)
     builder.add_node("mutation_graph", mutation_graph)
     builder.add_node("high_risk_graph", high_risk_graph)
     builder.add_node("fallback", fallback)
     builder.add_node("final", finalize)
-    builder.add_edge(START, "router_llm")
     builder.add_edge(START, "guard")
-    builder.add_edge("router_llm", "policy_gate")
-    builder.add_edge("guard", "policy_gate")
+    if use_jev:
+        builder.add_edge(START, "router_jev")
+        builder.add_edge(["guard", "router_jev"], "router_join")
+    else:
+        builder.add_edge(START, "router_deepseek")
+        builder.add_edge(["guard", "router_deepseek"], "router_join")
+    builder.add_conditional_edges(
+        "router_join",
+        lambda state: "router_deepseek" if state.get("routing_fallback") else "policy_gate",
+        {"router_deepseek": "router_deepseek", "policy_gate": "policy_gate"},
+    )
+    builder.add_edge("router_deepseek", "policy_gate")
     builder.add_conditional_edges(
         "policy_gate", _guard_aware_target,
         {"safety_final": "safety_final", "read_graph": "read_graph", "fallback": "fallback", "mutation_graph": "mutation_graph", "high_risk_graph": "high_risk_graph"},
