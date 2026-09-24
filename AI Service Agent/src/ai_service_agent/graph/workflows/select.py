@@ -6,17 +6,17 @@ LLM 负责理解，确定性代码负责校验（AGENTS.md §18）：工具必�
 
 import json
 import uuid
-from typing import Callable, Literal
+from typing import Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import ValidationError
 from langgraph.config import get_stream_writer
 
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
-from ai_service_agent.prompts import SELECT_SYSTEM_TEMPLATE
+from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -90,15 +90,6 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
-def _build_select_schema(allowed_names: list[str]) -> type[BaseModel]:
-    """根据当前 tier 允许的工具 ID 动态生成 Literal 枚举 schema（方案1：with_structured_output）。"""
-    tool_type = Literal[tuple(sorted(allowed_names))]  # type: ignore[valid-type]
-    return create_model(
-        "SelectOutput",
-        tool=(tool_type, Field(description="英文工具ID，必须从允许列表中选择")),
-        args=(dict, Field(default_factory=dict, description="工具调用参数")),
-    )
-
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], dict]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
     # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
@@ -115,11 +106,10 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             line += f"\n  参数：{contract}"
         lines_by_name[t.name] = line
     is_fake = isinstance(model, FakeMessagesListChatModel)
-    if not is_fake:
-        select_schema = _build_select_schema(sorted(tier_allowed))
-        bound = model.with_structured_output(select_schema)
-    else:
+    if is_fake:
         bound = _bind_json(model)
+    else:
+        bound = model.bind_tools(tier_tools, tool_choice="any")
 
     def _reject(state: dict, reason: str) -> dict:
         try:
@@ -186,12 +176,16 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             except Exception:
                 return _reject(state, "select_parse_failed")
         else:
-            try:
-                result = bound.invoke(messages)
-                tool_name = result.tool
-                args = dict(result.args or {})
-            except Exception:
+            messages = [
+                SystemMessage(content=SELECT_BINDTOOLS_SYSTEM),
+                HumanMessage(content=last),
+            ]
+            result = bound.invoke(messages)
+            if not result.tool_calls:
                 return _reject(state, "select_parse_failed")
+            tool_call = result.tool_calls[0]
+            tool_name = tool_call["name"]
+            args = dict(tool_call.get("args") or {})
 
         if tool_name == "cancel_order" and not args.get("order_id"):
             candidates = find_own_cancellable_paid_orders(state.get("user_id", ""))

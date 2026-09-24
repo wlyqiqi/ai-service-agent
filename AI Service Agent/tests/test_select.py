@@ -1,10 +1,13 @@
 """select 节点字段契约（2026-09-15 真机冒烟修复）：系统提示必须携带 schema 字段清单。"""
 
-from langchain_core.messages import HumanMessage
+from unittest.mock import MagicMock
+
+from langchain_core.messages import AIMessage, HumanMessage
 
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
+from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
 
 
 class RecordingSelectModel(ToolCallingFakeModel):
@@ -80,3 +83,30 @@ def test_select_system_template_examples_match_tier():
     assert '"tool": "update_address"' in model.seen_system
     assert '"tool": "refund_apply"' not in model.seen_system   # 跨档示例不注入
     assert "参数不完整" in model.seen_system                     # 缺参示例
+
+
+def test_select_real_model_uses_bind_tools():
+    bound_model = MagicMock()
+    bound_model.invoke.return_value = AIMessage(
+        content="",
+        tool_calls=[{"name": "update_phone", "args": {"phone": "13800138000"}, "id": "call_1"}],
+    )
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+
+    tool = MagicMock()
+    tool.name = "update_phone"
+    registry = ToolRegistry()
+    registry.register(
+        ToolMeta(name="update_phone", description="修改联系电话", min_risk_level="mutation"),
+        tool,
+    )
+    node = make_select_node(model, "mutation", [tool], registry)
+    output = node({
+        "messages": [HumanMessage(content="把手机号改成13800138000")],
+        "user_id": "u1",
+        "context": {},
+    })
+
+    model.bind_tools.assert_called_once()
+    assert output["context"]["pending_tool"]["tool"] == "update_phone"
