@@ -21,6 +21,11 @@ def load_cases(path: Path) -> list[dict]:
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             rows.append(json.loads(line))
+    required_keys = {"id", "input", "expected_route_intent"}
+    for index, row in enumerate(rows):
+        missing = required_keys - set(row)
+        if missing:
+            raise ValueError(f"route-intent eval row {index} missing required keys: {sorted(missing)}")
     ids = [row["id"] for row in rows]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate route-intent eval id")

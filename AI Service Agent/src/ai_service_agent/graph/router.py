@@ -14,6 +14,15 @@ from ai_service_agent.graph.route_policy import (
 )
 from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM, ROUTER_SYSTEM
 
+def _route_intent_result(route_intent: str, confidence: float, backend: str, fallback: bool) -> dict:
+    return {
+        "route_intent": route_intent,
+        "confidence": confidence,
+        "execution_status": "routing",
+        "routing_backend": backend,
+        "routing_fallback": fallback,
+    }
+
 class RouterSchema(BaseModel):
     capability: str
     risk_level: Literal["read", "mutation", "high_risk"]
@@ -151,13 +160,7 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
     if probabilities[choice] < max(probabilities.values()):
         return None
 
-    return {
-        "route_intent": choice,
-        "confidence": confidence,
-        "execution_status": "routing",
-        "routing_backend": "jev",
-        "routing_fallback": False,
-    }
+    return _route_intent_result(choice, confidence, "jev", False)
 
 def make_router(model) -> Callable[[dict], dict]:
     """生产用 create_agent + json_object 结构化输出；fake model 下解析其 JSON 文本。
@@ -197,13 +200,7 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
         confidence = float(parsed.confidence)
         if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
             intent = "unknown"
-        return {
-            "route_intent": intent,
-            "confidence": confidence,
-            "execution_status": "routing",
-            "routing_backend": "deepseek",
-            "routing_fallback": True,
-        }
+        return _route_intent_result(intent, confidence, "deepseek", True)
 
     settings = get_settings()
     if not settings.jev_enabled or not settings.jev_api_key or settings.fake_model:
@@ -220,13 +217,7 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
                 candidate["route_intent"], candidate["confidence"]
             ):
                 return candidate
-            return {
-                "route_intent": "unknown",
-                "confidence": candidate["confidence"],
-                "execution_status": "routing",
-                "routing_backend": "jev",
-                "routing_fallback": False,
-            }
+            return _route_intent_result("unknown", candidate["confidence"], "jev", False)
         return deepseek_route(state)
 
     return route

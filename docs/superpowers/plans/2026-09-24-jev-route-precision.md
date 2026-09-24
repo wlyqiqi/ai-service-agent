@@ -1,6 +1,6 @@
 # JEV Route Precision Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Improve JEV route-intent accuracy for `account_profile_update` vs `order_mutation` while preserving the current single-router architecture and adding narrow deterministic safety at Policy Gate.
 
@@ -33,7 +33,7 @@
 - Produces: two Router-only observability fields in `CustomerServiceState`: `routing_backend: str | None` and `routing_fallback: bool`.
 - Consumes: no behavioral state; later Router tasks write these fields.
 
-- [ ] **Step 1: Add the fields to state**
+- [x] **Step 1: Add the fields to state**
 
 In `CustomerServiceState`, immediately after `confidence`, add:
 
@@ -42,7 +42,7 @@ In `CustomerServiceState`, immediately after `confidence`, add:
     routing_fallback: bool
 ```
 
-- [ ] **Step 2: Update state spec**
+- [x] **Step 2: Update state spec**
 
 In `docs/specs/state-spec.md`, next to `confidence`, add:
 
@@ -57,7 +57,7 @@ Then add this bullet to the v2 Router constraints:
   - `routing_backend` / `routing_fallback` 是 Router 观测字段；Policy Gate 与子图不得将其作为路由依据。
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/ai_service_agent/graph/state.py docs/specs/state-spec.md
@@ -94,7 +94,7 @@ DeepSeek valid + confidence sufficient -> DeepSeek result; backend=deepseek; fal
 DeepSeek confidence insufficient -> unknown; backend=deepseek; fallback=true
 ```
 
-- [ ] **Step 1: Update the low-confidence test to fail first**
+- [x] **Step 1: Update the low-confidence test to fail first**
 
 In `tests/test_route_intent_router.py`, replace `test_jev_low_confidence_falls_back_to_deepseek` with:
 
@@ -113,7 +113,7 @@ def test_jev_low_confidence_returns_unknown_without_deepseek(jev_route_settings,
     assert out["routing_fallback"] is False
 ```
 
-- [ ] **Step 2: Add backend-field assertions to existing tests**
+- [x] **Step 2: Add backend-field assertions to existing tests**
 
 For the successful JEV test, assert:
 
@@ -136,7 +136,7 @@ assert out["routing_backend"] == "deepseek"
 assert out["routing_fallback"] is True
 ```
 
-- [ ] **Step 3: Run the focused test**
+- [x] **Step 3: Run the focused test**
 
 Run:
 
@@ -146,7 +146,7 @@ uv run --no-sync pytest tests/test_route_intent_router.py -q
 
 Expected: FAIL because Router does not yet return the new fields or use direct low-confidence fallback.
 
-- [ ] **Step 4: Implement Router output and fallback behavior**
+- [x] **Step 4: Implement Router output and fallback behavior**
 
 In `_classify_route_intent_with_jev`, extend the successful return value:
 
@@ -200,7 +200,7 @@ with:
         return deepseek_route(state)
 ```
 
-- [ ] **Step 5: Run Router tests**
+- [x] **Step 5: Run Router tests**
 
 Run:
 
@@ -210,7 +210,7 @@ uv run --no-sync pytest tests/test_route_intent_router.py tests/test_route_polic
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ai_service_agent/graph/router.py tests/test_route_intent_router.py
@@ -227,7 +227,7 @@ git commit -m "feat: classify router backend and stop deepseek low-confidence re
 - Consumes: `_JEV_ROUTE_INTENT_QUESTION`.
 - Produces: a single JEV `Choice(route_intent)` with explicit profile-update and unsupported-action boundaries.
 
-- [ ] **Step 1: Add a failing criteria boundary test**
+- [x] **Step 1: Add a failing criteria boundary test**
 
 Add to `tests/test_route_intent_router.py`:
 
@@ -246,7 +246,7 @@ def test_jev_route_choice_pins_profile_update_boundary():
     assert "清空订单历史" in criteria["unsupported_action"]
 ```
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 Run:
 
@@ -256,7 +256,7 @@ uv run --no-sync pytest tests/test_route_intent_router.py::test_jev_route_choice
 
 Expected: FAIL because the current criteria are less explicit.
 
-- [ ] **Step 3: Update `_JEV_ROUTE_INTENT_QUESTION`**
+- [x] **Step 3: Update `_JEV_ROUTE_INTENT_QUESTION`**
 
 Replace `account_profile_update`, `order_mutation`, and `unsupported_action` values:
 
@@ -276,7 +276,7 @@ Replace `account_profile_update`, `order_mutation`, and `unsupported_action` val
 
 Keep all other Choice options unchanged.
 
-- [ ] **Step 4: Run Router tests**
+- [x] **Step 4: Run Router tests**
 
 Run:
 
@@ -286,7 +286,7 @@ uv run --no-sync pytest tests/test_route_intent_router.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/graph/router.py tests/test_route_intent_router.py
@@ -302,7 +302,7 @@ git commit -m "fix: pin jev profile update and unsupported action boundaries"
 - Consumes: the existing JSONL schema with `id`, `input`, and `expected_route_intent`.
 - Produces: 36 deterministic route-intent cases consumed by Task 5.
 
-- [ ] **Step 1: Append the missing boundary and confusion cases**
+- [x] **Step 1: Append the missing boundary and confusion cases**
 
 Append these lines to `tests/evals/router_benchmark/route_intent.jsonl`:
 
@@ -325,7 +325,7 @@ Append these lines to `tests/evals/router_benchmark/route_intent.jsonl`:
 {"id":"RI-036","input":"帮我处理一下那个订单","expected_route_intent":"unknown"}
 ```
 
-- [ ] **Step 2: Validate the dataset loads and has no duplicate IDs**
+- [x] **Step 2: Validate the dataset loads and has no duplicate IDs**
 
 Run:
 
@@ -335,7 +335,7 @@ uv run --no-sync python -c "import json; from pathlib import Path; rows=[json.lo
 
 Expected: `route-intent dataset ok`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/evals/router_benchmark/route_intent.jsonl
@@ -351,7 +351,7 @@ git commit -m "test: expand route intent boundary evaluation set"
 - Consumes: `tests/evals/router_benchmark/route_intent.jsonl`, `make_router()`, `make_model()`, and Router fields `route_intent`, `confidence`, `routing_backend`, and `routing_fallback`.
 - Produces: CLI `python scripts/eval_route_intent.py --out <json>` with summary metrics.
 
-- [ ] **Step 1: Create the eval runner**
+- [x] **Step 1: Create the eval runner**
 
 Create `scripts/eval_route_intent.py` with:
 
@@ -514,7 +514,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2: Run the offline baseline eval**
+- [x] **Step 2: Run the offline baseline eval**
 
 Run:
 
@@ -524,7 +524,7 @@ uv run --no-sync python scripts/eval_route_intent.py --out scripts/route_intent_
 
 Expected: the command exits 0 and prints the summary. Before live JEV prompt changes, this is the measurable baseline.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add scripts/eval_route_intent.py
@@ -541,7 +541,7 @@ git commit -m "test: add route intent accuracy and latency evaluator"
 - Consumes: Router v2 output `route_intent` and the current turn's latest user message.
 - Produces: deterministic normalization only from `order_mutation` to `account_profile_update`; all other intents remain unchanged.
 
-- [ ] **Step 1: Add failing Policy Gate tests**
+- [x] **Step 1: Add failing Policy Gate tests**
 
 Add to `tests/test_route_intent_policy_gate.py`:
 
@@ -603,7 +603,7 @@ def test_policy_gate_uses_current_turn_only(enabled):
     assert update["route_intent"] == "order_mutation"
 ```
 
-- [ ] **Step 2: Run Policy Gate tests**
+- [x] **Step 2: Run Policy Gate tests**
 
 Run:
 
@@ -613,7 +613,7 @@ uv run --no-sync pytest tests/test_route_intent_policy_gate.py -q
 
 Expected: FAIL because the current `_policy_gate` does not inspect the current user text.
 
-- [ ] **Step 3: Implement the narrow correction**
+- [x] **Step 3: Implement the narrow correction**
 
 In `src/ai_service_agent/graph/builder.py`, add:
 
@@ -665,7 +665,7 @@ def _policy_gate(state: dict) -> dict:
     }
 ```
 
-- [ ] **Step 4: Run Policy Gate and graph integration tests**
+- [x] **Step 4: Run Policy Gate and graph integration tests**
 
 Run:
 
@@ -675,7 +675,7 @@ uv run --no-sync pytest tests/test_route_intent_policy_gate.py tests/test_route_
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/graph/builder.py tests/test_route_intent_policy_gate.py
@@ -692,7 +692,7 @@ git commit -m "fix: correct profile update routing at policy gate"
 - Consumes: Tasks 1–6.
 - Produces: authoritative Router fallback and Policy Gate normalization rules.
 
-- [ ] **Step 1: Update Router and Policy Gate spec**
+- [x] **Step 1: Update Router and Policy Gate spec**
 
 In `docs/specs/graph-spec.md`, update the Router v2 rules:
 
@@ -709,7 +709,7 @@ In `§5 Policy 映射（纯确定性）`, add:
   - 该归一化不得 rescue `unsupported_action` 或 `unknown`，不得调用 LLM，不得扩大 `allowed_tools`。
 ```
 
-- [ ] **Step 2: Create a decision record**
+- [x] **Step 2: Create a decision record**
 
 Create `docs/decisions/2026-09-24-jev-route-precision.md`:
 
@@ -737,7 +737,7 @@ Real E2E testing found that profile-update utterances containing an order id can
 - No permission or execution decision inside Router.
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/specs/graph-spec.md docs/decisions/2026-09-24-jev-route-precision.md
@@ -753,7 +753,7 @@ git commit -m "docs: define jev router precision rules"
 - Consumes: all prior tasks.
 - Produces: final verification evidence.
 
-- [ ] **Step 1: Run route-intent evaluation**
+- [x] **Step 1: Run route-intent evaluation**
 
 Run:
 
@@ -763,7 +763,7 @@ uv run --no-sync python scripts/eval_route_intent.py --out scripts/route_intent_
 
 Expected: exit 0; `account_profile_update_recall` is `1.0`, `account_profile_update_to_order_mutation_rate` is `0.0`, `cancel_order_execute_recall` and `refund_apply_execute_recall` are both `1.0`, and `unsupported_action_mutation_or_high_risk_leakage` is `0.0`.
 
-- [ ] **Step 2: Run Router and Policy Gate focused tests**
+- [x] **Step 2: Run Router and Policy Gate focused tests**
 
 Run:
 
@@ -773,7 +773,7 @@ uv run --no-sync pytest tests/test_route_intent_router.py tests/test_route_inten
 
 Expected: PASS.
 
-- [ ] **Step 3: Run complete regression**
+- [x] **Step 3: Run complete regression**
 
 Run:
 
@@ -783,7 +783,7 @@ uv run --no-sync pytest -q
 
 Expected: all tests pass.
 
-- [ ] **Step 4: Validate graph**
+- [x] **Step 4: Validate graph**
 
 Run:
 
@@ -793,7 +793,7 @@ langgraph validate
 
 Expected: valid.
 
-- [ ] **Step 5: Run minimal live Router verification**
+- [x] **Step 5: Run minimal live Router verification**
 
 With `.env` configured for JEV, run the eval once more and retain the output:
 
@@ -803,7 +803,7 @@ uv run --no-sync python scripts/eval_route_intent.py --out scripts/route_intent_
 
 Expected: exit 0; `backend_counts` shows JEV as the primary backend; fallback rate is measured but not used to gate the implementation.
 
-- [ ] **Step 6: Commit verification artifacts**
+- [x] **Step 6: Commit verification artifacts**
 
 Only commit deterministic result artifacts if they are already part of the repository convention; do not commit `.env` or machine-specific temporary files.
 

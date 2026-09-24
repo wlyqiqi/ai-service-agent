@@ -114,6 +114,11 @@ def test_policy_gate_corrects_dict_message_address(enabled):
     assert update["route_intent"] == "account_profile_update"
     assert update["allowed_tools"] == ["update_address", "update_phone"]
 
+def test_policy_gate_empty_messages_no_correction(enabled):
+    update = _policy_gate({"route_intent": "order_mutation", "messages": []})
+    assert update["route_intent"] == "order_mutation"
+    assert update["allowed_tools"] == ["update_order_note", "create_invoice", "create_service_ticket"]
+
 def test_policy_gate_uses_current_turn_only(enabled):
     state = {
         "route_intent": "order_mutation",
