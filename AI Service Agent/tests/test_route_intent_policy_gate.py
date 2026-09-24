@@ -1,5 +1,7 @@
 import pytest
 
+from langchain_core.messages import HumanMessage
+
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.builder import _guard_aware_target, _policy_gate
 
@@ -59,3 +61,71 @@ def test_feature_off_uses_legacy_policy(monkeypatch):
 def _route_target_legacy():
     from ai_service_agent.graph.builder import _route_target
     return _route_target({"capability": "unknown", "risk_level": "read"})
+
+
+def test_policy_gate_corrects_address_mutation(enabled):
+    state = {
+        "route_intent": "order_mutation",
+        "messages": [HumanMessage(content="订单 ORD-2026-10015 的收货地址改成北京市朝阳区测试路 99 号")],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "account_profile_update"
+    assert update["target_graph"] == "mutation_graph"
+    assert update["allowed_tools"] == ["update_address", "update_phone"]
+
+
+def test_policy_gate_corrects_phone_mutation(enabled):
+    state = {
+        "route_intent": "order_mutation",
+        "messages": [HumanMessage(content="订单 ORD-2026-10015 的联系电话换成 13900002222")],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "account_profile_update"
+    assert update["allowed_tools"] == ["update_address", "update_phone"]
+
+
+def test_policy_gate_does_not_correct_order_note(enabled):
+    state = {
+        "route_intent": "order_mutation",
+        "messages": [HumanMessage(content="给订单 ORD-2026-10015 加个备注：放驿站就行")],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "order_mutation"
+    assert update["allowed_tools"] == ["update_order_note", "create_invoice", "create_service_ticket"]
+
+
+def test_policy_gate_does_not_rescue_unsupported(enabled):
+    state = {
+        "route_intent": "unsupported_action",
+        "messages": [HumanMessage(content="帮我把订单里的收货地址记录删除")],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "unsupported_action"
+    assert update["target_graph"] == "fallback"
+    assert update["allowed_tools"] == []
+
+
+def test_policy_gate_corrects_dict_message_address(enabled):
+    state = {
+        "route_intent": "order_mutation",
+        "messages": [{"type": "human", "content": "订单 ORD-2026-10015 的收货地址改成北京市朝阳区测试路 99 号"}],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "account_profile_update"
+    assert update["allowed_tools"] == ["update_address", "update_phone"]
+
+def test_policy_gate_empty_messages_no_correction(enabled):
+    update = _policy_gate({"route_intent": "order_mutation", "messages": []})
+    assert update["route_intent"] == "order_mutation"
+    assert update["allowed_tools"] == ["update_order_note", "create_invoice", "create_service_ticket"]
+
+def test_policy_gate_uses_current_turn_only(enabled):
+    state = {
+        "route_intent": "order_mutation",
+        "messages": [
+            HumanMessage(content="我要修改收货地址"),
+            HumanMessage(content="给订单 ORD-2026-10015 加个备注：放驿站就行"),
+        ],
+    }
+    update = _policy_gate(state)
+    assert update["route_intent"] == "order_mutation"

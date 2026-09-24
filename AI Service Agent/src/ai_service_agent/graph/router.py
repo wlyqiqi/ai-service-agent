@@ -14,6 +14,15 @@ from ai_service_agent.graph.route_policy import (
 )
 from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM, ROUTER_SYSTEM
 
+def _route_intent_result(route_intent: str, confidence: float, backend: str, fallback: bool) -> dict:
+    return {
+        "route_intent": route_intent,
+        "confidence": confidence,
+        "execution_status": "routing",
+        "routing_backend": backend,
+        "routing_fallback": fallback,
+    }
+
 class RouterSchema(BaseModel):
     capability: str
     risk_level: Literal["read", "mutation", "high_risk"]
@@ -37,11 +46,17 @@ _JEV_ROUTE_INTENT_QUESTION = {
             "order_query": "根据订单号查询某一笔订单",
             "my_orders": "查询当前用户名下的订单列表",
             "shipment_query": "查询物流或配送进度",
-            "account_profile_update": "修改收货地址或联系电话",
+            "account_profile_update": (
+                "修改收货地址、联系电话或手机号。"
+                "即使输入包含订单号，也不能因订单号进入 order_mutation。"
+            ),
             "order_mutation": "修改订单备注、开发票或创建售后工单",
             "cancel_order_execute": "用户明确要求执行取消订单",
             "refund_apply_execute": "用户明确要求执行退款申请",
-            "unsupported_action": "当前系统没有对应工具的动作",
+            "unsupported_action": (
+                "当前系统没有对应工具的动作。"
+                "不要把取消预约、清空订单历史、订单所有权转移或人工流程类请求映射到 mutation。"
+            ),
             "unknown": "无法判断、缺少上下文、模糊或不在支持范围内",
         },
     }
@@ -145,11 +160,7 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
     if probabilities[choice] < max(probabilities.values()):
         return None
 
-    return {
-        "route_intent": choice,
-        "confidence": confidence,
-        "execution_status": "routing",
-    }
+    return _route_intent_result(choice, confidence, "jev", False)
 
 def make_router(model) -> Callable[[dict], dict]:
     """生产用 create_agent + json_object 结构化输出；fake model 下解析其 JSON 文本。
@@ -189,11 +200,7 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
         confidence = float(parsed.confidence)
         if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
             intent = "unknown"
-        return {
-            "route_intent": intent,
-            "confidence": confidence,
-            "execution_status": "routing",
-        }
+        return _route_intent_result(intent, confidence, "deepseek", True)
 
     settings = get_settings()
     if not settings.jev_enabled or not settings.jev_api_key or settings.fake_model:
@@ -205,10 +212,12 @@ def make_route_intent_router(model) -> Callable[[dict], dict]:
                 candidate = _classify_route_intent_with_jev(jev_client, state, settings)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
             return deepseek_route(state)
-        if candidate is not None and route_intent_is_confident(
-            candidate["route_intent"], candidate["confidence"]
-        ):
-            return candidate
+        if candidate is not None:
+            if route_intent_is_confident(
+                candidate["route_intent"], candidate["confidence"]
+            ):
+                return candidate
+            return _route_intent_result("unknown", candidate["confidence"], "jev", False)
         return deepseek_route(state)
 
     return route

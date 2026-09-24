@@ -17,6 +17,8 @@ class CustomerServiceState(TypedDict):
     allowed_tools: list[str]       # Policy 派生的候选工具边界
     requires_approval: bool        # Policy 派生的高风险审批标记
     confidence: float
+    routing_backend: str | None   # Router 观测字段：jev / deepseek，不参与路由
+    routing_fallback: bool        # Router 观测字段：是否使用 DeepSeek fallback
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（每轮覆盖，见 graph-spec.md §2）
     context: dict                  # 业务上下文：订单、账户、工单等
     pending_approval: ApprovalRequest | None
@@ -51,3 +53,4 @@ class CustomerServiceState(TypedDict):
 
 - 新增字段必须在此登记，并同步更新 `graph-spec.md` 中读写该字段的节点清单。
 - 禁止在子图内引入与总图重名的私有状态字段（避免 reducer 冲突）。
+- `routing_backend` / `routing_fallback` 是 Router 观测字段；Policy Gate 与子图不得将其作为路由依据。
