@@ -9,6 +9,7 @@ from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_mes
 @pytest.fixture
 def route_intent_settings(monkeypatch):
     monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
+    monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     yield get_settings()
     get_settings.cache_clear()
@@ -18,6 +19,7 @@ def route_intent_settings(monkeypatch):
 def jev_route_settings(route_intent_settings, monkeypatch):
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    monkeypatch.setenv("FAKE_MODEL", "false")
     get_settings.cache_clear()
     yield get_settings()
     get_settings.cache_clear()
