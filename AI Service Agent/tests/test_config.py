@@ -82,11 +82,8 @@ def test_lightrag_defaults():
 
 def test_route_intent_feature_defaults_off(monkeypatch):
     monkeypatch.delenv("JEV_ROUTE_INTENT_ENABLED", raising=False)
-    get_settings.cache_clear()
-    try:
-        assert get_settings().route_intent_enabled is False
-    finally:
-        get_settings.cache_clear()
+    settings = Settings(_env_file=None)
+    assert settings.route_intent_enabled is False
 
 
 def test_route_intent_feature_can_be_enabled(monkeypatch):
