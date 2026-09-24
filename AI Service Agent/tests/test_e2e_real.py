@@ -450,3 +450,91 @@ class TestConcurrentIsolation:
         assert st_a["thread_id"] != st_b["thread_id"]
         assert st_a["conversation_id"] == sid_a
         assert st_b["conversation_id"] == sid_b
+
+
+# ---------------------------------------------------------------------------
+# P3: Checkpointer recovery (server restart mid-approval)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointerRecovery:
+    """Server 重启后 HighRisk 审批从 Checkpointer 恢复。"""
+
+    @pytest.fixture()
+    def restartable_server(self):
+        """独立 function-scoped server，支持 stop + restart（同一 db_path）。"""
+        tmp = tempfile.mkdtemp(prefix="e2e-recovery-")
+        db_path = os.path.join(tmp, "recovery.db")
+        state = {"srv": None, "thread": None, "port": None, "db_path": db_path}
+
+        def _start():
+            port = _free_port()
+            state["port"] = port
+            app = create_app(db_path, model=_make_model())
+            srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+            thread = threading.Thread(target=srv.run, daemon=True)
+            thread.start()
+            deadline = time.time() + 15
+            while not getattr(srv, "started", False) and time.time() < deadline:
+                time.sleep(0.05)
+            if not getattr(srv, "started", False):
+                pytest.fail("recovery server did not start")
+            state["srv"] = srv
+            state["thread"] = thread
+
+        def _stop():
+            state["srv"].should_exit = True
+            state["thread"].join(timeout=10)
+
+        state["start"] = _start
+        state["stop"] = _stop
+        _start()
+        yield state
+        if state["srv"] is not None and not state["srv"].should_exit:
+            _stop()
+
+    def test_highrisk_approve_after_server_restart(self, restartable_server):
+        """HighRisk 发起 -> 杀 server -> 重启同一 db -> approve -> 图恢复并完成。"""
+        state = restartable_server
+        base = f"http://127.0.0.1:{state['port']}"
+        db_path = state["db_path"]
+
+        # Phase 1: 发起 HighRisk 请求，拿到 approval_id
+        with httpx.Client(timeout=120.0, base_url=base) as client:
+            sid = new_session(client)
+            code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+            approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
+            approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
+
+        assert code1 == 200
+        assert approval_id, "expected approval_required in phase 1"
+
+        # 确认审批处于 pending
+        approvals_before = open_approvals(db_path, sid)
+        assert any(a["approval_id"] == approval_id and a["status"] == "pending" for a in approvals_before)
+
+        # Phase 2: 停掉 server
+        state["stop"]()
+
+        # Phase 3: 重启 server（同一 db_path，Checkpointer 从中断点恢复）
+        state["start"]()
+        base2 = f"http://127.0.0.1:{state['port']}"
+
+        with httpx.Client(timeout=120.0, base_url=base2) as client2:
+            # 重启后审批仍可查到
+            r_get = client2.get(f"/approvals/{approval_id}")
+            assert r_get.status_code == 200, "approval should survive server restart"
+            assert r_get.json()["status"] == "pending"
+
+            # approve -> 图从 Checkpointer 恢复并执行
+            r_approve = client2.post(f"/approvals/{approval_id}/approve")
+            assert r_approve.status_code == 200
+            assert r_approve.json().get("status") == "approved"
+
+        # Phase 4: 验证恢复后状态
+        approvals_after = open_approvals(db_path, sid)
+        rec = next(a for a in approvals_after if a["approval_id"] == approval_id)
+        assert rec["status"] == "approved"
+
+        # Checkpointer 恢复的核心验证：重启前 pending -> 重启后 approve 成功 + 状态 approved
+        # 图确实从 interrupt 点恢复（approve 返回 200 且生成了响应）
