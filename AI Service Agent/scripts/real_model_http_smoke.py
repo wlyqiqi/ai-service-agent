@@ -24,31 +24,32 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from ai_service_agent.testing import ToolCallingFakeModel
 
 from ai_service_agent.config import make_model
+from ai_service_agent.graph.workflows.copy import _TOOL_ACTION_LABELS as TOOL_ACTION_LABELS
 from ai_service_agent.harness.server import create_app
 
 TOOL_MATRIX = [
     # ---- 命中组（expect=hit 计入命中率统计）----
-    {"tool": "update_address", "input": "收货地址想改一下，改成上海市浦东新区张江高科",
-     "args": {"address": "上海市浦东新区张江高科"}, "expect": "hit"},
+    {"tool": "update_address", "input": "订单 ORD-PAID-1 的收货地址改成上海市浦东新区张江高科",
+     "args": {"order_id": "ORD-PAID-1", "address": "上海市浦东新区张江高科"}, "expect": "hit"},
     {"tool": "update_phone", "input": "手机号换成 18600001111 吧",
      "args": {"phone": "18600001111"}, "expect": "hit"},
-    {"tool": "update_order_note", "input": "帮我在订单上写句话：工作日晚上六点后配送",
-     "args": {"note": "工作日晚上六点后配送"}, "expect": "hit"},
-    {"tool": "create_invoice", "input": "给订单 88888 开张发票，金额 350 元，公司是蓝海贸易有限公司，税号 91310115MA1K4XXXXX",
-     "args": {"order_id": "88888", "amount": 350.0, "company": "蓝海贸易有限公司", "tax_no": "91310115MA1K4XXXXX"}, "expect": "hit"},
-    {"tool": "create_service_ticket", "input": "我要提交售后，订单 77777，问题是想退货但包装丢了",
-     "args": {"order_id": "77777", "reason": "想退货但包装丢了"}, "expect": "hit"},
-    {"tool": "cancel_order", "input": "帮我退掉订单 66666，不想要了",
-     "args": {"order_id": "66666", "reason": "不想要了"}, "expect": "hit"},
-    {"tool": "refund_apply", "input": "订单 55555 我要退款 88 元，商品有质量问题",
-     "args": {"order_id": "55555", "amount": 88.0}, "expect": "hit"},
+    {"tool": "update_order_note", "input": "帮我把订单 ORD-PAID-1 的备注改成：工作日晚上六点后配送",
+     "args": {"order_id": "ORD-PAID-1", "note": "工作日晚上六点后配送"}, "expect": "hit"},
+    {"tool": "create_invoice", "input": "给订单 ORD-PAID-1 开张发票，金额 99 元，公司是蓝海贸易有限公司，税号 91310115MA1K4XXXXX",
+     "args": {"order_id": "ORD-PAID-1", "amount": 99.0, "company": "蓝海贸易有限公司", "tax_no": "91310115MA1K4XXXXX"}, "expect": "hit"},
+    {"tool": "create_service_ticket", "input": "我要给订单 ORD-PAID-1 提交售后，问题是想退货但包装丢了",
+     "args": {"order_id": "ORD-PAID-1", "reason": "想退货但包装丢了"}, "expect": "hit"},
+    {"tool": "cancel_order", "input": "订单 ORD-PAID-1 不想要了，帮我取消",
+     "args": {"order_id": "ORD-PAID-1"}, "expect": "hit"},
+    {"tool": "refund_apply", "input": "订单 ORD-PAID-1 我要退款 88 元，商品有质量问题",
+     "args": {"order_id": "ORD-PAID-1", "amount": 88.0}, "expect": "hit"},
     # ---- 边界/歧义组（expect 决定统计口径；工具名相似不跨选、售后/退款漂移、中文数字金额）----
     {"tool": "update_phone", "input": "把收货手机号改成 13900002222",
      "args": {"phone": "13900002222"}, "expect": "hit"},
-    {"tool": "create_service_ticket", "input": "订单 44444 坏了，申请售后处理",
-     "args": {"order_id": "44444", "reason": "坏了"}, "expect": "hit"},
-    {"tool": "refund_apply", "input": "订单 33333 申请退款一百五十块",
-     "args": {"order_id": "33333", "amount": 150.0}, "expect": "hit"},
+    {"tool": "create_service_ticket", "input": "订单 ORD-PAID-1 坏了，申请售后处理",
+     "args": {"order_id": "ORD-PAID-1", "reason": "坏了"}, "expect": "hit"},
+    {"tool": "refund_apply", "input": "订单 ORD-PAID-1 申请退款八十元",
+     "args": {"order_id": "ORD-PAID-1", "amount": 80.0}, "expect": "hit"},
     # ---- 观察组（不计入命中率）----
     {"tool": "create_invoice", "input": "我要开发票", "args": {}, "expect": "clarify"},
     {"tool": None, "input": "帮我把订单改成已发货", "args": {}, "expect": "rejected"},
@@ -233,6 +234,11 @@ def graph_state(db_path: str, thread_id: str) -> dict:
             return {
                 "interrupts": [getattr(it, "value", None) for it in st.interrupts],
                 "execution_status": st.values.get("execution_status"),
+                "router": {
+                    "capability": st.values.get("capability"),
+                    "risk_level": st.values.get("risk_level"),
+                },
+                "pending_tool": (st.values.get("context") or {}).get("pending_tool"),
                 "clarify_count": (st.values.get("context") or {}).get("clarify_count", 0),
                 "handoff": st.values.get("handoff"),
                 "last_assistant": assistant_tail[-1] if assistant_tail else None,
@@ -475,9 +481,28 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
 
 
 def _summary_parts(summary: str):
-    """解析 confirmation/approval summary：'即将执行「tool」，参数：{dict}' -> (tool, args)。"""
+    """解析 confirmation/approval summary：'即将执行「tool」，参数：{dict}' -> (tool, args)。
+
+    Mutation confirmation summaries intentionally show Chinese action labels to users,
+    while approval summaries use the English tool ID. Reverse-map labels so both paths
+    return the same machine-readable tool ID used by ToolMatrix comparisons.
+    """
+    high_risk_match = re.match(r"(取消订单|退款申请)\s+([^｜]+)", summary or "")
+    if high_risk_match:
+        tool = "cancel_order" if high_risk_match.group(1) == "取消订单" else "refund_apply"
+        args = {"order_id": high_risk_match.group(2)}
+        amount_match = re.search(r"退款金额\s+([0-9]+(?:\.[0-9]+)?)", summary)
+        if amount_match:
+            args["amount"] = float(amount_match.group(1))
+        return tool, args
+
     m = re.search(r"「(.*?)」", summary or "")
     tool = m.group(1) if m else None
+    if tool is not None:
+        tool = next(
+            (tool_id for tool_id, label in TOOL_ACTION_LABELS.items() if label == tool),
+            tool,
+        )
     args = None
     am = re.search(r"参数：(\{.*\})", summary or "")
     if am:
@@ -520,7 +545,7 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
     hit = 0
     normal = 0
     for case in TOOL_MATRIX:
-        sid, _ = new_session(client)
+        sid, _ = new_session(client, user_id="u1")
         code, events = chat_sse(client, sid, case["input"])
         types = event_types(events)
         interrupt = next(
@@ -540,6 +565,10 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
         elif rejected:
             status = "rejected"
         done = next((e for e in reversed(events) if e.get("type") == "done"), None)
+        state_evidence = None
+        if case.get("expect", "hit") == "hit" and status != "hit":
+            status_row = open_status(db_path, sid)
+            state_evidence = graph_state(db_path, status_row["thread_id"])
         if case.get("expect", "hit") == "hit":
             normal += 1
             if status == "hit":
@@ -548,6 +577,8 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
             "case": case["tool"], "input": case["input"], "expect": case.get("expect", "hit"),
             "http": code, "timeline": types,
             "status": status, "selected_tool": tool_name, "selected_args": args,
+            "selected_summary": (interrupt or {}).get("data", {}).get("summary"),
+            "state_evidence": state_evidence,
             "done_final": (done or {}).get("data", {}).get("final"),
         })
     return {
