@@ -538,3 +538,68 @@ class TestCheckpointerRecovery:
 
         # Checkpointer 恢复的核心验证：重启前 pending -> 重启后 approve 成功 + 状态 approved
         # 图确实从 interrupt 点恢复（approve 返回 200 且生成了响应）
+
+
+# ---------------------------------------------------------------------------
+# P3: Frontend API contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestFrontendApiContract:
+    """前端调用的每个后端接口契约验证。"""
+
+    def test_confirm_action_endpoint(self, client, server):
+        """POST /actions/confirm：Mutation 确认按钮调用的接口。"""
+        sid = new_session(client)
+        chat_sse(client, sid, "订单10086的收货地址改成北京市朝阳区")
+
+        r = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
+        assert r.status_code == 200
+
+    def test_confirm_action_invalid_action_422(self, client, server):
+        """POST /actions/confirm：非法 action -> 422。"""
+        sid = new_session(client)
+        r = client.post("/actions/confirm", json={"conversation_id": sid, "action": "invalid"})
+        assert r.status_code == 422
+
+    def test_confirm_action_not_found_404(self, client):
+        """POST /actions/confirm：不存在的会话 -> 404。"""
+        r = client.post("/actions/confirm", json={"conversation_id": "nonexistent", "action": "confirm"})
+        assert r.status_code == 404
+
+    def test_get_messages_endpoint(self, client, server):
+        """GET /conversations/{id}/messages：前端历史消息加载。"""
+        sid = new_session(client)
+        chat_sse(client, sid, "你好")
+
+        r = client.get(f"/conversations/{sid}/messages")
+        assert r.status_code == 200
+        data = r.json()
+        assert "items" in data and "mode" in data
+        assert data["mode"] == "ai"
+        assert len(data["items"]) >= 2
+
+    def test_get_messages_not_found_404(self, client):
+        """GET /conversations/{id}/messages：不存在的会话 -> 404。"""
+        r = client.get("/conversations/nonexistent/messages")
+        assert r.status_code == 404
+
+    def test_list_approvals_endpoint(self, client, server):
+        """GET /approvals：审批列表查询。"""
+        sid = new_session(client)
+        chat_sse(client, sid, "订单10086申请退款")
+
+        r = client.get("/approvals")
+        assert r.status_code == 200
+        data = r.json()
+        assert "items" in data
+
+    def test_list_handoffs_endpoint(self, client, server):
+        """GET /handoffs：handoff 列表查询。"""
+        sid = new_session(client)
+        chat_sse(client, sid, "我要转人工")
+
+        r = client.get("/handoffs", params={"conversation_id": sid})
+        assert r.status_code == 200
+        data = r.json()
+        assert "handoff_id" in data and "conversation_id" in data
