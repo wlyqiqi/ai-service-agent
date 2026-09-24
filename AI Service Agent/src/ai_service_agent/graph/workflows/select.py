@@ -180,12 +180,15 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 SystemMessage(content=SELECT_BINDTOOLS_SYSTEM),
                 HumanMessage(content=last),
             ]
-            result = bound.invoke(messages)
-            if not result.tool_calls:
+            try:
+                result = bound.invoke(messages)
+                if not result.tool_calls:
+                    return _reject(state, "select_parse_failed")
+                tool_call = result.tool_calls[0]
+                tool_name = tool_call["name"]
+                args = dict(tool_call.get("args") or {})
+            except Exception:
                 return _reject(state, "select_parse_failed")
-            tool_call = result.tool_calls[0]
-            tool_name = tool_call["name"]
-            args = dict(tool_call.get("args") or {})
 
         if tool_name == "cancel_order" and not args.get("order_id"):
             candidates = find_own_cancellable_paid_orders(state.get("user_id", ""))

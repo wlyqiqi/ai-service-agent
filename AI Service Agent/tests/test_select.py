@@ -1,6 +1,7 @@
 """select 节点字段契约（2026-09-15 真机冒烟修复）：系统提示必须携带 schema 字段清单。"""
 
-from unittest.mock import MagicMock
+from typing import Callable
+from unittest.mock import MagicMock, call
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -94,6 +95,18 @@ def test_select_real_model_uses_bind_tools():
     model = MagicMock()
     model.bind_tools.return_value = bound_model
 
+    node, tool = _real_model_node(model)
+    output = node({
+        "messages": [HumanMessage(content="把手机号改成13800138000")],
+        "user_id": "u1",
+        "context": {},
+    })
+
+    assert model.bind_tools.call_args == call([tool], tool_choice="any")
+    assert output["context"]["pending_tool"]["tool"] == "update_phone"
+
+
+def _real_model_node(model) -> tuple[Callable[[dict], dict], MagicMock]:
     tool = MagicMock()
     tool.name = "update_phone"
     registry = ToolRegistry()
@@ -101,12 +114,39 @@ def test_select_real_model_uses_bind_tools():
         ToolMeta(name="update_phone", description="修改联系电话", min_risk_level="mutation"),
         tool,
     )
-    node = make_select_node(model, "mutation", [tool], registry)
+    return make_select_node(model, "mutation", [tool], registry), tool
+
+
+def test_select_real_model_rejects_missing_tool_calls():
+    bound_model = MagicMock()
+    bound_model.invoke.return_value = AIMessage(content="", tool_calls=[])
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+    node, _ = _real_model_node(model)
+
     output = node({
         "messages": [HumanMessage(content="把手机号改成13800138000")],
         "user_id": "u1",
         "context": {},
     })
 
-    model.bind_tools.assert_called_once()
-    assert output["context"]["pending_tool"]["tool"] == "update_phone"
+    assert output["context"]["precheck_reason"] == "select_parse_failed"
+    assert output["execution_status"] == "completed"
+    assert "pending_tool" not in output["context"]
+
+
+def test_select_real_model_rejects_invocation_failure():
+    bound_model = MagicMock()
+    bound_model.invoke.side_effect = RuntimeError("provider unavailable")
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+    node, _ = _real_model_node(model)
+
+    output = node({
+        "messages": [HumanMessage(content="把手机号改成13800138000")],
+        "user_id": "u1",
+        "context": {},
+    })
+
+    assert output["context"]["precheck_reason"] == "select_parse_failed"
+    assert output["execution_status"] == "completed"
