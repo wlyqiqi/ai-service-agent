@@ -426,7 +426,7 @@ class TestRealFaultToleranceE2E:
 
         monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", unavailable_jev)
 
-        model = FlakyRouterRealModel(make_model())
+        model = FlakyRouterRealModel(_make_model())
         model.router_calls.clear()
         app = create_app(str(tmp_path / "router-retry.db"), model=model)
         client = TestClient(app)
@@ -455,7 +455,7 @@ class TestRealFaultToleranceE2E:
             return failing_tools
 
         monkeypatch.setattr(mutation_agent, "ToolNode", failing_tools_tool_node)
-        app = create_app(str(tmp_path / "mutation-error.db"), model=make_model())
+        app = create_app(str(tmp_path / "mutation-error.db"), model=_make_model())
         client = TestClient(app)
 
         sid = new_session(client)
