@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.streaming import event_stream
+from conftest import ainvoke_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools.kb import kb_search
 from langgraph.graph import END, START, StateGraph
@@ -32,8 +33,8 @@ def _hr_model():
 def _invoke(graph, text, thread_id, resume=None):
     kwargs = {"configurable": {"thread_id": thread_id}}
     if resume is not None:
-        return graph.invoke(Command(resume=resume), kwargs)
-    return graph.invoke(
+        return ainvoke_graph(graph, Command(resume=resume), kwargs)
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": "u1", "session_id": thread_id, "context": {}},
         kwargs,
     )
@@ -63,7 +64,7 @@ def test_high_risk_approve_executes_tool(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "h2"}}
-    graph.invoke(
+    ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -72,7 +73,7 @@ def test_high_risk_approve_executes_tool(monkeypatch, tmp_path):
         },
         config,
     )
-    out = graph.invoke(Command(resume={"action": "approve"}), config)
+    out = ainvoke_graph(graph, Command(resume={"action": "approve"}), config)
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "refund_apply"
@@ -100,13 +101,13 @@ def test_high_risk_tool_exception_uses_local_finalize_failed(monkeypatch, tmp_pa
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "highrisk-failure-1"}}
-    graph.invoke({
+    ainvoke_graph(graph, {
         "messages": [HumanMessage(content="申请退款")],
         "user_id": owner,
         "session_id": "highrisk-failure-1",
         "context": {},
     }, config)
-    output = graph.invoke(Command(resume={"action": "approve"}), config)
+    output = ainvoke_graph(graph, Command(resume={"action": "approve"}), config)
 
     assert output["execution_status"] == "failed"
     assert output["messages"][-1].content == RUNTIME_ERROR_TEXT
@@ -162,7 +163,7 @@ def test_check_rule_required_identifier_nonempty():
 def test_safety_check_node_empty_required_backstop():
     """safety_check 节点（图上下文）：空必填标识符 -> invalid_args 拒绝，无 interrupt。"""
     graph = _safety_mini_graph(make_safety_check_node("high_risk", DEFAULT_TOOL_REGISTRY))
-    out = graph.invoke({
+    out = ainvoke_graph(graph, {
         "messages": [],
         "user_id": "u1",
         "session_id": "d2-h1",
@@ -176,7 +177,7 @@ def test_safety_check_node_empty_required_backstop():
 def test_recheck_node_empty_required_backstop():
     """recheck（resume 路径）同样兜底：空必填标识符 -> recheck_reason=invalid_args。"""
     graph = _safety_mini_graph(make_recheck_node("high_risk", DEFAULT_TOOL_REGISTRY))
-    out = graph.invoke({
+    out = ainvoke_graph(graph, {
         "messages": [],
         "user_id": "u1",
         "session_id": "d2-h2",
@@ -340,7 +341,7 @@ def test_refund_precheck_rejects_wrong_status(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "refund-precheck-wrong-status"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -377,7 +378,7 @@ def test_refund_precheck_rejects_over_amount(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "refund-precheck-over-amount"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -413,7 +414,7 @@ def test_refund_precheck_rejects_completed_order(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "refund-precheck-completed"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -446,7 +447,7 @@ def test_refund_order_approval_summary_contains_amount(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "refund-approval-summary"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -496,7 +497,7 @@ def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "refund-single-auto-resolve"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -535,7 +536,7 @@ def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "refund-multiple-clarify"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -595,7 +596,7 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "cancel-summary"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消这个订单")],
             "user_id": owner,
@@ -657,7 +658,7 @@ def test_cancel_approval_fails_closed_without_valid_paid_facts(monkeypatch, tmp_
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
     thread_id = "cancel-fail-closed"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消这个订单")],
             "user_id": owner,
@@ -741,7 +742,7 @@ def _refund_graph(order_id, request_id, amount=1.0):
 
 
 def _invoke_refund(graph, owner, thread_id):
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": owner,
@@ -757,7 +758,7 @@ def _approval_required(value):
 
 
 def _invoke_cancel(graph, owner, thread_id):
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消这个订单")],
             "user_id": owner,
@@ -986,7 +987,7 @@ def test_refund_order_rejected_does_not_write_db(monkeypatch, tmp_path):
     approvals = [it.value for it in out.get("__interrupt__", []) if _approval_required(it.value)]
     assert len(approvals) == 1
 
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         Command(resume={"action": "reject", "note": "资料不足"}),
         {"configurable": {"thread_id": thread_id}},
     )
@@ -1047,7 +1048,7 @@ def test_refund_order_expired_does_not_write_db(monkeypatch, tmp_path):
     assert len(approvals) == 1
     assert approvals[0]["expires_at"]
 
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         Command(resume={"result": "expired"}),
         {"configurable": {"thread_id": thread_id}},
     )
@@ -1217,7 +1218,7 @@ def test_cancel_order_rejected_does_not_write_db(monkeypatch, tmp_path):
     assert len(approvals) == 1
     assert approvals[0]["approval_id"]
 
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         Command(resume={"action": "reject", "note": "资料不足"}),
         {"configurable": {"thread_id": thread_id}},
     )
@@ -1248,7 +1249,7 @@ def test_cancel_order_expired_does_not_write_db(monkeypatch, tmp_path):
     assert approvals[0]["approval_id"]
     assert approvals[0]["expires_at"]
 
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         Command(resume={"result": "expired"}),
         {"configurable": {"thread_id": thread_id}},
     )

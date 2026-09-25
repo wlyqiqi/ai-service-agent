@@ -17,6 +17,7 @@ from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
+from conftest import ainvoke_graph
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +51,7 @@ def _graph(model):
 
 
 def _invoke(graph, text, thread_id, user_id="u1", context=None):
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id, "context": context or {}},
         {"configurable": {"thread_id": thread_id}},
     )
@@ -148,7 +149,7 @@ def _build(model, saver):
 
 def _turn(graph, text, thread_id, user_id="u1"):
     # 续接轮不传 context：context 由 checkpoint 保留（真实 /chat 入口同语义），仅追加新消息
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id},
         {"configurable": {"thread_id": thread_id}},
     )

@@ -6,11 +6,12 @@ from langchain_core.messages import HumanMessage
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.resume import resolve_resume_payload
 from ai_service_agent.testing import make_fake_model
+from conftest import ainvoke_graph
 
 
 def test_make_ai_graph_compiles_and_runs():
     graph = make_ai_graph(make_fake_model(), MemorySaver())
-    out = graph.invoke({"messages": [HumanMessage(content="hi")], "user_id": "u1", "session_id": "s1", "context": {}}, {"configurable": {"thread_id": "t1"}})
+    out = ainvoke_graph(graph, {"messages": [HumanMessage(content="hi")], "user_id": "u1", "session_id": "s1", "context": {}}, {"configurable": {"thread_id": "t1"}})
     assert out["execution_status"] == "completed"
 
 
@@ -33,7 +34,7 @@ from ai_service_agent.testing import ToolCallingFakeModel
 
 
 def _invoke(graph, text, thread_id):
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": "u1", "session_id": "s1", "context": {}},
         {"configurable": {"thread_id": thread_id}},
     )

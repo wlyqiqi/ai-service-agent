@@ -15,6 +15,7 @@ from ai_service_agent.graph.workflows import clarify as clarify_mod
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT, clarify_missing_text
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.harness.streaming import event_stream
+from conftest import ainvoke_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
@@ -61,8 +62,8 @@ def _mutation_model():
 def _invoke(graph, text, thread_id, resume=None, user_id="u1"):
     kwargs = {"configurable": {"thread_id": thread_id}}
     if resume is not None:
-        return graph.invoke(Command(resume=resume), kwargs)
-    return graph.invoke(
+        return ainvoke_graph(graph, Command(resume=resume), kwargs)
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id, "context": {}},
         kwargs,
     )
@@ -129,7 +130,7 @@ def test_mutation_precheck_rejects_unauthenticated():
             select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "新地址"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {"messages": [HumanMessage(content="我没登录，改一下地址")], "user_id": "", "session_id": "m5", "context": {}},
         {"configurable": {"thread_id": "m5"}},
     )
@@ -194,7 +195,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
         return build_graph(model, tools=[kb_search], checkpointer=saver)
 
     def _turn(graph, text, thread_id):
-        return graph.invoke(
+        return ainvoke_graph(graph,
             {"messages": [HumanMessage(content=text)], "user_id": "u1", "session_id": thread_id},
             {"configurable": {"thread_id": thread_id}},
         )
@@ -257,7 +258,7 @@ def test_cancel_order_without_id_uses_single_paid_order(monkeypatch, seed):
 
     graph = build_graph(_cancel_model({}), tools=[], checkpointer=MemorySaver())
     thread_id = "cancel-single"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消我的订单")],
             "user_id": owner,
@@ -291,7 +292,7 @@ def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
         conn.close()
 
     thread_id = "cancel-multiple"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消我的订单")],
             "user_id": owner,
@@ -304,7 +305,7 @@ def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
     assert out["context"]["clarify_missing"] == ["order_id"]
 
     thread_id = "cancel-empty"
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消我的订单")],
             "user_id": "user-with-no-paid-order",
@@ -328,7 +329,7 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
     thread_id = "cancel-stale-candidates"
     config = {"configurable": {"thread_id": thread_id}}
 
-    first = graph.invoke(
+    first = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="取消我的订单")],
             "user_id": "user-with-no-paid-order",

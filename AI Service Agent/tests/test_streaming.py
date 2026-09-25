@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel
+from conftest import ainvoke_graph
 from ai_service_agent.tools.kb import kb_search
 
 
@@ -116,7 +117,7 @@ def test_stream_resume_done_final_from_new_message():
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
-    graph.invoke(
+    ainvoke_graph(graph,
         {"messages": [HumanMessage(content="改一下收货地址")], "user_id": "u1", "session_id": "s1", "context": {}},
         {"configurable": {"thread_id": "r1"}},
     )
@@ -143,7 +144,7 @@ def test_new_assistant_text_and_id_no_replay():
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "r2"}}
-    graph.invoke(
+    ainvoke_graph(graph,
         {"messages": [HumanMessage(content="hi")], "user_id": "u1", "session_id": "s1", "context": {}},
         config,
     )

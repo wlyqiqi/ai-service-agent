@@ -5,6 +5,7 @@ import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.errors import NodeTimeoutError
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph import router as router_mod
@@ -12,6 +13,7 @@ from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM
 from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_message
 from ai_service_agent.tools.kb import kb_search
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 
 
 class FlakyDeepSeekModel(ToolCallingFakeModel):
@@ -81,6 +83,30 @@ class SlowDeepSeekModel(ToolCallingFakeModel):
         )
 
 
+async def stream_timeout_graph(graph, input_data, thread_id):
+    updates = []
+    events = []
+    errors = []
+    started = time.monotonic()
+    try:
+        async for mode, payload in graph.astream(
+            input_data,
+            {"configurable": {"thread_id": thread_id}},
+            stream_mode=["updates", "custom"],
+        ):
+            if mode == "updates":
+                updates.append(payload)
+            elif mode == "custom":
+                events.append(payload)
+    except NodeTimeoutError as error:
+        errors.append(error)
+    return updates, events, errors, time.monotonic() - started
+
+
+def updates_by_node(updates):
+    return {name: update for chunk in updates for name, update in chunk.items()}
+
+
 @pytest.mark.asyncio
 async def test_jev_error_retries_only_deepseek(monkeypatch):
     jev_calls = []
@@ -141,24 +167,35 @@ async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
     try:
         model = SlowDeepSeekModel(delay=0.10)
         graph = build_graph(model, tools=[kb_search])
-        started = time.monotonic()
-        output = await graph.ainvoke(
-            {
-                "messages": [HumanMessage(content="商品怎么使用？")],
-                "user_id": "u1",
-                "session_id": "router-jev-timeout-1",
-                "context": {},
-            },
-            {"configurable": {"thread_id": "router-jev-timeout-1"}},
-        )
-        elapsed = time.monotonic() - started
+        elapsed = 0.0
+        for invocation in range(2):
+            updates, events, errors, elapsed = await stream_timeout_graph(
+                graph,
+                {
+                    "messages": [HumanMessage(content="商品怎么使用？")],
+                    "user_id": "u1",
+                    "session_id": f"router-jev-timeout-{invocation}",
+                    "context": {},
+                },
+                f"router-jev-timeout-{invocation}",
+            )
+            nodes = updates_by_node(updates)
+            assert nodes["__error_handler__router_jev"] == {
+                "execution_status": "routing",
+                "routing_backend": "jev",
+                "routing_fallback": True,
+                "route_control": "deepseek_fallback",
+            }
+            assert nodes["router_deepseek"]["routing_fallback"] is True
+            assert nodes["final"]["execution_status"] == "completed"
+            assert len(errors) == 1
+            assert errors[0].node == "router_jev"
+            assert events == []
     finally:
         get_settings.cache_clear()
 
-    assert jev_calls == ["jev"]
-    assert model.router_calls == 1
-    assert output["routing_fallback"] is True
-    assert output["execution_status"] == "completed"
+    assert jev_calls == ["jev", "jev"]
+    assert model.router_calls == 2
     assert elapsed < 1.0
 
 
@@ -172,22 +209,32 @@ async def test_deepseek_node_timeout_retries_only_router(monkeypatch):
     try:
         model = SlowDeepSeekModel(delay=0.10)
         graph = build_graph(model, tools=[kb_search])
-        started = time.monotonic()
-        output = await graph.ainvoke(
-            {
-                "messages": [HumanMessage(content="商品怎么使用？")],
-                "user_id": "u1",
-                "session_id": "router-deepseek-timeout-1",
-                "context": {},
-            },
-            {"configurable": {"thread_id": "router-deepseek-timeout-1"}},
-        )
-        elapsed = time.monotonic() - started
+        elapsed = 0.0
+        for invocation in range(2):
+            updates, events, errors, elapsed = await stream_timeout_graph(
+                graph,
+                {
+                    "messages": [HumanMessage(content="商品怎么使用？")],
+                    "user_id": "u1",
+                    "session_id": f"router-deepseek-timeout-{invocation}",
+                    "context": {},
+                },
+                f"router-deepseek-timeout-{invocation}",
+            )
+            nodes = updates_by_node(updates)
+            assert nodes["__error_handler__router_deepseek"] == {
+                "execution_status": "failed"
+            }
+            assert events == [{
+                "type": "error",
+                "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+            }]
+            assert len(errors) == 1
+            assert errors[0].node == "router_deepseek"
     finally:
         get_settings.cache_clear()
 
-    assert model.router_calls == 2
-    assert output["execution_status"] == "failed"
+    assert model.router_calls == 4
     assert elapsed < 1.0
 
 

@@ -50,10 +50,10 @@ RETRY_LLM = RetryPolicy(
 
 RETRY_DEEPSEEK_ROUTER = RetryPolicy(
     max_attempts=2,
-    initial_interval=0.5,
+    initial_interval=0.1,
     backoff_factor=2.0,
-    max_interval=2.0,
-    jitter=True,
+    max_interval=0.2,
+    jitter=False,
     retry_on=is_transient_error,
 )
 

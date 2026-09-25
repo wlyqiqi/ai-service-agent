@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
+from conftest import ainvoke_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import orders as orders_mod
 from ai_service_agent.tools import write as write_mod
@@ -210,7 +211,7 @@ def test_mutation_graph_rejects_cross_user_without_pollution(monkeypatch, seed):
         select_json_message("update_order_note", {"order_id": "ORD-2", "note": "越权修改"}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {"messages": [HumanMessage(content="帮我改订单备注")], "user_id": "u1", "session_id": "boundary", "context": {}},
         {"configurable": {"thread_id": "boundary"}},
     )
@@ -233,7 +234,7 @@ def test_mutation_graph_rejects_invoice_over_remaining(monkeypatch, seed):
         ),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {"messages": [HumanMessage(content="帮我开发票")], "user_id": "u1", "session_id": "invoice", "context": {}},
         {"configurable": {"thread_id": "invoice"}},
     )

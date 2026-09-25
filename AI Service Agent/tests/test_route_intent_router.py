@@ -81,59 +81,64 @@ def _jev_route_payload(route_intent: str, confidence: float) -> dict:
     }
 
 
-def test_deepseek_route_intent_path(route_intent_settings):
+@pytest.mark.asyncio
+async def test_deepseek_route_intent_path(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("my_orders", 0.94)]
     )
     node = make_deepseek_router(model, route_intent_enabled=True)
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "my_orders"
     assert out["confidence"] == 0.94
     assert out["routing_backend"] == "deepseek"
     assert out["routing_fallback"] is True
 
 
-def test_deepseek_low_confidence_becomes_unknown(route_intent_settings):
+@pytest.mark.asyncio
+async def test_deepseek_low_confidence_becomes_unknown(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.79)]
     )
     node = make_deepseek_router(model, route_intent_enabled=True)
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
     assert out["routing_backend"] == "deepseek"
     assert out["routing_fallback"] is True
 
 
-def test_jev_route_intent_is_primary(jev_route_settings, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_route_intent_is_primary(jev_route_settings, monkeypatch):
     client = _JevClient(_jev_route_payload("cancel_order_execute", 0.94))
     monkeypatch.setattr("ai_service_agent.graph.router.httpx.Client", lambda timeout: client)
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("refund_apply_execute", 0.99)]
     )
     node = make_jev_router()
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "cancel_order_execute"
     assert out["confidence"] == 0.94
     assert out["routing_backend"] == "jev"
     assert out["routing_fallback"] is False
 
 
-def test_jev_low_confidence_returns_unknown_without_deepseek(jev_route_settings, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_low_confidence_returns_unknown_without_deepseek(jev_route_settings, monkeypatch):
     client = _JevClient(_jev_route_payload("cancel_order_execute", 0.79))
     monkeypatch.setattr("ai_service_agent.graph.router.httpx.Client", lambda timeout: client)
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
     assert out["routing_backend"] == "jev"
     assert out["routing_fallback"] is False
 
 
-def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatch):
     class _TimeoutClient:
         def post(self, *args, **kwargs):
             raise httpx.ConnectTimeout("timeout")
@@ -149,7 +154,7 @@ def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatc
         responses=[route_intent_json_message("faq", 0.91)]
     )
     node = make_jev_router()
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -159,7 +164,8 @@ def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatc
     assert out["routing_fallback"] is True
 
 
-def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, monkeypatch):
     payload = _jev_route_payload("cancel_order_execute", 0.95)
     payload["answers"]["route_intent"]["probabilities"]["cancel_order_execute"] = 0.80
     client = _JevClient(payload)
@@ -168,7 +174,7 @@ def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, 
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -178,7 +184,8 @@ def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, 
     assert out["routing_fallback"] is True
 
 
-def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeypatch):
     payload = _jev_route_payload("cancel_order_execute", 0.95)
     payload["answers"] = []
     client = _JevClient(payload)
@@ -187,7 +194,7 @@ def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeyp
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -208,7 +215,8 @@ def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeyp
         lambda payload: payload["answers"]["route_intent"].update({"confidence": 1.2}),
     ],
 )
-def test_jev_invalid_choice_shape_falls_back_to_deepseek(
+@pytest.mark.asyncio
+async def test_jev_invalid_choice_shape_falls_back_to_deepseek(
     jev_route_settings,
     monkeypatch,
     mutate,
@@ -221,7 +229,7 @@ def test_jev_invalid_choice_shape_falls_back_to_deepseek(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node({"messages": [], "user_id": "u1", "context": {}})
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -231,7 +239,8 @@ def test_jev_invalid_choice_shape_falls_back_to_deepseek(
     assert out["routing_fallback"] is True
 
 
-def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings, monkeypatch):
     created_clients = []
     payload = _jev_route_payload("cancel_order_execute", 0.95)
 
@@ -260,14 +269,15 @@ def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings, monk
     )
     node = make_jev_router()
     state = {"messages": [], "user_id": "u1", "context": {}}
-    node(state)
-    node(state)
+    await node(state)
+    await node(state)
 
     assert len(created_clients) == 2
     assert all(client.closed for client in created_clients)
 
 
-def test_feature_off_keeps_legacy_router(monkeypatch):
+@pytest.mark.asyncio
+async def test_feature_off_keeps_legacy_router(monkeypatch):
     monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
     get_settings.cache_clear()
     try:
@@ -277,7 +287,7 @@ def test_feature_off_keeps_legacy_router(monkeypatch):
             responses=[router_json_message("faq", "read", 0.9)]
         )
         node = make_deepseek_router(model, route_intent_enabled=False)
-        out = node({"messages": [], "user_id": "u1", "context": {}})
+        out = await node({"messages": [], "user_id": "u1", "context": {}})
         assert out["capability"] == "faq"
         assert out["risk_level"] == "read"
     finally:

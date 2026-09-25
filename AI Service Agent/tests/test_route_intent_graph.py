@@ -5,6 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.builder import build_graph
+from conftest import ainvoke_graph
 from ai_service_agent.testing import (
     ToolCallingFakeModel,
     route_intent_json_message,
@@ -43,7 +44,7 @@ def test_feature_off_uses_legacy_route_fields(disabled):
         tools=[kb_search, order_lookup, my_orders, shipment_query],
         checkpointer=MemorySaver(),
     )
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="帮我查订单 ORD-1")],
             "user_id": "u1",
@@ -73,7 +74,7 @@ def test_route_intent_graph_routes_order_query(enabled):
         tools=[kb_search, order_lookup, my_orders, shipment_query],
         checkpointer=MemorySaver(),
     )
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="帮我查订单 ORD-1")],
             "user_id": "u1",
@@ -104,7 +105,7 @@ def test_route_intent_graph_routes_unsupported_to_fallback(enabled):
         tools=[kb_search, order_lookup, my_orders, shipment_query],
         checkpointer=MemorySaver(),
     )
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="清空我的订单历史")],
             "user_id": "u1",
@@ -132,7 +133,7 @@ def test_route_intent_graph_routes_high_risk_mutation_to_approval(enabled):
         tools=[kb_search, order_lookup, my_orders, shipment_query],
         checkpointer=MemorySaver(),
     )
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {
             "messages": [HumanMessage(content="申请退款")],
             "user_id": "u1",
