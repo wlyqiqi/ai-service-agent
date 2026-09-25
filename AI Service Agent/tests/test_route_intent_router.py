@@ -154,6 +154,7 @@ def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatc
         "execution_status": "routing",
         "routing_backend": "jev",
         "routing_fallback": True,
+        "route_control": "deepseek_fallback",
     }
     assert out["routing_fallback"] is True
 
@@ -172,6 +173,7 @@ def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, 
         "execution_status": "routing",
         "routing_backend": "jev",
         "routing_fallback": True,
+        "route_control": "deepseek_fallback",
     }
     assert out["routing_fallback"] is True
 
@@ -190,6 +192,7 @@ def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeyp
         "execution_status": "routing",
         "routing_backend": "jev",
         "routing_fallback": True,
+        "route_control": "deepseek_fallback",
     }
     assert out["routing_fallback"] is True
 
@@ -223,6 +226,7 @@ def test_jev_invalid_choice_shape_falls_back_to_deepseek(
         "execution_status": "routing",
         "routing_backend": "jev",
         "routing_fallback": True,
+        "route_control": "deepseek_fallback",
     }
     assert out["routing_fallback"] is True
 
