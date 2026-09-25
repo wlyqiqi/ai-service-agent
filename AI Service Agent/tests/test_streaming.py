@@ -94,6 +94,56 @@ def test_stream_suppresses_recovered_node_timeout():
     assert events[-1]["data"]["final"] is None
 
 
+def test_stream_emits_runtime_error_for_escaped_node_timeout():
+    class EscapedTimeoutGraph:
+        async def astream(self, *args, **kwargs):
+            yield (), "custom", {"type": "token", "data": {"text": "partial"}}
+            raise NodeTimeoutError(
+                node="read_graph", elapsed=0.05, kind="run", run_timeout=0.05
+            )
+
+    events = _collect(event_stream(
+        EscapedTimeoutGraph(),
+        {"configurable": {"thread_id": "stream-escaped-timeout"}},
+        [HumanMessage(content="商品怎么使用？")],
+    ))
+
+    error_events = [event for event in events if event["type"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["data"] == {
+        "code": "runtime_error",
+        "message": RUNTIME_ERROR_TEXT,
+    }
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] is None
+
+
+def test_stream_never_duplicates_timeout_error():
+    class TimeoutAfterErrorGraph:
+        async def astream(self, *args, **kwargs):
+            yield (), "custom", {
+                "type": "error",
+                "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+            }
+            raise NodeTimeoutError(
+                node="read_graph", elapsed=0.05, kind="run", run_timeout=0.05
+            )
+
+    events = _collect(event_stream(
+        TimeoutAfterErrorGraph(),
+        {"configurable": {"thread_id": "stream-duplicate-timeout"}},
+        [HumanMessage(content="商品怎么使用？")],
+    ))
+
+    error_events = [event for event in events if event["type"] == "error"]
+    assert error_events == [{
+        "type": "error",
+        "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+    }]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] is None
+
+
 def test_stream_deduplicates_exhausted_node_timeout(monkeypatch):
     monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
