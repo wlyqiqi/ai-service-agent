@@ -25,6 +25,7 @@ from ai_service_agent.graph.allowed_tools import (
     make_allowed_tool_boundary_wrapper_async,
     make_allowed_tool_boundary_wrapper_sync,
 )
+from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
 from ai_service_agent.graph.workflows.copy import (
     approval_approved_text,
@@ -32,6 +33,7 @@ from ai_service_agent.graph.workflows.copy import (
     approval_failed_text,
     approval_rejected_text,
     recheck_failed_text,
+    RUNTIME_ERROR_TEXT,
 )
 from ai_service_agent.graph.workflows.safety import (
     make_precheck_fetch_node,
@@ -181,6 +183,9 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
     def finalize_aborted(state: dict) -> dict:
         return {"messages": [AIMessage(content=recheck_failed_text())], "execution_status": "completed"}
 
+    def finalize_failed(state: dict) -> dict:
+        return {"messages": [AIMessage(content=RUNTIME_ERROR_TEXT)], "execution_status": "failed"}
+
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})
         if "clarify_missing" in ctx or ctx.get("tier_clarify"):
@@ -202,7 +207,9 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
         return "finalize_aborted" if state.get("context", {}).get("recheck_reason") else "execute"
 
     builder = StateGraph(CustomerServiceState)
-    builder.add_node("select_llm", make_select_node(model, "high_risk", tools, registry))
+    handler = make_subgraph_error_handler("finalize_failed")
+    builder.set_node_defaults(error_handler=handler)
+    builder.add_node("select_llm", make_select_node(model, "high_risk", tools, registry), retry_policy=RETRY_LLM)
     builder.add_node("clarify", make_clarify_node())
     builder.add_node("precheck_fetch", make_precheck_fetch_node())
     builder.add_node("safety_check", make_safety_check_node("high_risk", registry))
@@ -215,8 +222,17 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
     hook_async = make_tool_hook_wrapper(tool_hooks) if tool_hooks else None
     boundary_sync = make_allowed_tool_boundary_wrapper_sync(next_wrapper=hook_sync)
     boundary_async = make_allowed_tool_boundary_wrapper_async(next_wrapper=hook_async)
-    builder.add_node("tools", ToolNode(tools, wrap_tool_call=boundary_sync, awrap_tool_call=boundary_async))
+    builder.add_node(
+        "tools",
+        ToolNode(
+            tools,
+            handle_tool_errors=False,
+            wrap_tool_call=boundary_sync,
+            awrap_tool_call=boundary_async,
+        ),
+    )
     builder.add_node("finalize_ok", finalize_ok)
+    builder.add_node("finalize_failed", finalize_failed)
     builder.add_node("finalize_rejected", finalize_rejected)
     builder.add_node("finalize_expired", finalize_expired)
     builder.add_node("finalize_aborted", finalize_aborted)
@@ -244,6 +260,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
     builder.add_edge("execute", "tools")
     builder.add_edge("tools", "finalize_ok")
     builder.add_edge("finalize_ok", END)
+    builder.add_edge("finalize_failed", END)
     builder.add_edge("finalize_rejected", END)
     builder.add_edge("finalize_expired", END)
     builder.add_edge("finalize_aborted", END)

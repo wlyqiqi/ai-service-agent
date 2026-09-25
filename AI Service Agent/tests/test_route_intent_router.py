@@ -2,7 +2,11 @@ import httpx
 import pytest
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.graph.router import _JEV_ROUTE_INTENT_QUESTION, make_router
+from ai_service_agent.graph.router import (
+    _JEV_ROUTE_INTENT_QUESTION,
+    make_deepseek_router,
+    make_jev_router,
+)
 from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_message
 
 
@@ -81,7 +85,7 @@ def test_deepseek_route_intent_path(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("my_orders", 0.94)]
     )
-    node = make_router(model)
+    node = make_deepseek_router(model, route_intent_enabled=True)
     out = node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "my_orders"
     assert out["confidence"] == 0.94
@@ -93,7 +97,7 @@ def test_deepseek_low_confidence_becomes_unknown(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.79)]
     )
-    node = make_router(model)
+    node = make_deepseek_router(model, route_intent_enabled=True)
     out = node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
@@ -107,7 +111,7 @@ def test_jev_route_intent_is_primary(jev_route_settings, monkeypatch):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("refund_apply_execute", 0.99)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     out = node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "cancel_order_execute"
     assert out["confidence"] == 0.94
@@ -121,7 +125,7 @@ def test_jev_low_confidence_returns_unknown_without_deepseek(jev_route_settings,
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     out = node({"messages": [], "user_id": "u1", "context": {}})
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
@@ -144,11 +148,14 @@ def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monkeypatc
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("faq", 0.91)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     out = node({"messages": [], "user_id": "u1", "context": {}})
-    assert out["route_intent"] == "faq"
-    assert out["confidence"] == 0.91
-    assert out["routing_backend"] == "deepseek"
+    assert out == {
+        "execution_status": "routing",
+        "routing_backend": "jev",
+        "routing_fallback": True,
+        "route_control": "deepseek_fallback",
+    }
     assert out["routing_fallback"] is True
 
 
@@ -160,11 +167,14 @@ def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_settings, 
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     out = node({"messages": [], "user_id": "u1", "context": {}})
-    assert out["route_intent"] == "cancel_order_execute"
-    assert out["confidence"] == 0.95
-    assert out["routing_backend"] == "deepseek"
+    assert out == {
+        "execution_status": "routing",
+        "routing_backend": "jev",
+        "routing_fallback": True,
+        "route_control": "deepseek_fallback",
+    }
     assert out["routing_fallback"] is True
 
 
@@ -176,11 +186,14 @@ def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, monkeyp
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     out = node({"messages": [], "user_id": "u1", "context": {}})
-    assert out["route_intent"] == "cancel_order_execute"
-    assert out["confidence"] == 0.95
-    assert out["routing_backend"] == "deepseek"
+    assert out == {
+        "execution_status": "routing",
+        "routing_backend": "jev",
+        "routing_fallback": True,
+        "route_control": "deepseek_fallback",
+    }
     assert out["routing_fallback"] is True
 
 
@@ -207,11 +220,14 @@ def test_jev_invalid_choice_shape_falls_back_to_deepseek(
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     out = node({"messages": [], "user_id": "u1", "context": {}})
-    assert out["route_intent"] == "cancel_order_execute"
-    assert out["confidence"] == 0.95
-    assert out["routing_backend"] == "deepseek"
+    assert out == {
+        "execution_status": "routing",
+        "routing_backend": "jev",
+        "routing_fallback": True,
+        "route_control": "deepseek_fallback",
+    }
     assert out["routing_fallback"] is True
 
 
@@ -242,7 +258,7 @@ def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings, monk
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
-    node = make_router(model)
+    node = make_jev_router()
     state = {"messages": [], "user_id": "u1", "context": {}}
     node(state)
     node(state)
@@ -260,7 +276,7 @@ def test_feature_off_keeps_legacy_router(monkeypatch):
         model = ToolCallingFakeModel(
             responses=[router_json_message("faq", "read", 0.9)]
         )
-        node = make_router(model)
+        node = make_deepseek_router(model, route_intent_enabled=False)
         out = node({"messages": [], "user_id": "u1", "context": {}})
         assert out["capability"] == "faq"
         assert out["risk_level"] == "read"

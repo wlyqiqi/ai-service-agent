@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import sqlite3
 import tempfile
+from unittest.mock import MagicMock
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.graph.workflows import clarify as clarify_mod
-from ai_service_agent.graph.workflows.copy import clarify_missing_text
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT, clarify_missing_text
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
@@ -81,6 +82,24 @@ def test_mutation_confirm_executes_tool():
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "update_address"
+
+
+def test_mutation_tool_exception_uses_local_finalize_failed(seed, monkeypatch):
+    module, db_path = seed
+    _use_db(monkeypatch, db_path)
+    monkeypatch.setattr(
+        write_mod.update_address,
+        "func",
+        MagicMock(side_effect=RuntimeError("database unavailable")),
+    )
+
+    graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
+    _invoke(graph, "改一下收货地址", "mutation-failure-1")
+    output = _invoke(graph, "确认", "mutation-failure-1", resume={"action": "confirm"})
+
+    assert output["execution_status"] == "failed"
+    assert output["messages"][-1].content == RUNTIME_ERROR_TEXT
+    assert "已更新完成" not in output["messages"][-1].content
 
 
 def test_mutation_cancel_does_not_execute_tool():

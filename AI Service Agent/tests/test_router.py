@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage
 
-from ai_service_agent.graph.router import make_router
+from ai_service_agent.graph.router import make_deepseek_router
 from ai_service_agent.testing import ToolCallingFakeModel
 
 
@@ -8,7 +8,7 @@ def test_router_parses_structured_output():
     model = ToolCallingFakeModel(
         responses=[AIMessage(content='{"capability": "order", "risk_level": "read", "confidence": 0.9}')]
     )
-    node = make_router(model)
+    node = make_deepseek_router(model, route_intent_enabled=False)
     out = node({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["capability"] == "order"
     assert out["risk_level"] == "read"
@@ -19,7 +19,7 @@ def test_router_low_confidence_goes_unknown():
     model = ToolCallingFakeModel(
         responses=[AIMessage(content='{"capability": "order", "risk_level": "read", "confidence": 0.3}')]
     )
-    node = make_router(model)
+    node = make_deepseek_router(model, route_intent_enabled=False)
     out = node({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["capability"] == "unknown"
 
@@ -29,7 +29,7 @@ import pytest
 from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 
-from ai_service_agent.graph.router import _parse_router_content, _router_model, make_router
+from ai_service_agent.graph.router import _parse_router_content, _router_model, make_deepseek_router
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
 
@@ -68,7 +68,7 @@ def test_router_parses_structured_output():
     model = ToolCallingFakeModel(
         responses=[router_json_message("order", "read", 0.9)]
     )
-    node = make_router(model)
+    node = make_deepseek_router(model, route_intent_enabled=False)
     out = node({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["capability"] == "order"
     assert out["risk_level"] == "read"
@@ -79,6 +79,6 @@ def test_router_low_confidence_goes_unknown():
     model = ToolCallingFakeModel(
         responses=[router_json_message("order", "read", 0.3)]
     )
-    node = make_router(model)
+    node = make_deepseek_router(model, route_intent_enabled=False)
     out = node({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["capability"] == "unknown"

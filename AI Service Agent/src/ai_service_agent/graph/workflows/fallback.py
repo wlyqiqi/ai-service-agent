@@ -5,6 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.fault_tolerance import RETRY_LLM
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.prompts import FALLBACK_SYSTEM_PROMPT
@@ -76,7 +77,7 @@ def make_fallback_graph(model):
 
     builder = StateGraph(CustomerServiceState)
     builder.add_node("check_handoff", check_handoff)
-    builder.add_node("explain_llm", explain_llm)
+    builder.add_node("explain_llm", explain_llm, retry_policy=RETRY_LLM)
     builder.add_node("pause", pause)
     builder.add_edge(START, "check_handoff")
     builder.add_conditional_edges(

@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -17,6 +18,8 @@ from ai_service_agent.graph.workflows import high_risk_agent as high_risk_agent_
 from ai_service_agent.graph.workflows import safety as safety_mod
 from ai_service_agent.graph.workflows.safety import _apply_business_rules, _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
+from ai_service_agent.tools import write as write_mod
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 
 
 def _hr_model():
@@ -73,6 +76,41 @@ def test_high_risk_approve_executes_tool(monkeypatch, tmp_path):
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "refund_apply"
+
+
+def test_high_risk_tool_exception_uses_local_finalize_failed(monkeypatch, tmp_path):
+    _, db_path = _load_refund_seed(tmp_path, "highrisk-tool-failure")
+    _use_cancel_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        owner, order_id = conn.execute(
+            "SELECT customer_id, order_id FROM orders WHERE status='paid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        type(write_mod.refund_apply),
+        "invoke",
+        MagicMock(side_effect=RuntimeError("database unavailable")),
+    )
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "high_risk", 0.9),
+        select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "highrisk-failure-1"}}
+    graph.invoke({
+        "messages": [HumanMessage(content="申请退款")],
+        "user_id": owner,
+        "session_id": "highrisk-failure-1",
+        "context": {},
+    }, config)
+    output = graph.invoke(Command(resume={"action": "approve"}), config)
+
+    assert output["execution_status"] == "failed"
+    assert output["messages"][-1].content == RUNTIME_ERROR_TEXT
+    assert "已提交成功" not in output["messages"][-1].content
 
 
 def test_high_risk_reject_no_tool():

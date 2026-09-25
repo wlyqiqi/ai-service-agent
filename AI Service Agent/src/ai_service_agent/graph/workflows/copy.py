@@ -7,6 +7,12 @@
 import hashlib
 
 
+RUNTIME_ERROR_TEXT = (
+    "抱歉，系统刚才遇到技术问题，暂时无法完成该操作。"
+    "请稍后再试，或输入“转人工”联系人工客服。"
+)
+
+
 FIELD_LABELS = {
     "order_id": "订单号", "amount": "金额", "reason": "原因",
     "phone": "手机号", "email": "邮箱", "address": "收货地址",
