@@ -1,11 +1,17 @@
 import langgraph.types as _lg_types
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.graph.fault_tolerance import RETRY_LLM
+from ai_service_agent.graph.fault_tolerance import (
+    RETRY_LLM,
+    make_subgraph_error_handler,
+    make_timeout_policy,
+)
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.prompts import FALLBACK_SYSTEM_PROMPT
@@ -66,6 +72,11 @@ def pause(state: dict) -> dict:
     return {}
 
 
+def fallback_failed(state: dict) -> dict:
+    """Fallback 本图错误收尾：不依赖 root 默认 final 节点。"""
+    return {"messages": [AIMessage(content=RUNTIME_ERROR_TEXT)], "execution_status": "failed"}
+
+
 def make_fallback_graph(model):
     """Fallback / Concierge：check_handoff 前置（graph-spec.md §6.4 P1 定案）。
 
@@ -73,12 +84,23 @@ def make_fallback_graph(model):
     （LLM 生成友好兜底回复，FALLBACK_SYSTEM_PROMPT，人工客服口吻）。
     """
     # LLM 节点（2026-09-18）：无工具 ReAct，仅生成友好兜底文案；token 流经 harness messages 模式。
-    explain_llm = create_agent(model, tools=[], system_prompt=FALLBACK_SYSTEM_PROMPT)
+    agent = create_agent(model, tools=[], system_prompt=FALLBACK_SYSTEM_PROMPT)
 
-    builder = StateGraph(CustomerServiceState)
+    async def explain_llm(state: dict, config: RunnableConfig) -> dict:
+        return await agent.ainvoke(state, config=config)
+
+    builder = StateGraph(CustomerServiceState).set_node_defaults(
+        error_handler=make_subgraph_error_handler("fallback_failed"),
+    )
     builder.add_node("check_handoff", check_handoff)
-    builder.add_node("explain_llm", explain_llm, retry_policy=RETRY_LLM)
+    builder.add_node("fallback_failed", fallback_failed)
     builder.add_node("pause", pause)
+    builder.add_node(
+        "explain_llm",
+        explain_llm,
+        retry_policy=RETRY_LLM,
+        timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
+    )
     builder.add_edge(START, "check_handoff")
     builder.add_conditional_edges(
         "check_handoff",
@@ -86,5 +108,6 @@ def make_fallback_graph(model):
         {"pause": "pause", "explain_llm": "explain_llm"},
     )
     builder.add_edge("explain_llm", END)
+    builder.add_edge("fallback_failed", END)
     builder.add_edge("pause", END)
     return builder.compile()

@@ -1,11 +1,16 @@
+import inspect
+
 from unittest.mock import MagicMock
+from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.types import TimeoutPolicy
 
 from ai_service_agent.graph.agents import read_agent as read_agent_mod
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
+from ai_service_agent.config import get_settings
 from ai_service_agent.testing import ToolCallingFakeModel
 from ai_service_agent.tools.kb import kb_search
 
@@ -26,21 +31,34 @@ class LoopingToolModel(ToolCallingFakeModel):
         return ChatResult(generations=[ChatGeneration(message=message)])
 
 
-def test_read_graph_answers_and_completes():
+def test_read_graph_async_node_and_timeout_policy():
     model = ToolCallingFakeModel(responses=[AIMessage(content="查询结果：订单已发货。")])
     graph = make_read_graph(model, tools=[kb_search])
-    out = graph.invoke({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
+    node_spec = graph.nodes["agent_llm"]
+    assert inspect.iscoroutinefunction(node_spec.bound.afunc)
+    assert node_spec.timeout == TimeoutPolicy(run_timeout=get_settings().llm_node_timeout_seconds)
+
+
+def test_read_graph_answers_and_completes():
+    from conftest import ainvoke_graph
+
+    model = ToolCallingFakeModel(responses=[AIMessage(content="查询结果：订单已发货。")])
+    graph = make_read_graph(model, tools=[kb_search])
+    out = ainvoke_graph(graph, {"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["execution_status"] == "completed"
     assert "发货" in out["messages"][-1].content
 
 
 def test_read_graph_failure_uses_local_finalize_failed(monkeypatch):
     failing_agent = MagicMock()
-    failing_agent.invoke.side_effect = RuntimeError("model unavailable")
+    failing_agent.ainvoke = AsyncMock(side_effect=RuntimeError("model unavailable"))
     monkeypatch.setattr(read_agent_mod, "create_agent", lambda *args, **kwargs: failing_agent)
 
     graph = make_read_graph(ToolCallingFakeModel(responses=[]), [kb_search])
-    output = graph.invoke(
+    from conftest import ainvoke_graph
+
+    output = ainvoke_graph(
+        graph,
         {
             "messages": [HumanMessage(content="查订单 ORD-1")],
             "user_id": "u1",
@@ -58,7 +76,10 @@ def test_read_graph_limits_model_calls_to_three():
     from ai_service_agent.graph.agents.read_agent import READ_MODEL_CALL_LIMIT
 
     graph = make_read_graph(LoopingToolModel(responses=[]), tools=[kb_search])
-    out = graph.invoke(
+    from conftest import ainvoke_graph
+
+    out = ainvoke_graph(
+        graph,
         {"messages": [], "user_id": "u1", "session_id": "s-loop", "context": {}},
         config={"configurable": {"thread_id": "s-loop"}},
     )
