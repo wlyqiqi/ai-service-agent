@@ -1,4 +1,12 @@
-"""Real-model verification of async timeout recovery at router and select layers.
+"""Hybrid real-model verification of async timeout recovery.
+
+These tests make a real HTTP request for the first matching boundary call,
+then delay that response only at the test HTTP transport layer so LangGraph
+times out. The second matching boundary call uses a deterministic recovery
+payload because a real API cannot reliably respond within the tiny timeout.
+For the router test, non-boundary downstream calls are also deterministic so
+the assertion remains focused on router timeout behavior rather than network
+latency.
 
 Offline run:
     $env:E2E_MODEL="fake"; uv run --no-sync pytest tests/test_async_timeout_real.py -q
@@ -17,7 +25,6 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
 from pydantic import PrivateAttr
 
 from ai_service_agent.config import get_settings
@@ -34,19 +41,19 @@ pytestmark = pytest.mark.skipif(
 
 
 class SlowRealModel(ChatOpenAI):
-    """Real ARK model that delays only the first selected-boundary call."""
+    """Real ARK model with deterministic recovery on its second boundary call."""
 
     _matching_calls: int = PrivateAttr(default=0)
     _boundary: str = PrivateAttr()
-    _delay_seconds: float = PrivateAttr()
     _recovery_result: ChatResult | None = PrivateAttr(default=None)
+    _downstream_result: ChatResult | None = PrivateAttr(default=None)
 
     def __init__(
         self,
         *,
         boundary: str,
-        delay_seconds: float,
         recovery_result: ChatResult | None = None,
+        downstream_result: ChatResult | None = None,
         **kwargs,
     ):
         settings = get_settings()
@@ -54,11 +61,12 @@ class SlowRealModel(ChatOpenAI):
             model=settings.model_name,
             api_key=settings.model_api_key,
             base_url=settings.model_endpoint,
+            max_retries=0,
             **kwargs,
         )
         self._boundary = boundary
-        self._delay_seconds = delay_seconds
         self._recovery_result = recovery_result
+        self._downstream_result = downstream_result
 
     def _matches_boundary(self, messages: list) -> bool:
         system_text = "\n".join(
@@ -68,37 +76,52 @@ class SlowRealModel(ChatOpenAI):
         )
         return self._boundary in system_text
 
-    async def _delay_first_call(self, messages: list) -> None:
+    async def _agenerate_with_cache(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         if self._matches_boundary(messages):
             self._matching_calls += 1
-            if self._matching_calls == 1:
-                await asyncio.sleep(self._delay_seconds)
-
-    async def _agenerate_with_cache(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
-        await self._delay_first_call(messages)
-        if self._matching_calls >= 2 and self._recovery_result is not None:
-            return self._recovery_result
+            if self._matching_calls >= 2 and self._recovery_result is not None:
+                return self._recovery_result
+        elif self._matching_calls >= 2 and self._downstream_result is not None:
+            return self._downstream_result
         return await super()._agenerate_with_cache(
             messages, stop=stop, run_manager=run_manager, **kwargs
         )
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
-        await self._delay_first_call(messages)
+        if self._matches_boundary(messages):
+            self._matching_calls += 1
         async for chunk in super()._astream(
             messages, stop=stop, run_manager=run_manager, **kwargs
         ):
             yield chunk
 
 
-def _configure_timeout_settings(monkeypatch) -> None:
+class FirstBoundaryDelayTransport(httpx.AsyncHTTPTransport):
+    """Delay the response after forwarding the first real boundary request."""
+
+    def __init__(self, *, boundary: str, delay_seconds: float):
+        super().__init__()
+        self._boundary = boundary
+        self._delay_seconds = delay_seconds
+        self.delayed_requests = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request_body = request.content.decode("utf-8", errors="replace")
+        should_delay = self._boundary in request_body
+        if should_delay:
+            self.delayed_requests += 1
+        response = await super().handle_async_request(request)
+        if should_delay:
+            await asyncio.sleep(self._delay_seconds)
+        return response
+
+
+def _configure_model_environment(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setenv("FAKE_MODEL", "false")
     monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("TYPESAFE_API_KEY", settings.jev_api_key or "test-key")
-    monkeypatch.setenv("JEV_NODE_TIMEOUT_SECONDS", "0.05")
-    monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "0.05")
-    monkeypatch.setenv("LLM_NODE_TIMEOUT_SECONDS", "0.05")
     get_settings.cache_clear()
 
 
@@ -121,13 +144,16 @@ async def test_real_router_timeout_retries_and_recovers(monkeypatch):
 
     monkeypatch.setattr(router_mod.httpx, "Client", immediate_http_client)
 
-    route_prompt = (
-        "你是客服意图路由器。\n\n" + router_mod.ROUTE_INTENT_SYSTEM
-    )
+    router_boundary = "router-timeout-boundary"
+    route_prompt = router_boundary + "\n\n" + router_mod.ROUTE_INTENT_SYSTEM
     monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", unavailable_jev)
     monkeypatch.setattr(router_mod, "ROUTE_INTENT_SYSTEM", route_prompt)
-    _configure_timeout_settings(monkeypatch)
+    _configure_model_environment(monkeypatch)
+    monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "0.05")
+    get_settings.cache_clear()
     thread_id = f"real-router-timeout-{uuid.uuid4()}"
+    model = None
+    transport = None
 
     try:
         recovery_result = ChatResult(
@@ -139,16 +165,29 @@ async def test_real_router_timeout_retries_and_recovers(monkeypatch):
                 )
             ]
         )
-        model = SlowRealModel(
-            boundary="客服意图路由器",
+        downstream_result = ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content="产品使用方法已整理完成。（来源：router-timeout-fixture）"
+                    )
+                )
+            ]
+        )
+        transport = FirstBoundaryDelayTransport(
+            boundary=router_boundary,
             delay_seconds=0.10,
+        )
+        model = SlowRealModel(
+            boundary=router_boundary,
             recovery_result=recovery_result,
+            downstream_result=downstream_result,
+            http_async_client=httpx.AsyncClient(transport=transport),
         )
         graph = build_graph(
             model,
             tools=[kb_search],
             registry=DEFAULT_TOOL_REGISTRY,
-            checkpointer=MemorySaver(),
         )
         started = time.perf_counter()
         output = await graph.ainvoke(
@@ -162,8 +201,11 @@ async def test_real_router_timeout_retries_and_recovers(monkeypatch):
         )
         elapsed = time.perf_counter() - started
     finally:
+        if model is not None:
+            await model.http_async_client.aclose()
         get_settings.cache_clear()
 
+    assert transport.delayed_requests == 1
     assert model._matching_calls == 2
     assert output["execution_status"] == "completed"
     assert elapsed < 5.0
@@ -171,8 +213,12 @@ async def test_real_router_timeout_retries_and_recovers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_select_timeout_retries_and_recovers(monkeypatch):
-    _configure_timeout_settings(monkeypatch)
+    _configure_model_environment(monkeypatch)
+    monkeypatch.setenv("LLM_NODE_TIMEOUT_SECONDS", "0.05")
+    get_settings.cache_clear()
     thread_id = f"real-select-timeout-{uuid.uuid4()}"
+    model = None
+    transport = None
 
     try:
         recovery_result = ChatResult(
@@ -195,17 +241,20 @@ async def test_real_select_timeout_retries_and_recovers(monkeypatch):
                 )
             ]
         )
-        model = SlowRealModel(
+        transport = FirstBoundaryDelayTransport(
             boundary="客服操作选择器",
             delay_seconds=0.10,
+        )
+        model = SlowRealModel(
+            boundary="客服操作选择器",
             recovery_result=recovery_result,
+            http_async_client=httpx.AsyncClient(transport=transport),
         )
         graph = make_mutation_graph(
             model,
             DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
             DEFAULT_TOOL_REGISTRY,
         )
-        graph.checkpointer = MemorySaver()
         output = await graph.ainvoke(
             {
                 "messages": [
@@ -218,7 +267,10 @@ async def test_real_select_timeout_retries_and_recovers(monkeypatch):
             {"configurable": {"thread_id": thread_id}},
         )
     finally:
+        if model is not None:
+            await model.http_async_client.aclose()
         get_settings.cache_clear()
 
+    assert transport.delayed_requests == 1
     assert model._matching_calls == 2
     assert output["context"]["pending_tool"]["tool"] == "update_address"
