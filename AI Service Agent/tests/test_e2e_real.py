@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_openai import ChatOpenAI
 
 from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.server import create_app
@@ -358,6 +360,119 @@ class TestApprovalExpired:
 
         r = client.post(f"/approvals/{approval_id}/reject", json={"note": "test"})
         assert r.status_code in (409, 410)
+
+
+# ---------------------------------------------------------------------------
+# Fault tolerance fault injection (real model for router/select decisions)
+# ---------------------------------------------------------------------------
+
+
+class FlakyRouterRealModel(ChatOpenAI):
+    """Real model wrapper; injects one transient error only at the router boundary."""
+
+    router_calls: ClassVar[list[int]] = []
+
+    def __init__(self, real_model):
+        super().__init__(
+            model=real_model.model_name,
+            api_key=real_model.openai_api_key,
+            base_url=real_model.openai_api_base,
+        )
+
+    def _raise_once(self, messages):
+        if any(
+            getattr(m, "type", "") == "system"
+            and ("客服意图路由器" in str(m.content) or "客服路由意图分类器" in str(m.content))
+            for m in messages
+        ):
+            self.router_calls.append(1)
+            if len(self.router_calls) == 1:
+                raise ConnectionError("real e2e transient router failure")
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    def _generate_with_cache(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        return super()._generate_with_cache(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _agenerate_with_cache(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        return await super()._agenerate_with_cache(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        yield from super()._stream(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        async for chunk in super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield chunk
+
+
+class TestRealFaultToleranceE2E:
+    def test_router_transient_failure_retries_once(self, monkeypatch, tmp_path):
+        """Provider retry is transient-only and recovers without surfacing an error."""
+        from ai_service_agent.config import make_model
+        from ai_service_agent.graph import router as router_mod
+
+        def unavailable_jev(*args, **kwargs):
+            raise httpx.ConnectError("real e2e JEV unavailable")
+
+        monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", unavailable_jev)
+
+        model = FlakyRouterRealModel(make_model())
+        model.router_calls.clear()
+        app = create_app(str(tmp_path / "router-retry.db"), model=model)
+        client = TestClient(app)
+
+        sid = new_session(client)
+        code, events = chat_sse(client, sid, "你好，有什么商品推荐吗？")
+        types = event_types(events)
+        done = next((e for e in reversed(events) if e.get("type") == "done"), None)
+
+        assert code == 200
+        assert len(model.router_calls) >= 2
+        assert "error" not in types
+        assert done is not None and done.get("data", {}).get("final")
+
+    def test_mutation_tool_failure_uses_local_error_handler(self, monkeypatch, tmp_path):
+        """Mutation tool failures terminate at the subgraph's local failed node."""
+        from langgraph.prebuilt.tool_node import ToolNode
+
+        from ai_service_agent.config import make_model
+        from ai_service_agent.graph.workflows import mutation_agent
+
+        def failing_tools_tool_node(*args, **kwargs):
+            async def failing_tools(state, config):
+                raise httpx.ConnectError("real e2e mutation tool transport failure")
+
+            return failing_tools
+
+        monkeypatch.setattr(mutation_agent, "ToolNode", failing_tools_tool_node)
+        app = create_app(str(tmp_path / "mutation-error.db"), model=make_model())
+        client = TestClient(app)
+
+        sid = new_session(client)
+        code1, events1 = chat_sse(client, sid, "订单10086的收货地址改成北京市朝阳区")
+        assert code1 == 200
+        assert any(e.get("type") == "confirmation_required" for e in events1)
+
+        code2, events2 = chat_sse(client, sid, "确认")
+        types2 = event_types(events2)
+        done = next((e for e in reversed(events2) if e.get("type") == "done"), None)
+        error = next((e for e in events2 if e.get("type") == "error"), None)
+
+        assert code2 == 200
+        assert error is not None
+        assert error.get("data", {}).get("code") == "runtime_error"
+        assert "系统刚才遇到技术问题" in error.get("data", {}).get("message", "")
+        assert done is not None and done.get("data", {}).get("final")
 
 
 # ---------------------------------------------------------------------------

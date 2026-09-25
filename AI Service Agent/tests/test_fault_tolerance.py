@@ -44,3 +44,18 @@ def test_subgraph_error_handler_routes_to_local_finalizer():
 def test_runtime_error_text_is_customer_safe():
     assert "Traceback" not in RUNTIME_ERROR_TEXT
     assert "转人工" in RUNTIME_ERROR_TEXT
+
+
+def test_error_event_is_normalized_and_customer_safe(monkeypatch):
+    import ai_service_agent.graph.fault_tolerance as fault_tolerance
+
+    events = []
+    monkeypatch.setattr(fault_tolerance, "get_stream_writer", lambda: events.append)
+    error = NodeError(node="tools", error=RuntimeError("database unavailable"))
+
+    fault_tolerance.root_error_handler({}, error)
+
+    assert events == [{
+        "type": "error",
+        "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+    }]
