@@ -20,7 +20,8 @@ from ai_service_agent.graph.allowed_tools import (
     make_allowed_tool_boundary_wrapper_async,
     make_allowed_tool_boundary_wrapper_sync,
 )
-from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler
+from ai_service_agent.config import get_settings
+from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler, make_timeout_policy
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
 from ai_service_agent.graph.workflows.copy import (
     completion_text,
@@ -104,7 +105,12 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=N
     builder = StateGraph(CustomerServiceState).set_node_defaults(
         error_handler=make_subgraph_error_handler("finalize_failed"),
     )
-    builder.add_node("select_llm", make_select_node(model, "mutation", tools, registry), retry_policy=RETRY_LLM)
+    builder.add_node(
+        "select_llm",
+        make_select_node(model, "mutation", tools, registry),
+        retry_policy=RETRY_LLM,
+        timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
+    )
     builder.add_node("clarify", make_clarify_node())
     builder.add_node("precheck_fetch", make_precheck_fetch_node())
     builder.add_node("safety_check", make_safety_check_node("mutation", registry))

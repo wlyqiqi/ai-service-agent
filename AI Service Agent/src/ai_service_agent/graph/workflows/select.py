@@ -4,12 +4,14 @@ LLM 负责理解，确定性代码负责校验（AGENTS.md §18）：工具必�
 校验失败 -> writer safety_rejected(rule=precheck) + 置 precheck_reason + 条件边路由 safety_final，不进入 interrupt。
 """
 
+import asyncio
 import json
 import uuid
-from typing import Callable
+from collections.abc import Awaitable, Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 from langgraph.config import get_stream_writer
 
@@ -90,7 +92,7 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
-def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], dict]:
+def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], Awaitable[dict]]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
     # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
     tier_tools = [
@@ -143,7 +145,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             return fields
         return []
 
-    def select(state: dict) -> dict:
+    async def select(state: dict, config: RunnableConfig | None = None) -> dict:
         current_context = {**state.get("context", {})}
         current_context.pop("cancellation_candidates", None)
         state = {**state, "context": current_context}
@@ -168,7 +170,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             HumanMessage(content=last),
         ]
         if is_fake:
-            resp = bound.invoke(messages)
+            resp = await bound.ainvoke(messages, config=config)
             try:
                 payload = json.loads(resp.content)
                 tool_name = payload["tool"]
@@ -180,7 +182,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 SystemMessage(content=SELECT_BINDTOOLS_SYSTEM),
                 HumanMessage(content=last),
             ]
-            result = bound.invoke(messages)
+            result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
                 return _reject(state, "select_parse_failed")
             tool_call = result.tool_calls[0]
@@ -188,7 +190,9 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             args = dict(tool_call.get("args") or {})
 
         if tool_name == "cancel_order" and not args.get("order_id"):
-            candidates = find_own_cancellable_paid_orders(state.get("user_id", ""))
+            candidates = await asyncio.to_thread(
+                find_own_cancellable_paid_orders, state.get("user_id", "")
+            )
             if isinstance(candidates, dict):
                 return _reject(state, candidates["error"])
             if len(candidates) == 1:
@@ -201,7 +205,9 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 }
                 return {"context": ctx}
         if tool_name == "refund_apply" and not args.get("order_id"):
-            candidates = find_own_refundable_orders(state.get("user_id", ""))
+            candidates = await asyncio.to_thread(
+                find_own_refundable_orders, state.get("user_id", "")
+            )
             if isinstance(candidates, dict):
                 return _reject(state, candidates["error"])
             if len(candidates) == 1:

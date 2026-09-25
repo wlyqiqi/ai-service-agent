@@ -347,7 +347,7 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
         DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk"),
         DEFAULT_TOOL_REGISTRY,
     )
-    selected = select_node({**first, "messages": [HumanMessage(content="帮我申请退款")]})
+    selected = asyncio.run(select_node({**first, "messages": [HumanMessage(content="帮我申请退款")]}))
     assert "cancellation_candidates" not in selected["context"]
     assert selected["context"]["clarify_missing"] == ["order_id"]
 
