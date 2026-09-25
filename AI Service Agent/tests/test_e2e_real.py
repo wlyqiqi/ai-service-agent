@@ -367,17 +367,10 @@ class TestApprovalExpired:
 # ---------------------------------------------------------------------------
 
 
-class FlakyRouterRealModel(ChatOpenAI):
-    """Real model wrapper; injects one transient error only at the router boundary."""
+class FlakyRouterMixin:
+    """Shared transient-error injection for the router boundary."""
 
     router_calls: ClassVar[list[int]] = []
-
-    def __init__(self, real_model):
-        super().__init__(
-            model=real_model.model_name,
-            api_key=real_model.openai_api_key,
-            base_url=real_model.openai_api_base,
-        )
 
     def _raise_once(self, messages):
         if any(
@@ -388,6 +381,17 @@ class FlakyRouterRealModel(ChatOpenAI):
             self.router_calls.append(1)
             if len(self.router_calls) == 1:
                 raise ConnectionError("real e2e transient router failure")
+
+
+class FlakyRouterRealModel(FlakyRouterMixin, ChatOpenAI):
+    """Real model wrapper; injects one transient error only at the router boundary."""
+
+    def __init__(self, real_model):
+        super().__init__(
+            model=real_model.model_name,
+            api_key=real_model.openai_api_key,
+            base_url=real_model.openai_api_base,
+        )
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         self._raise_once(messages)
@@ -415,6 +419,18 @@ class FlakyRouterRealModel(ChatOpenAI):
             yield chunk
 
 
+class FlakyRouterFakeModel(FlakyRouterMixin, E2EFakeModel):
+    """Offline model wrapper; injects one transient error only at the router boundary."""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._raise_once(messages)
+        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
 class TestRealFaultToleranceE2E:
     def test_router_transient_failure_retries_once(self, monkeypatch, tmp_path):
         """Provider retry is transient-only and recovers without surfacing an error."""
@@ -426,7 +442,10 @@ class TestRealFaultToleranceE2E:
 
         monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", unavailable_jev)
 
-        model = FlakyRouterRealModel(_make_model())
+        if os.environ.get("E2E_MODEL") == "real":
+            model = FlakyRouterRealModel(_make_model())
+        else:
+            model = FlakyRouterFakeModel(responses=[])
         model.router_calls.clear()
         app = create_app(str(tmp_path / "router-retry.db"), model=model)
         client = TestClient(app)
