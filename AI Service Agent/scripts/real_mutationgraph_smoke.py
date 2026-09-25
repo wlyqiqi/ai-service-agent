@@ -1,5 +1,6 @@
 """真实模型 MutationGraph 端到端冒烟（数据库临时副本）。"""
 
+import asyncio
 import os
 import shutil
 import sqlite3
@@ -46,13 +47,13 @@ def _tool_names(result: dict) -> list[str]:
 def _invoke(graph, thread_id: str, user_id: str, text: str, resume=None) -> dict:
     config = {"configurable": {"thread_id": thread_id}}
     if resume is not None:
-        return graph.invoke(Command(resume=resume), config)
-    return graph.invoke({
+        return asyncio.run(graph.ainvoke(Command(resume=resume), config))
+    return asyncio.run(graph.ainvoke({
         "messages": [HumanMessage(content=text)],
         "user_id": user_id,
         "session_id": thread_id,
         "context": {},
-    }, config)
+    }, config))
 
 
 def main() -> int:

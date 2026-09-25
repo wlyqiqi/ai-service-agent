@@ -2,8 +2,10 @@ import json
 from typing import AsyncGenerator, Callable
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langgraph.errors import NodeTimeoutError
 from langgraph.types import Command
 
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 from ai_service_agent.harness.errors import normalize_error
 
 
@@ -129,6 +131,8 @@ async def event_stream(
             final = text
             final_message_id = final_message_id or msg_id
         yield {"type": "done", "data": {"final": final, "message_id": final_message_id}}
+    except NodeTimeoutError:
+        yield {"type": "done", "data": {"final": None, "message_id": None}}
     except Exception as exc:
         yield normalize_error(exc)
         yield {"type": "done", "data": {"final": None, "message_id": None}}

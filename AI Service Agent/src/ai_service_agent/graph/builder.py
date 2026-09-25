@@ -15,7 +15,7 @@ from ai_service_agent.graph.fault_tolerance import (
     root_error_handler,
 )
 from ai_service_agent.graph.router import (
-    _jev_fallback_result,
+    jev_fallback_result,
     make_deepseek_router,
     make_jev_router,
 )
@@ -109,7 +109,7 @@ def _router_join(state: dict) -> dict:
 
 def _jev_timeout_error_handler(state: dict, error: NodeError) -> Command:
     if isinstance(error.error, NodeTimeoutError):
-        return Command(update=_jev_fallback_result(), goto="router_deepseek")
+        return Command(update=jev_fallback_result(), goto="router_deepseek")
     return root_error_handler(state, error)
 
 
