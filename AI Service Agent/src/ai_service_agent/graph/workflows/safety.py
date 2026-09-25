@@ -7,7 +7,8 @@ P4 增量：必填标识符非空（D2，预检层业务兜底）+ 退款时限 
 静态后继与 goto 目标会并发执行导致双写；路由一律走条件边）。
 """
 
-from typing import Callable
+import asyncio
+from typing import Awaitable, Callable
 
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
@@ -89,16 +90,16 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
     return None
 
 
-def make_precheck_fetch_node() -> Callable[[dict], dict]:
+def make_precheck_fetch_node() -> Callable[[dict], Awaitable[dict]]:
     """precheck_fetch（D3，P4）：位于 select 后、safety_check 前。pending_tool.args 含 order_id 时
     查询订单状态 -> 写 context["precheck_data"]（仅事实），不做任何授权或业务裁决；无 order_id / 订单不存在不写。"""
-    def precheck_fetch(state: dict) -> dict:
+    async def precheck_fetch(state: dict) -> dict:
         ctx = state.get("context", {})
         pending = ctx.get("pending_tool") or {}
         order_id = (pending.get("args") or {}).get("order_id")
         if not isinstance(order_id, str) or not order_id:
             return {}
-        data, db_available = lookup_order_state_with_availability(order_id)
+        data, db_available = await asyncio.to_thread(lookup_order_state_with_availability, order_id)
         if not db_available:
             return {
                 "context": {

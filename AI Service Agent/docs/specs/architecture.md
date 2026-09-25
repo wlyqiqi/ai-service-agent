@@ -90,7 +90,7 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 
 ### Async Node Timeout
 
-异步 LLM 边界节点（Router、Select、ReadGraph、Fallback）使用 `TimeoutPolicy(run_timeout=...)`，且按节点单独配置，不使用 `set_node_defaults(timeout=...)`（后者可能影响隐式同步节点并导致编译失败）。`NodeTimeoutError` 是瞬态错误，由对应 `RetryPolicy` 控制。Mutation / HighRisk 工具写入不得纳入节点超时，直到副作用补偿机制明确。
+异步 LLM 边界节点（Router、Select、ReadGraph、Fallback）使用 `TimeoutPolicy(run_timeout=...)`，且按节点单独配置，不使用 `set_node_defaults(timeout=...)`（后者可能影响隐式同步节点并导致编译失败）。`NodeTimeoutError` 是瞬态错误，由对应 `RetryPolicy` 控制。超时范围是：**Select 覆盖完整 Select 尝试，包括节点内的只读候选 DB 查询；ReadGraph 覆盖完整 ReAct 尝试，包括该尝试内嵌套执行的只读工具工作**。Mutation / HighRisk 写工具执行不得纳入节点超时，直到副作用补偿机制明确。
 
 ## 6. 可观测性（横切）
 

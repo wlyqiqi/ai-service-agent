@@ -196,11 +196,11 @@ def _hr_graph(model):
 def test_precheck_fetch_writes_facts_only():
     """precheck_fetch：写 context[precheck_data] 仅事实、无裁决；无 order_id 不写。"""
     node = make_precheck_fetch_node()
-    out = node({"context": {"pending_tool": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}}}})
+    out = asyncio.run(node({"context": {"pending_tool": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}}}}))
     d = out["context"]["precheck_data"]
     assert d["status"] == "signed" and d["user_id"] == "u1" and d["order_id"] == "ORD-10086"
     assert "precheck_reason" not in out["context"]
-    out2 = node({"context": {"pending_tool": {"tool": "update_address", "args": {"address": "x"}}}})
+    out2 = asyncio.run(node({"context": {"pending_tool": {"tool": "update_address", "args": {"address": "x"}}}}))
     assert "precheck_data" not in out2.get("context", {})  # 无 order_id -> 空更新
 
 
@@ -258,17 +258,21 @@ def test_cancel_precheck_distinguishes_db_unavailable(monkeypatch):
         "lookup_order_state_with_availability",
         lambda order_id: (None, False),
     )
-    out = _safety_mini_graph(make_precheck_fetch_node()).invoke({
-        "messages": [],
-        "user_id": "u1",
-        "session_id": "cancel-datasource",
-        "context": {
-            "pending_tool": {
-                "tool": "cancel_order",
-                "args": {"order_id": "ORD-X", "request_id": "r"},
+    out = ainvoke_graph(
+        _safety_mini_graph(make_precheck_fetch_node()),
+        {
+            "messages": [],
+            "user_id": "u1",
+            "session_id": "cancel-datasource",
+            "context": {
+                "pending_tool": {
+                    "tool": "cancel_order",
+                    "args": {"order_id": "ORD-X", "request_id": "r"},
+                }
             }
         },
-    })
+        {"configurable": {"thread_id": "cancel-datasource"}},
+    )
     assert out["context"]["precheck_data"] == {
         "order_id": "ORD-X",
         "status": "data_source_unavailable",

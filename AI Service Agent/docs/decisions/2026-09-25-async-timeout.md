@@ -2,7 +2,7 @@
 
 ## Decision
 
-Convert the Router, Select, ReadGraph, and Fallback LLM boundary nodes to async and attach LangGraph per-node `TimeoutPolicy` at registration time. The timeout covers only the async LLM-boundary node, not tool execution.
+Convert the Router, Select, ReadGraph, and Fallback LLM boundary nodes to async and attach LangGraph per-node `TimeoutPolicy` at registration time.
 
 ## Defaults
 
@@ -14,9 +14,10 @@ Convert the Router, Select, ReadGraph, and Fallback LLM boundary nodes to async 
 
 - A JEV timeout falls back to DeepSeek and is not retried.
 - A DeepSeek Router timeout is retried at most once by `RETRY_DEEPSEEK_ROUTER`; the retry applies only to the DeepSeek Router node.
-- Select, ReadGraph, and Fallback timeout errors are retried only when `is_transient_error` accepts them.
-- Tool execution has no timeout in this migration.
-- SQLite write tools remain outside timeout scope until side-effect compensation is explicit.
+- The Select timeout covers the complete Select attempt, including read-only candidate database lookups performed inside that node.
+- The ReadGraph timeout covers the complete ReAct attempt, including nested read-only tool work driven by that attempt.
+- Fallback timeout applies only to the Fallback LLM-boundary node.
+- Mutation and high-risk write tool execution remains outside timeout scope until side-effect compensation is explicit.
 
 ## Compile Constraint
 
