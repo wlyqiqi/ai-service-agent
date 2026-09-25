@@ -1,9 +1,64 @@
+import inspect
+
 from langchain_core.messages import AIMessage, HumanMessage
 import pytest
+from langgraph.types import TimeoutPolicy
 
 from ai_service_agent.graph.builder import POLICY, build_graph
-from ai_service_agent.testing import ToolCallingFakeModel
+from ai_service_agent.config import get_settings
+from ai_service_agent.testing import ToolCallingFakeModel, make_fake_model
 from ai_service_agent.tools.kb import kb_search
+
+
+def assert_async_timeout(node_spec, timeout: TimeoutPolicy):
+    assert inspect.iscoroutinefunction(node_spec.bound.afunc)
+    assert node_spec.timeout == timeout
+
+
+def test_build_graph_compiles_async_llm_timeout_policies(monkeypatch):
+    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
+    monkeypatch.setenv("JEV_ENABLED", "true")
+    monkeypatch.setenv("FAKE_MODEL", "false")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    get_settings.cache_clear()
+    try:
+        graph = build_graph(make_fake_model(), tools=[kb_search])
+        settings = get_settings()
+
+        assert_async_timeout(
+            graph.nodes["router_jev"],
+            TimeoutPolicy(run_timeout=settings.jev_node_timeout_seconds),
+        )
+        assert_async_timeout(
+            graph.nodes["router_deepseek"],
+            TimeoutPolicy(run_timeout=settings.router_node_timeout_seconds),
+        )
+
+        read_graph = graph.nodes["read_graph"].bound
+        assert_async_timeout(
+            read_graph.nodes["agent_llm"],
+            TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
+        )
+
+        fallback_graph = graph.nodes["fallback"].bound
+        assert_async_timeout(
+            fallback_graph.nodes["explain_llm"],
+            TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
+        )
+
+        mutation_graph = graph.nodes["mutation_graph"].bound
+        assert_async_timeout(
+            mutation_graph.nodes["select_llm"],
+            TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
+        )
+
+        high_risk_graph = graph.nodes["high_risk_graph"].bound
+        assert_async_timeout(
+            high_risk_graph.nodes["select_llm"],
+            TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
+        )
+    finally:
+        get_settings.cache_clear()
 
 
 def test_policy_maps_read_path():
