@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from ai_service_agent.config import get_settings, make_model
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.route_policy import resolve_route_policy
-from ai_service_agent.graph.fault_tolerance import RETRY_DEEPSEEK_ROUTER
+from ai_service_agent.graph.fault_tolerance import RETRY_DEEPSEEK_ROUTER, root_error_handler
 from ai_service_agent.graph.router import make_deepseek_router, make_jev_router
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
@@ -117,7 +117,7 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
             return {}
         return {"execution_status": "completed"}
 
-    builder = StateGraph(CustomerServiceState)
+    builder = StateGraph(CustomerServiceState).set_node_defaults(error_handler=root_error_handler)
     settings = get_settings()
     use_jev = (
         settings.route_intent_enabled
