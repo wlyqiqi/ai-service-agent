@@ -214,6 +214,6 @@ def test_select_timeout_routes_to_local_error_handler(monkeypatch):
         elapsed = time.monotonic() - started
 
         assert output["execution_status"] == "failed"
-        assert elapsed < 5
+        assert elapsed < 3.5
     finally:
         get_settings.cache_clear()
