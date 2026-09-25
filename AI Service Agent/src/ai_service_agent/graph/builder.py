@@ -7,7 +7,11 @@ from langgraph.graph import END, START, StateGraph
 from ai_service_agent.config import get_settings, make_model
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.route_policy import resolve_route_policy
-from ai_service_agent.graph.fault_tolerance import RETRY_DEEPSEEK_ROUTER, root_error_handler
+from ai_service_agent.graph.fault_tolerance import (
+    RETRY_DEEPSEEK_ROUTER,
+    make_timeout_policy,
+    root_error_handler,
+)
 from ai_service_agent.graph.router import make_deepseek_router, make_jev_router
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
@@ -97,6 +101,20 @@ def _router_join(state: dict) -> dict:
     return {}
 
 
+def _router_target(state: dict) -> str:
+    if state.get("route_control") == "timeout_failed":
+        return "final"
+    return "policy_gate"
+
+
+def _router_join_target(state: dict) -> str:
+    if state.get("route_control") == "timeout_failed":
+        return "final"
+    if state.get("route_control") == "deepseek_fallback":
+        return "router_deepseek"
+    return "policy_gate"
+
+
 def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks=None):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
@@ -126,17 +144,23 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
         and not settings.fake_model
     )
     if use_jev:
-        builder.add_node("router_jev", make_jev_router())
+        builder.add_node(
+            "router_jev",
+            make_jev_router(),
+            timeout=make_timeout_policy(settings.jev_node_timeout_seconds),
+        )
         builder.add_node(
             "router_deepseek",
             make_deepseek_router(model, route_intent_enabled=True),
             retry_policy=RETRY_DEEPSEEK_ROUTER,
+            timeout=make_timeout_policy(settings.router_node_timeout_seconds),
         )
     else:
         builder.add_node(
             "router_deepseek",
             make_deepseek_router(model, route_intent_enabled=settings.route_intent_enabled),
             retry_policy=RETRY_DEEPSEEK_ROUTER,
+            timeout=make_timeout_policy(settings.router_node_timeout_seconds),
         )
     builder.add_node("guard", guard)
     builder.add_node("policy_gate", _policy_gate)
@@ -151,14 +175,22 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
     if use_jev:
         builder.add_edge(START, "router_jev")
         builder.add_edge(["guard", "router_jev"], "router_join")
-        builder.add_edge("router_deepseek", "policy_gate")
+        builder.add_conditional_edges(
+            "router_deepseek",
+            _router_target,
+            {"final": "final", "policy_gate": "policy_gate"},
+        )
     else:
         builder.add_edge(START, "router_deepseek")
         builder.add_edge(["guard", "router_deepseek"], "router_join")
     builder.add_conditional_edges(
         "router_join",
-        lambda state: "router_deepseek" if state.get("route_control") == "deepseek_fallback" else "policy_gate",
-        {"router_deepseek": "router_deepseek", "policy_gate": "policy_gate"},
+        _router_join_target,
+        {
+            "router_deepseek": "router_deepseek",
+            "policy_gate": "policy_gate",
+            "final": "final",
+        },
     )
     builder.add_conditional_edges(
         "policy_gate", _guard_aware_target,
