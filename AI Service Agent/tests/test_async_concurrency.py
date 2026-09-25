@@ -1,9 +1,9 @@
 import asyncio
-import os
 import time
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
@@ -38,10 +38,6 @@ def offline_settings(monkeypatch):
         get_settings.cache_clear()
 
 
-def _concurrency_users() -> int:
-    return int(os.getenv("ASYNC_CONCURRENCY_USERS", "100"))
-
-
 def _invoke_payload(user_id: str, session_id: str) -> dict:
     return {
         "messages": [HumanMessage(content="这是一个离线并发测试问题")],
@@ -53,23 +49,32 @@ def _invoke_payload(user_id: str, session_id: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_root_graph_supports_100_concurrent_users():
-    user_count = _concurrency_users()
-    graph = build_graph(ConcurrentFakeModel(responses=[]), tools=[kb_search])
+    user_count = 100
+    graph = build_graph(
+        ConcurrentFakeModel(responses=[]),
+        tools=[kb_search],
+        checkpointer=MemorySaver(),
+    )
 
     async def invoke(index: int):
         session_id = f"async-concurrency-{uuid4()}-{index}"
         thread_id = f"thread-{session_id}"
-        return await graph.ainvoke(
-            _invoke_payload(f"user-{session_id}", session_id),
-            {"configurable": {"thread_id": thread_id}},
-        )
+        user_id = f"user-{session_id}"
+        config = {"configurable": {"thread_id": thread_id}}
+        result = await graph.ainvoke(_invoke_payload(user_id, session_id), config)
+        return config, result, user_id, session_id
 
     started = time.perf_counter()
-    results = await asyncio.gather(*(invoke(index) for index in range(user_count)))
+    invocations = await asyncio.gather(*(invoke(index) for index in range(user_count)))
     elapsed = time.perf_counter() - started
 
-    assert len(results) == user_count
-    assert all(result["execution_status"] == "completed" for result in results)
+    assert len(invocations) == user_count
+    for config, result, user_id, session_id in invocations:
+        assert result["execution_status"] == "completed"
+        state = await graph.aget_state(config)
+        assert state.values["user_id"] == user_id
+        assert state.values["session_id"] == session_id
+
     assert elapsed < 10.0
 
 
