@@ -19,6 +19,8 @@ class CustomerServiceState(TypedDict):
     confidence: float
     routing_backend: str | None   # Router 观测字段：jev / deepseek，不参与路由
     routing_fallback: bool        # Router 观测字段：是否使用 DeepSeek fallback
+    route_control: Literal["policy", "deepseek_fallback"] | None
+                                  # 路由控制字段：唯一允许决定一次 DeepSeek fallback 的信号
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（每轮覆盖，见 graph-spec.md §2）
     context: dict                  # 业务上下文：订单、账户、工单等
     pending_approval: ApprovalRequest | None
@@ -54,3 +56,4 @@ class CustomerServiceState(TypedDict):
 - 新增字段必须在此登记，并同步更新 `graph-spec.md` 中读写该字段的节点清单。
 - 禁止在子图内引入与总图重名的私有状态字段（避免 reducer 冲突）。
 - `routing_backend` / `routing_fallback` 是 Router 观测字段；Policy Gate 与子图不得将其作为路由依据。
+- `route_control` 是路由控制字段：`deepseek_fallback` 允许 `router_join` 进入一次 DeepSeek；`policy` 直接进入 Policy Gate。该字段不属于业务状态，Router/Policy Gate 之外的节点不得修改。

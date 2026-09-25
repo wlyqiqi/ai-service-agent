@@ -30,6 +30,28 @@ class FlakyDeepSeekModel(ToolCallingFakeModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="这是 FAQ 的离线回复。"))])
 
 
+class OnceRouteIntentModel(ToolCallingFakeModel):
+    router_calls: int = 0
+
+    def __init__(self):
+        super().__init__(responses=[])
+        self.router_calls = 0
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        system = next(
+            (m.content for m in messages if getattr(m, "type", "") == "system"),
+            "",
+        )
+        if "Route Intent" in system or "路由" in system:
+            self.router_calls += 1
+            return ChatResult(
+                generations=[ChatGeneration(message=route_intent_json_message("faq", 0.9))]
+            )
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="这是 FAQ 的离线回复。"))]
+        )
+
+
 def test_jev_error_retries_only_deepseek(monkeypatch):
     jev_calls = []
 
@@ -65,3 +87,29 @@ def test_jev_error_retries_only_deepseek(monkeypatch):
     assert model.router_calls == 2
     assert output["execution_status"] == "completed"
     assert "FAQ" in output["messages"][-1].content
+
+
+def test_non_jev_route_intent_invokes_deepseek_once(monkeypatch):
+    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
+    monkeypatch.setenv("JEV_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        model = OnceRouteIntentModel()
+        graph = build_graph(model, tools=[kb_search])
+        output = graph.invoke(
+            {
+                "messages": [HumanMessage(content="商品怎么使用？")],
+                "user_id": "u1",
+                "session_id": "route-intent-once-1",
+                "context": {},
+            },
+            {"configurable": {"thread_id": "route-intent-once-1"}},
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert model.router_calls == 1
+    assert output["route_control"] == "policy"
+    assert output["target_graph"] == "read_graph"
+    assert output["execution_class"] == "read_only"
+    assert output["execution_status"] == "completed"

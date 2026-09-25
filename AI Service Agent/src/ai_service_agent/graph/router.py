@@ -21,6 +21,7 @@ def _route_intent_result(route_intent: str, confidence: float, backend: str, fal
         "execution_status": "routing",
         "routing_backend": backend,
         "routing_fallback": fallback,
+        "route_control": "policy",
     }
 
 def _jev_fallback_result() -> dict:
@@ -28,6 +29,7 @@ def _jev_fallback_result() -> dict:
         "execution_status": "routing",
         "routing_backend": "jev",
         "routing_fallback": True,
+        "route_control": "deepseek_fallback",
     }
 
 class RouterSchema(BaseModel):
@@ -187,6 +189,7 @@ def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict
                 "risk_level": parsed.risk_level,
                 "confidence": confidence,
                 "execution_status": "routing",
+                "route_control": "policy",
             }
 
         return deepseek_route

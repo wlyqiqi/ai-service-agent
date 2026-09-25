@@ -151,15 +151,15 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
     if use_jev:
         builder.add_edge(START, "router_jev")
         builder.add_edge(["guard", "router_jev"], "router_join")
+        builder.add_edge("router_deepseek", "policy_gate")
     else:
         builder.add_edge(START, "router_deepseek")
         builder.add_edge(["guard", "router_deepseek"], "router_join")
     builder.add_conditional_edges(
         "router_join",
-        lambda state: "router_deepseek" if state.get("routing_fallback") else "policy_gate",
+        lambda state: "router_deepseek" if state.get("route_control") == "deepseek_fallback" else "policy_gate",
         {"router_deepseek": "router_deepseek", "policy_gate": "policy_gate"},
     )
-    builder.add_edge("router_deepseek", "policy_gate")
     builder.add_conditional_edges(
         "policy_gate", _guard_aware_target,
         {"safety_final": "safety_final", "read_graph": "read_graph", "fallback": "fallback", "mutation_graph": "mutation_graph", "high_risk_graph": "high_risk_graph"},

@@ -71,6 +71,7 @@
 - Jev 超时、HTTP 错误或非法输出时 fallback 到 DeepSeek。
 - Jev 返回合法 Choice 但置信度低于执行档阈值时，直接归为 `unknown`，不得再调用 DeepSeek。
 - `routing_backend` / `routing_fallback` 只用于观测和评估，不参与路由。
+- `route_control` 是唯一的 fallback 控制信号：Jev 失败写入 `deepseek_fallback`，`router_join` 据此执行一次 DeepSeek；DeepSeek 写入 `policy` 后必须进入 Policy Gate，不得再回到自身。
 - 每轮执行；多轮中用户可切换意图。
 - v2 仅写入自身分类字段（`route_intent` / `confidence`），不得修改 `context` 等业务状态。
 - Router 失败/超时 → 直接走 Fallback。
@@ -154,7 +155,7 @@
 | 节点/子图 | 读 | 写 |
 |---|---|---|
 | GuardNode | `messages`（原始输入）、`user_id` | `guard_status` |
-| Router | `messages`、`user_id` | v2: `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`；v1（兼容）: `capability`、`risk_level` |
+| Router | `messages`、`user_id` | v2: `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control`；v1（兼容）: `capability`、`risk_level`、`route_control` |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
