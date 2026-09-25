@@ -22,11 +22,20 @@ class Settings(BaseSettings):
     jev_timeout_seconds: float = Field(
         default=2.5, validation_alias="JEV_TIMEOUT_SECONDS"
     )
+    jev_node_timeout_seconds: float = Field(
+        default=3.0, validation_alias="JEV_NODE_TIMEOUT_SECONDS"
+    )
     # 真实运行走 ARK（OpenAI 兼容）：字段与 .env 的 ARK_* 对齐
     model_name: str = Field(default="deepseek-v4-flash", validation_alias="ARK_MODEL")
     model_endpoint: str | None = Field(default=None, validation_alias="ARK_BASE_URL")
     model_api_key: str | None = Field(default=None, validation_alias="ARK_API_KEY")
     router_conf_threshold: float = 0.6
+    router_node_timeout_seconds: float = Field(
+        default=6.0, validation_alias="ROUTER_NODE_TIMEOUT_SECONDS"
+    )
+    llm_node_timeout_seconds: float = Field(
+        default=12.0, validation_alias="LLM_NODE_TIMEOUT_SECONDS"
+    )
     # Route Intent Router v2：默认关闭；开启后 Router 只输出 route_intent + confidence。
     route_intent_enabled: bool = Field(
         default=False,
