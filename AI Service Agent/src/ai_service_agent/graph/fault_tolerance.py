@@ -6,6 +6,8 @@ from langgraph.config import get_stream_writer
 from langgraph.errors import NodeError
 from langgraph.types import Command, RetryPolicy
 
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
+
 
 TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
@@ -52,8 +54,8 @@ def _emit_node_error(error: NodeError) -> None:
         get_stream_writer()({
             "type": "error",
             "data": {
-                "code": type(error.error).__name__,
-                "message": str(error.error)[:200],
+                "code": "runtime_error",
+                "message": RUNTIME_ERROR_TEXT,
             },
         })
     except RuntimeError:
