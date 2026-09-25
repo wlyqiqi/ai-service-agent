@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
@@ -22,6 +23,29 @@ class ConcurrentFakeModel(ToolCallingFakeModel):
             router_json_message("faq", "read", 0.95)
             if router_prompt
             else AIMessage(content="离线并发回复")
+        )
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+class OverlapTrackingFakeModel(ToolCallingFakeModel):
+    """Track concurrent offline model starts before any model call finishes."""
+
+    active_count: int = 0
+    maximum_active: int = 0
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.active_count += 1
+        self.maximum_active = max(self.maximum_active, self.active_count)
+        try:
+            await asyncio.sleep(0.035)
+        finally:
+            self.active_count -= 1
+
+        router_prompt = any("客服意图路由器" in str(message.content) for message in messages)
+        message = (
+            router_json_message("faq", "read", 0.95)
+            if router_prompt
+            else AIMessage(content="离线 SQLite 并发回复")
         )
         return ChatResult(generations=[ChatGeneration(message=message)])
 
@@ -76,6 +100,35 @@ async def test_root_graph_supports_100_concurrent_users():
         assert state.values["session_id"] == session_id
 
     assert elapsed < 10.0
+
+
+@pytest.mark.asyncio
+async def test_async_sqlite_saver_isolates_concurrent_threads(tmp_path):
+    invocation_count = 10
+    model = OverlapTrackingFakeModel(responses=[])
+    db_path = tmp_path / "async-concurrency.db"
+
+    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+        graph = build_graph(model, tools=[kb_search], checkpointer=checkpointer)
+
+        async def invoke(index: int):
+            session_id = f"sqlite-concurrency-{uuid4()}-{index}"
+            thread_id = f"thread-{session_id}"
+            user_id = f"user-{session_id}"
+            config = {"configurable": {"thread_id": thread_id}}
+            result = await graph.ainvoke(_invoke_payload(user_id, session_id), config)
+            return config, result, user_id, session_id
+
+        invocations = await asyncio.gather(*(invoke(index) for index in range(invocation_count)))
+
+        assert len(invocations) == invocation_count
+        assert model.maximum_active > 1
+        for config, result, user_id, session_id in invocations:
+            assert result["execution_status"] == "completed"
+            state = await graph.aget_state(config)
+            assert state.values["user_id"] == user_id
+            assert state.values["session_id"] == session_id
+            assert state.values["messages"][-1].content == "离线 SQLite 并发回复"
 
 
 @pytest.mark.asyncio
