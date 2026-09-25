@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 
 import httpx
@@ -58,6 +59,10 @@ RETRY_DEEPSEEK_ROUTER = RetryPolicy(
 
 
 def make_timeout_policy(run_timeout: float) -> TimeoutPolicy:
+    if not isinstance(run_timeout, (int, float)) or isinstance(run_timeout, bool):
+        raise ValueError("timeout duration must be a positive finite number of seconds")
+    if not math.isfinite(run_timeout) or run_timeout <= 0:
+        raise ValueError("timeout duration must be a positive finite number of seconds")
     return TimeoutPolicy(run_timeout=run_timeout)
 
 

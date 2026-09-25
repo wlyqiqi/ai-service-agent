@@ -41,6 +41,12 @@ def test_timeout_policy_uses_run_budget_without_idle_timeout():
     assert policy.idle_timeout is None
 
 
+@pytest.mark.parametrize("duration", [0, -0.1, float("inf"), float("-inf"), float("nan")])
+def test_timeout_policy_rejects_non_positive_or_non_finite_durations(duration):
+    with pytest.raises(ValueError, match="positive finite"):
+        make_timeout_policy(duration)
+
+
 def test_settings_expose_node_timeout_aliases(monkeypatch):
     monkeypatch.setenv("JEV_NODE_TIMEOUT_SECONDS", "3.1")
     monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "6.1")
