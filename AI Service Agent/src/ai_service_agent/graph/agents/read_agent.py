@@ -2,15 +2,17 @@ from typing import Annotated, TypedDict
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.allowed_tools import AllowedToolsMiddleware
+from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler
 from ai_service_agent.harness.tool_hooks import ToolHookMiddleware
 from ai_service_agent.prompts import READ_SYSTEM_PROMPT
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 
 READ_MODEL_CALL_LIMIT = 3
 
@@ -32,14 +34,21 @@ def make_read_graph(model, tools: list, tool_hooks=None):
     def finalize(state: dict) -> dict:
         return {"execution_status": "completed"}
 
-    builder = StateGraph(CustomerServiceState)
-    builder.add_node("agent_llm", agent)
+    def finalize_failed(state: dict) -> dict:
+        return {"messages": [AIMessage(content=RUNTIME_ERROR_TEXT)], "execution_status": "failed"}
+
+    builder = StateGraph(CustomerServiceState).set_node_defaults(
+        error_handler=make_subgraph_error_handler("finalize_failed"),
+    )
+    builder.add_node("agent_llm", agent, retry_policy=RETRY_LLM)
     builder.add_node("tools", tools_node)
     builder.add_node("finalize", finalize)
+    builder.add_node("finalize_failed", finalize_failed)
     builder.add_edge(START, "agent_llm")
     builder.add_conditional_edges(
         "agent_llm", tools_condition, {"tools": "tools", "__end__": "finalize"}
     )
     builder.add_edge("tools", "agent_llm")
     builder.add_edge("finalize", END)
+    builder.add_edge("finalize_failed", END)
     return builder.compile()
