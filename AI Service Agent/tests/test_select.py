@@ -3,6 +3,7 @@
 from typing import Callable
 from unittest.mock import MagicMock, call
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from ai_service_agent.graph.workflows.select import make_select_node
@@ -135,18 +136,16 @@ def test_select_real_model_rejects_missing_tool_calls():
     assert "pending_tool" not in output["context"]
 
 
-def test_select_real_model_rejects_invocation_failure():
+def test_select_real_model_provider_failure_propagates_for_retry():
     bound_model = MagicMock()
     bound_model.invoke.side_effect = RuntimeError("provider unavailable")
     model = MagicMock()
     model.bind_tools.return_value = bound_model
     node, _ = _real_model_node(model)
 
-    output = node({
-        "messages": [HumanMessage(content="把手机号改成13800138000")],
-        "user_id": "u1",
-        "context": {},
-    })
-
-    assert output["context"]["precheck_reason"] == "select_parse_failed"
-    assert output["execution_status"] == "completed"
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        node({
+            "messages": [HumanMessage(content="把手机号改成13800138000")],
+            "user_id": "u1",
+            "context": {},
+        })
