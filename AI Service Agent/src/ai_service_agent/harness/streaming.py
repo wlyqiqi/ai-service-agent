@@ -2,8 +2,10 @@ import json
 from typing import AsyncGenerator, Callable
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langgraph.errors import NodeTimeoutError
 from langgraph.types import Command
 
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 from ai_service_agent.harness.errors import normalize_error
 
 
@@ -68,6 +70,8 @@ async def event_stream(
             invocation = {**invocation, **extra_state}
     final_text: list[str] = []
     final_message_id: str | None = None
+    error_emitted = False
+    routing_recovered = False
     before_ids: set = await snapshot_assistant_ids(graph, config)
     try:
         async for _ns, mode, payload in graph.astream(
@@ -75,6 +79,8 @@ async def event_stream(
         ):
             if mode == "custom":
                 if isinstance(payload, dict) and "type" in payload:
+                    error_emitted = error_emitted or payload.get("type") == "error"
+                    routing_recovered = routing_recovered or payload.get("type") == "routing_fallback"
                     yield payload
             elif mode == "messages":
                 chunk, _meta = payload
@@ -129,6 +135,13 @@ async def event_stream(
             final = text
             final_message_id = final_message_id or msg_id
         yield {"type": "done", "data": {"final": final, "message_id": final_message_id}}
+    except NodeTimeoutError:
+        if not error_emitted and not routing_recovered:
+            yield {
+                "type": "error",
+                "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+            }
+        yield {"type": "done", "data": {"final": None, "message_id": None}}
     except Exception as exc:
         yield normalize_error(exc)
         yield {"type": "done", "data": {"final": None, "message_id": None}}

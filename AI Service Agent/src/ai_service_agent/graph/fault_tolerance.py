@@ -1,10 +1,11 @@
+import math
 from collections.abc import Callable
 
 import httpx
 import openai
 from langgraph.config import get_stream_writer
-from langgraph.errors import NodeError
-from langgraph.types import Command, RetryPolicy
+from langgraph.errors import NodeError, NodeTimeoutError
+from langgraph.types import Command, RetryPolicy, TimeoutPolicy
 
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 
@@ -22,7 +23,15 @@ def _http_status(error: Exception) -> int | None:
 
 def is_transient_error(error: BaseException) -> bool:
     """Return True only for errors that are safe to retry at the LLM boundary."""
-    if isinstance(error, (TimeoutError, ConnectionError, httpx.TransportError)):
+    if isinstance(
+        error,
+        (
+            NodeTimeoutError,
+            TimeoutError,
+            ConnectionError,
+            httpx.TransportError,
+        ),
+    ):
         return True
     if isinstance(error, (openai.APIConnectionError, openai.RateLimitError)):
         return True
@@ -41,12 +50,20 @@ RETRY_LLM = RetryPolicy(
 
 RETRY_DEEPSEEK_ROUTER = RetryPolicy(
     max_attempts=2,
-    initial_interval=0.5,
+    initial_interval=0.1,
     backoff_factor=2.0,
-    max_interval=2.0,
-    jitter=True,
+    max_interval=0.2,
+    jitter=False,
     retry_on=is_transient_error,
 )
+
+
+def make_timeout_policy(run_timeout: float) -> TimeoutPolicy:
+    if not isinstance(run_timeout, (int, float)) or isinstance(run_timeout, bool):
+        raise ValueError("timeout duration must be a positive finite number of seconds")
+    if not math.isfinite(run_timeout) or run_timeout <= 0:
+        raise ValueError("timeout duration must be a positive finite number of seconds")
+    return TimeoutPolicy(run_timeout=run_timeout)
 
 
 def _emit_node_error(error: NodeError) -> None:
@@ -62,9 +79,12 @@ def _emit_node_error(error: NodeError) -> None:
         pass
 
 
-def root_error_handler(state: dict, error: NodeError) -> dict:
+def root_error_handler(state: dict, error: NodeError) -> Command:
     _emit_node_error(error)
-    return {"execution_status": "failed"}
+    return Command(
+        update={"execution_status": "failed"},
+        goto="final",
+    )
 
 
 def make_subgraph_error_handler(final_node: str) -> Callable[[dict, NodeError], Command]:

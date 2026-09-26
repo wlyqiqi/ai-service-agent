@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.builder import build_graph
+from conftest import ainvoke_graph
 from ai_service_agent.harness.tool_hooks import (
     ToolHookContext,
     build_hook_context,
@@ -166,7 +167,7 @@ def test_read_graph_runs_tool_hooks():
         AIMessage(content="Found it."),
     ])
     graph = make_read_graph(model, tools=[hook_echo_tool], tool_hooks=[recorder])
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {"messages": [], "user_id": "u1"},
         config={"configurable": {"thread_id": "t-hook-read"}},
     )
@@ -221,11 +222,11 @@ def test_mutation_graph_runs_tool_hooks(hook_seed, monkeypatch):
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
     config = {"configurable": {"thread_id": "t-hook-m"}}
-    graph.invoke(
+    ainvoke_graph(graph,
         {"messages": [HumanMessage(content="Update delivery address")], "user_id": "u1", "session_id": "t-hook-m", "context": {}},
         config,
     )
-    out = graph.invoke(Command(resume={"action": "confirm"}), config)
+    out = ainvoke_graph(graph, Command(resume={"action": "confirm"}), config)
     assert out["execution_status"] == "completed"
     afters = [event for event in recorder.events if event[0] == "after"]
     assert afters
@@ -262,11 +263,11 @@ def test_high_risk_graph_runs_tool_hooks(monkeypatch, tmp_path):
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
     config = {"configurable": {"thread_id": "t-hook-hr"}}
-    graph.invoke(
+    ainvoke_graph(graph,
         {"messages": [HumanMessage(content="Apply for refund")], "user_id": owner, "session_id": "t-hook-hr", "context": {}},
         config,
     )
-    out = graph.invoke(Command(resume={"action": "approve"}), config)
+    out = ainvoke_graph(graph, Command(resume={"action": "approve"}), config)
     assert out["execution_status"] == "completed"
     afters = [event for event in recorder.events if event[0] == "after"]
     assert afters
@@ -325,7 +326,7 @@ def test_make_ai_graph_default_logging_hook_wired(monkeypatch):
         AIMessage(content="查到了。"),
     ])
     graph = graph_mod.make_ai_graph(model, MemorySaver())
-    out = graph.invoke(
+    out = ainvoke_graph(graph,
         {"messages": [HumanMessage(content="保修多久")], "user_id": "u1", "session_id": "s1", "context": {}},
         {"configurable": {"thread_id": "t-hook-default"}},
     )

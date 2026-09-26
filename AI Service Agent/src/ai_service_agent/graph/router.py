@@ -1,10 +1,13 @@
+import asyncio
 import json
 import math
+from collections.abc import Awaitable
 from typing import Callable, Literal
 
 import httpx
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from ai_service_agent.config import get_settings
@@ -24,13 +27,14 @@ def _route_intent_result(route_intent: str, confidence: float, backend: str, fal
         "route_control": "policy",
     }
 
-def _jev_fallback_result() -> dict:
+def jev_fallback_result() -> dict:
     return {
         "execution_status": "routing",
         "routing_backend": "jev",
         "routing_fallback": True,
         "route_control": "deepseek_fallback",
     }
+
 
 class RouterSchema(BaseModel):
     capability: str
@@ -172,14 +176,14 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
 
     return _route_intent_result(choice, confidence, "jev", False)
 
-def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict], dict]:
+def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict], Awaitable[dict]]:
     """DeepSeek fallback node; retry policy is attached by the root graph."""
     system_prompt = ROUTE_INTENT_SYSTEM if route_intent_enabled else ROUTER_SYSTEM
     agent = create_agent(_router_model(model), tools=[], system_prompt=system_prompt)
 
     if not route_intent_enabled:
-        def deepseek_route(state: dict) -> dict:
-            result = agent.invoke({"messages": state["messages"]})
+        async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
+            result = await agent.ainvoke({"messages": state["messages"]}, config=config)
             payload = _parse_router_content(result["messages"][-1].content)
             parsed = RouterSchema.model_validate(payload)
             confidence = float(parsed.confidence)
@@ -194,8 +198,8 @@ def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict
 
         return deepseek_route
 
-    def deepseek_route(state: dict) -> dict:
-        result = agent.invoke({"messages": state["messages"]})
+    async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
+        result = await agent.ainvoke({"messages": state["messages"]}, config=config)
         payload = _parse_route_intent_content(result["messages"][-1].content)
         parsed = RouteIntentSchema.model_validate(payload)
         intent = parsed.route_intent
@@ -207,18 +211,21 @@ def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict
     return deepseek_route
 
 
-def make_jev_router() -> Callable[[dict], dict]:
+def make_jev_router() -> Callable[[dict], Awaitable[dict]]:
     """JEV primary node; failures transition to fallback without chain retry."""
     settings = get_settings()
 
-    def route(state: dict) -> dict:
+    async def route(state: dict, config: RunnableConfig | None = None) -> dict:
         try:
-            with httpx.Client(timeout=settings.jev_timeout_seconds) as jev_client:
-                candidate = _classify_route_intent_with_jev(jev_client, state, settings)
+            def call_jev():
+                with httpx.Client(timeout=settings.jev_timeout_seconds) as jev_client:
+                    return _classify_route_intent_with_jev(jev_client, state, settings)
+
+            candidate = await asyncio.to_thread(call_jev)
         except (httpx.HTTPError, ValueError, TypeError, KeyError):
-            return _jev_fallback_result()
+            return jev_fallback_result()
         if candidate is None:
-            return _jev_fallback_result()
+            return jev_fallback_result()
         if route_intent_is_confident(
             candidate["route_intent"], candidate["confidence"]
         ):

@@ -1,11 +1,18 @@
 import asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.errors import NodeTimeoutError
+from langgraph.checkpoint.memory import MemorySaver
 
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.streaming import event_stream
+from ai_service_agent.config import get_settings
 from ai_service_agent.testing import ToolCallingFakeModel
+from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
+from conftest import ainvoke_graph
 from ai_service_agent.tools.kb import kb_search
+from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM
+from ai_service_agent.testing import route_intent_json_message
 
 
 def _collect(gen):
@@ -45,10 +52,123 @@ def test_stream_emits_error_then_done():
     assert "error" in types
     assert events[-1]["data"]["final"] is None
 
-from langgraph.checkpoint.memory import MemorySaver
 
-from ai_service_agent.graph.builder import build_graph
-from ai_service_agent.tools.kb import kb_search
+class SlowAsyncRouterModel(ToolCallingFakeModel):
+    router_calls: int = 0
+    delay: float = 0.0
+
+    def __init__(self, *, delay: float):
+        super().__init__(responses=[])
+        self.delay = delay
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        system = next(
+            (message.content for message in messages if getattr(message, "type", "") == "system"),
+            "",
+        )
+        is_router_call = system == ROUTE_INTENT_SYSTEM
+        if is_router_call:
+            self.router_calls += 1
+        await asyncio.sleep(self.delay)
+        if is_router_call:
+            return route_intent_json_message("faq", 0.9)
+        return AIMessage(content="这是 FAQ 的离线回复。")
+
+
+def test_stream_suppresses_recovered_node_timeout():
+    class RecoveredTimeoutGraph:
+        async def astream(self, *args, **kwargs):
+            yield (), "custom", {"type": "routing_fallback"}
+            raise NodeTimeoutError(
+                node="router_jev", elapsed=0.05, kind="run", run_timeout=0.05
+            )
+
+    events = _collect(event_stream(
+        RecoveredTimeoutGraph(),
+        {"configurable": {"thread_id": "stream-jev-timeout"}},
+        [HumanMessage(content="商品怎么使用？")],
+    ))
+
+    assert [event for event in events if event["type"] == "error"] == []
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] is None
+
+
+def test_stream_emits_runtime_error_for_escaped_node_timeout():
+    class EscapedTimeoutGraph:
+        async def astream(self, *args, **kwargs):
+            yield (), "custom", {"type": "token", "data": {"text": "partial"}}
+            raise NodeTimeoutError(
+                node="read_graph", elapsed=0.05, kind="run", run_timeout=0.05
+            )
+
+    events = _collect(event_stream(
+        EscapedTimeoutGraph(),
+        {"configurable": {"thread_id": "stream-escaped-timeout"}},
+        [HumanMessage(content="商品怎么使用？")],
+    ))
+
+    error_events = [event for event in events if event["type"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["data"] == {
+        "code": "runtime_error",
+        "message": RUNTIME_ERROR_TEXT,
+    }
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] is None
+
+
+def test_stream_never_duplicates_timeout_error():
+    class TimeoutAfterErrorGraph:
+        async def astream(self, *args, **kwargs):
+            yield (), "custom", {
+                "type": "error",
+                "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+            }
+            raise NodeTimeoutError(
+                node="read_graph", elapsed=0.05, kind="run", run_timeout=0.05
+            )
+
+    events = _collect(event_stream(
+        TimeoutAfterErrorGraph(),
+        {"configurable": {"thread_id": "stream-duplicate-timeout"}},
+        [HumanMessage(content="商品怎么使用？")],
+    ))
+
+    error_events = [event for event in events if event["type"] == "error"]
+    assert error_events == [{
+        "type": "error",
+        "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+    }]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] is None
+
+
+def test_stream_deduplicates_exhausted_node_timeout(monkeypatch):
+    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
+    monkeypatch.setenv("JEV_ENABLED", "false")
+    monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "0.05")
+    get_settings.cache_clear()
+
+    try:
+        model = SlowAsyncRouterModel(delay=0.10)
+        graph = build_graph(model, tools=[kb_search])
+        events = _collect(event_stream(
+            graph,
+            {"configurable": {"thread_id": "stream-deepseek-timeout"}},
+            [HumanMessage(content="商品怎么使用？")],
+            extra_state={"user_id": "u1", "session_id": "stream-deepseek-timeout", "context": {}},
+        ))
+    finally:
+        get_settings.cache_clear()
+
+    assert model.router_calls == 2
+    error_events = [event for event in events if event["type"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["data"]["code"] == "runtime_error"
+    assert error_events[0]["data"]["message"] == RUNTIME_ERROR_TEXT
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"]["final"] is None
 
 
 def test_done_carries_message_id():
@@ -116,7 +236,7 @@ def test_stream_resume_done_final_from_new_message():
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
-    graph.invoke(
+    ainvoke_graph(graph,
         {"messages": [HumanMessage(content="改一下收货地址")], "user_id": "u1", "session_id": "s1", "context": {}},
         {"configurable": {"thread_id": "r1"}},
     )
@@ -143,7 +263,7 @@ def test_new_assistant_text_and_id_no_replay():
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "r2"}}
-    graph.invoke(
+    ainvoke_graph(graph,
         {"messages": [HumanMessage(content="hi")], "user_id": "u1", "session_id": "s1", "context": {}},
         config,
     )

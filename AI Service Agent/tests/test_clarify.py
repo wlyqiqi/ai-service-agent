@@ -17,6 +17,7 @@ from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
+from conftest import ainvoke_graph
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +51,7 @@ def _graph(model):
 
 
 def _invoke(graph, text, thread_id, user_id="u1", context=None):
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id, "context": context or {}},
         {"configurable": {"thread_id": thread_id}},
     )
@@ -75,20 +76,22 @@ def test_config_clarify_max_turns_default():
     assert get_settings().clarify_max_turns == 2
 
 
-def test_select_incomplete_sets_clarify_missing():
+@pytest.mark.asyncio
+async def test_select_incomplete_sets_clarify_missing():
     """select 直测：update_address 全空 -> clarify_missing，不落 pending_tool、不动 count。"""
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
-    out = node({"messages": [HumanMessage(content="改一下收货地址")], "context": {"clarify_count": 1}})
+    out = await node({"messages": [HumanMessage(content="改一下收货地址")], "context": {"clarify_count": 1}})
     assert out["context"]["clarify_missing"] == ["order_id", "address"]
     assert "pending_tool" not in out["context"]
     assert out["context"]["clarify_count"] == 1  # select 不清零，由 clarify 节点/完整 select 管理
 
 
-def test_select_complete_resets_clarify_count():
+@pytest.mark.asyncio
+async def test_select_complete_resets_clarify_count():
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
-    out = node({"messages": [HumanMessage(content="改地址")], "context": {"clarify_count": 1}})
+    out = await node({"messages": [HumanMessage(content="改地址")], "context": {"clarify_count": 1}})
     assert out["context"]["clarify_count"] == 0  # 完整 select 清零（D1）
     assert out["context"]["pending_tool"]["tool"] == "update_address"
     assert "clarify_missing" not in out["context"]
@@ -148,7 +151,7 @@ def _build(model, saver):
 
 def _turn(graph, text, thread_id, user_id="u1"):
     # 续接轮不传 context：context 由 checkpoint 保留（真实 /chat 入口同语义），仅追加新消息
-    return graph.invoke(
+    return ainvoke_graph(graph,
         {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id},
         {"configurable": {"thread_id": thread_id}},
     )

@@ -9,6 +9,7 @@
   uv run --no-sync python scripts/real_readgraph_smoke.py
 """
 
+import asyncio
 import sqlite3
 import sys
 from pathlib import Path
@@ -114,12 +115,12 @@ def main() -> int:
         user_id = users[scenario["user_key"]]
         print(f"\n===== {scenario['name']}（user_id={user_id}）=====")
         print(f"输入：{scenario['input']}")
-        result = graph.invoke({
+        result = asyncio.run(graph.ainvoke({
             "messages": [HumanMessage(content=scenario["input"])],
             "user_id": user_id,
             "session_id": "readgraph-real-smoke",
             "context": {},
-        })
+        }))
         trace = _trace(result)
         print(f"调用工具：{trace['called_tools'] or '（无）'}")
         print(f"工具回执数：{len(trace['tool_results'])}")
