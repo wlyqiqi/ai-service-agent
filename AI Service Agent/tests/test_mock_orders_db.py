@@ -77,7 +77,7 @@ def test_canonical_fixture_orders_in_db(seed):
     try:
         rows = {r[0]: (r[1], r[2]) for r in conn.execute(
             "SELECT order_id, customer_id, status FROM orders"
-            " WHERE order_id IN ('ORD-1','ORD-2','ORD-10086','ORD-CANCEL-1')"
+            " WHERE order_id IN ('ORD-1','ORD-2','ORD-10086','ORD-CANCEL-1','ORD-PAID-1')"
         ).fetchall()}
     finally:
         conn.close()
@@ -86,7 +86,22 @@ def test_canonical_fixture_orders_in_db(seed):
         "ORD-2": ("u2", "delivered"),
         "ORD-10086": ("u1", "delivered"),
         "ORD-CANCEL-1": ("u1", "cancelled"),
+        "ORD-PAID-1": ("u1", "paid"),
     }
+
+
+def test_canonical_fixture_amounts_not_overwritten_by_items(seed):
+    _, db_a, _ = seed
+    conn = sqlite3.connect(db_a)
+    try:
+        amounts = dict(conn.execute(
+            "SELECT order_id, total_amount FROM orders"
+            " WHERE order_id IN ('ORD-1','ORD-2','ORD-10086','ORD-CANCEL-1','ORD-PAID-1','ORD-REFUND-1')"
+        ).fetchall())
+    finally:
+        conn.close()
+    assert amounts["ORD-PAID-1"] == 99.00
+    assert amounts["ORD-REFUND-1"] == 199.00
 
 
 def _use_db(monkeypatch, db_path):
@@ -121,7 +136,7 @@ def test_order_lookup_db_source_and_boundary(monkeypatch, seed):
     assert missing == {"error": "not_found", "order_id": "ORD-NOPE"}
 
 
-def test_lookup_order_state_fixture_priority_and_db_mapping(monkeypatch, seed):
+def test_lookup_order_state_db_priority_and_mapping(monkeypatch, seed):
     _, db_a, _ = seed
     _use_db(monkeypatch, db_a)
 
@@ -143,6 +158,21 @@ def test_lookup_order_state_fixture_priority_and_db_mapping(monkeypatch, seed):
     assert state["user_id"] == owner
     assert state["status"] == "cancelled"
     assert state["cancelled_at"] is not None
+
+
+def test_order_lookup_db_takes_priority_over_fixture(monkeypatch, seed):
+    """P1-1 回归：DB 有记录时，order_lookup 必须返回 DB 数据而非 ORDER_STORE 夹具。"""
+    _, db_a, _ = seed
+    _use_db(monkeypatch, db_a)
+    conn = sqlite3.connect(db_a)
+    try:
+        db_amount = conn.execute(
+            "SELECT total_amount FROM orders WHERE order_id='ORD-1'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    result = orders_mod.order_lookup.invoke({"order_id": "ORD-1", "user_id": "u1"})
+    assert result["amount"] == db_amount
 
     assert orders_mod.lookup_order_state("ORD-NOPE") is None
 

@@ -10,6 +10,7 @@ from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ApprovalFlowFakeModel
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import write as write_mod
+from ai_service_agent.tools import orders as orders_mod
 
 
 def test_sessions_creates_ai_mode(tmp_path):
@@ -246,10 +247,22 @@ def test_resolve_entrance_handoff_then_next_chat_is_answered(tmp_path):
 
 
 def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_server_confirm", root / "scripts" / "seed_mock_db.py"
+    )
+    seed_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed_module)
     class _WriteSettings:
         mock_ecommerce_db_path = str(tmp_path / "isolated-mock.db")
 
+    isolated_db = tmp_path / "isolated-mock.db"
+    seed_module.build_database(str(isolated_db))
+
     monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _WriteSettings())
     model = ToolCallingFakeModel(responses=[
         router_json_message("account", "mutation", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区测试路 99 号"}),

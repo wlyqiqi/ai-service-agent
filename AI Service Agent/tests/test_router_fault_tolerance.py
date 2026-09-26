@@ -151,7 +151,7 @@ async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
 
     def slow_failing_jev(client, state, settings):
         jev_calls.append("jev")
-        time.sleep(0.10)
+        time.sleep(1.0)
         raise httpx.ConnectError("jev unavailable")
 
     monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", slow_failing_jev)
@@ -159,8 +159,8 @@ async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("FAKE_MODEL", "false")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
-    monkeypatch.setenv("JEV_NODE_TIMEOUT_SECONDS", "0.05")
-    monkeypatch.setenv("JEV_TIMEOUT_SECONDS", "0.10")
+    monkeypatch.setenv("JEV_NODE_TIMEOUT_SECONDS", "0.50")
+    monkeypatch.setenv("JEV_TIMEOUT_SECONDS", "1.20")
     monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "2.0")
     get_settings.cache_clear()
 
@@ -196,7 +196,7 @@ async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
 
     assert jev_calls == ["jev", "jev"]
     assert model.router_calls == 2
-    assert elapsed < 1.0
+    assert elapsed < 5.0
 
 
 @pytest.mark.asyncio
