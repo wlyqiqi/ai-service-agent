@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: AI Service Agent
+    env:
+      JEV_ENABLED: "false"
+      JEV_ROUTE_INTENT_ENABLED: "false"
+      E2E_MODEL: "fake"
+      NO_PROXY: "127.0.0.1,localhost"
+      UV_CACHE_DIR: ".uv-cache"
+      UV_LINK_MODE: "copy"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            AI Service Agent/pyproject.toml
+            AI Service Agent/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run offline regression
+        run: uv run --no-sync pytest -q --tb=short --basetemp=".pytest-tmp"
