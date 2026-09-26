@@ -55,8 +55,8 @@ ORDER_STORE: dict[str, dict] = {
 }
 
 # 模拟电商库（data/mock_ecommerce.db，scripts/seed_mock_db.py 生成）：order_lookup
-# 真实数据源替代品。解析顺序 = ORDER_STORE（评测夹具，相对时间语义）→ DB → not_found，
-# 与 kb_search stub→真实检索同一模式；工具 ToolMeta.schema 与对外接口不变。
+# 唯一权威数据源。解析顺序 = DB → ORDER_STORE（仅当 DB 缺失时兜底）→ not_found，
+# 确保读写工具与 order_lookup 始终返回一致数据。
 _DB_MACHINE_STATUS = {
     "paid": "paid",
     "shipped": "shipped",
@@ -257,38 +257,28 @@ def order_items_summary(order_id: str) -> str:
 
 
 def lookup_order_state_with_availability(order_id: str) -> tuple[dict | None, bool]:
-    """订单状态事实查询（D3，P4）：夹具优先 -> 模拟电商库 -> None；仅返回事实，不做授权/业务裁决。"""
+    """订单状态事实查询（D3，P4）：模拟电商库优先 -> 夹具兜底 -> None；仅返回事实，不做授权/业务裁决。"""
+    record, db_available = _db_order_record_with_availability(order_id)
+    if db_available and record is not None:
+        return {
+            "order_id": record["order_id"],
+            "user_id": record["user_id"],
+            "status": _DB_MACHINE_STATUS.get(record["status"], record["status"]),
+            "signed_at": record["signed_at"],
+            "cancelled_at": record["cancelled_at"],
+            "total_amount": record["amount"],
+            "invoiced_amount": _db_invoiced_total(order_id),
+            "occupied_refund_amount": _db_occupied_refund_total(order_id),
+        }, True
     fixture = ORDER_STORE.get(order_id)
     if fixture is not None:
-        db_record, _ = _db_order_record_with_availability(order_id)
-        if db_record is not None:
-            return {
-                **fixture,
-                "total_amount": db_record["amount"],
-                "invoiced_amount": _db_invoiced_total(order_id),
-                "occupied_refund_amount": _db_occupied_refund_total(order_id),
-            }, True
         return {
             **fixture,
             "total_amount": fixture["amount"],
             "invoiced_amount": 0.0,
             "occupied_refund_amount": 0.0,
-        }, True
-    record, db_available = _db_order_record_with_availability(order_id)
-    if not db_available:
-        return None, False
-    if record is None:
-        return None, True
-    return {
-        "order_id": record["order_id"],
-        "user_id": record["user_id"],
-        "status": _DB_MACHINE_STATUS.get(record["status"], record["status"]),
-        "signed_at": record["signed_at"],
-        "cancelled_at": record["cancelled_at"],
-        "total_amount": record["amount"],
-        "invoiced_amount": _db_invoiced_total(order_id),
-        "occupied_refund_amount": _db_occupied_refund_total(order_id),
-    }, True
+        }, db_available
+    return None, db_available
 
 
 def lookup_order_state(order_id: str) -> dict | None:
@@ -299,8 +289,8 @@ def lookup_order_state(order_id: str) -> dict | None:
 @tool
 def order_lookup(order_id: str, user_id: Annotated[str, InjectedState("user_id")]) -> dict:
     """订单查询（D4 属主校验）：仅返回本人订单；越权返回 data_boundary（safety-spec §1.4，
-    数据边界由工具自身保证，ReadGraph 不增加 precheck）。数据源 = 模拟电商库（夹具优先）。"""
-    rec = ORDER_STORE.get(order_id) or _db_order_record(order_id)
+    数据边界由工具自身保证，ReadGraph 不增加 precheck）。数据源 = 模拟电商库优先，夹具兜底。"""
+    rec = _db_order_record(order_id) or ORDER_STORE.get(order_id)
     if rec is None:
         return {"error": "not_found", "order_id": order_id}
     if rec["user_id"] != user_id:

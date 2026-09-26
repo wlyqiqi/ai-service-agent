@@ -136,7 +136,7 @@ def test_order_lookup_owner_boundary():
     """D4（P4）：属主校验在工具层（ReadGraph 无 precheck，safety-spec §1.4）——
     本人可查；他人 / 跨用户订单返回 data_boundary。"""
     own = order_lookup.invoke({"order_id": "ORD-1", "user_id": "u1"})
-    assert own["order_id"] == "ORD-1" and "已发货" in str(own)
+    assert own["order_id"] == "ORD-1" and "已送达" in str(own)
     other = order_lookup.invoke({"order_id": "ORD-1", "user_id": "other"})
     assert other.get("error") == "data_boundary"
     cross = order_lookup.invoke({"order_id": "ORD-2", "user_id": "u1"})  # ORD-2 属主 u2（同事订单）

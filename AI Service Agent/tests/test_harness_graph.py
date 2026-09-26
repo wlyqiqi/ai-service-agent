@@ -70,7 +70,7 @@ def test_default_registry_order_lookup_injected():
     ])
     out = _invoke(make_ai_graph(model, MemorySaver()), "查订单", "t2")
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
-    assert tool_msgs and "已发货" in str(tool_msgs[0].content)
+    assert tool_msgs and "已送达" in str(tool_msgs[0].content)
 
 
 def test_make_ai_graph_respects_registry_read_tier():
