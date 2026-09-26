@@ -25,8 +25,6 @@ jobs:
       E2E_MODEL: "fake"
       ARK_API_KEY: "ci-offline-placeholder"
       NO_PROXY: "127.0.0.1,localhost"
-      UV_CACHE_DIR: ".uv-cache"
-      UV_LINK_MODE: "copy"
 
     steps:
       - uses: actions/checkout@v4
@@ -35,11 +33,6 @@ jobs:
         uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
-          enable-cache: true
-          cache-dependency-glob: |
-            AI Service Agent/pyproject.toml
-            AI Service Agent/uv.lock
-
       - name: Install dependencies
         run: uv sync --frozen
 
