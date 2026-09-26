@@ -43,5 +43,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Seed deterministic mock data
+        run: uv run --no-sync python scripts/seed_mock_db.py
+
       - name: Run offline regression
         run: uv run --no-sync pytest -q --tb=short --basetemp=".pytest-tmp"
