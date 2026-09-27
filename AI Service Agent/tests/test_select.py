@@ -30,6 +30,16 @@ class RecordingSelectModel(ToolCallingFakeModel):
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
+class ClarificationRecordingSelectModel(ToolCallingFakeModel):
+    """记录最后一次用户提示，验证澄清草稿进入 fake JSON 输入。"""
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        object.__setattr__(self, "seen_last_user", next(
+            (m.content for m in messages if getattr(m, "type", "") == "human"), ""
+        ))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
 class SlowSelectFakeModel(ToolCallingFakeModel):
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         from langchain_core.outputs import ChatGeneration, ChatResult
@@ -106,6 +116,64 @@ def test_select_system_template_examples_match_tier():
     assert '"tool": "update_address"' in model.seen_system
     assert '"tool": "refund_apply"' not in model.seen_system   # 跨档示例不注入
     assert "参数不完整" in model.seen_system                     # 缺参示例
+
+
+def test_select_user_prompt_carries_pending_clarification():
+    state = {
+        "messages": [HumanMessage(content="放在小区保安那里")],
+        "route_intent": "order_mutation",
+        "context": {
+            "pending_clarification": {
+                "route_intent": "order_mutation",
+                "tool": "update_order_note",
+                "args": {"order_id": "ORD-1"},
+                "missing": ["note"],
+            }
+        },
+    }
+
+    model = ClarificationRecordingSelectModel(responses=[
+        select_json_message("update_order_note", {
+            "order_id": "ORD-1",
+            "note": "放在小区保安那里",
+        }),
+    ])
+    node = make_select_node(
+        model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
+    _select_result(node(state))
+    assert "update_order_note" in model.seen_last_user
+    assert "ORD-1" in model.seen_last_user
+    assert "note" in model.seen_last_user
+    assert "放在小区保安那里" in model.seen_last_user
+
+    bound_model = AsyncMock()
+
+    async def record_real_model_input(messages, **kwargs):
+        object.__setattr__(bound_model, "seen_last_user", next(
+            (message.content for message in messages if getattr(message, "type", "") == "human"), ""
+        ))
+        return AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "update_order_note",
+                "args": {"order_id": "ORD-1", "note": "放在小区保安那里"},
+                "id": "call_1",
+            }],
+        )
+
+    bound_model.ainvoke.side_effect = record_real_model_input
+    real_model = MagicMock()
+    real_model.bind_tools.return_value = bound_model
+    real_node = make_select_node(
+        real_model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
+    _select_result(real_node(state))
+    assert real_model.bind_tools.call_args.args[0]
+    assert "update_order_note" in bound_model.seen_last_user
+    assert "ORD-1" in bound_model.seen_last_user
+    assert "note" in bound_model.seen_last_user
+    assert "放在小区保安那里" in bound_model.seen_last_user
 
 
 def test_select_real_model_uses_bind_tools():

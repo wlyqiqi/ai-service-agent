@@ -18,7 +18,11 @@ from langgraph.config import get_stream_writer
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
-from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
+from ai_service_agent.prompts import (
+    CLARIFICATION_CONTEXT_TEMPLATE,
+    SELECT_BINDTOOLS_SYSTEM,
+    SELECT_SYSTEM_TEMPLATE,
+)
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -162,12 +166,22 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if getattr(m, "type", "") == "human":
                 last = m.content if isinstance(m.content, str) else str(m.content)
                 break
+        pending_clarification = state.get("context", {}).get("pending_clarification")
+        if pending_clarification:
+            user_message = CLARIFICATION_CONTEXT_TEMPLATE.format(
+                tool=pending_clarification.get("tool", ""),
+                args=pending_clarification.get("args", {}),
+                missing=pending_clarification.get("missing", []),
+                message=last,
+            )
+        else:
+            user_message = last
         messages = [
             SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
                 tool_list=tool_list,
                 examples=_build_examples(selected_tools, registry),
             )),
-            HumanMessage(content=last),
+            HumanMessage(content=user_message),
         ]
         if is_fake:
             resp = await bound.ainvoke(messages, config=config)
@@ -180,7 +194,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
         else:
             messages = [
                 SystemMessage(content=SELECT_BINDTOOLS_SYSTEM),
-                HumanMessage(content=last),
+                HumanMessage(content=user_message),
             ]
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
