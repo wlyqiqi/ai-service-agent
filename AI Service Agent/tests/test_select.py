@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler, make_timeout_policy
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.workflows import select as select_module
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
@@ -125,7 +126,7 @@ def test_select_system_template_examples_match_tier():
     assert "参数不完整" in model.seen_system                     # 缺参示例
 
 
-def test_select_user_prompt_carries_pending_clarification():
+def test_select_clarification_prompt_does_not_expose_untrusted_draft():
     state = {
         "messages": [HumanMessage(content="放在小区保安那里")],
         "route_intent": "order_mutation",
@@ -149,9 +150,9 @@ def test_select_user_prompt_carries_pending_clarification():
         model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
     )
     _select_result(node(state))
-    assert "update_order_note" in model.seen_last_user
-    assert "ORD-1" in model.seen_last_user
-    assert "note" in model.seen_last_user
+    assert "update_order_note" not in model.seen_last_user
+    assert "ORD-1" not in model.seen_last_user
+    assert "继续处理未完成操作" in model.seen_last_user
     assert "放在小区保安那里" in model.seen_last_user
 
     bound_model = AsyncMock()
@@ -177,9 +178,9 @@ def test_select_user_prompt_carries_pending_clarification():
     )
     _select_result(real_node(state))
     assert real_model.bind_tools.call_args.args[0]
-    assert "update_order_note" in bound_model.seen_last_user
-    assert "ORD-1" in bound_model.seen_last_user
-    assert "note" in bound_model.seen_last_user
+    assert "update_order_note" not in bound_model.seen_last_user
+    assert "ORD-1" not in bound_model.seen_last_user
+    assert "继续处理未完成操作" in bound_model.seen_last_user
     assert "放在小区保安那里" in bound_model.seen_last_user
 
 
@@ -279,6 +280,28 @@ def test_select_matching_clarification_latest_value_overrides_old_value():
 
     assert output["context"]["pending_clarification"]["args"]["address"] == "新地址"
     assert output["context"]["pending_clarification"]["missing"] == ["order_id"]
+
+
+def test_select_cancellation_clarification_preserves_schema_args(monkeypatch):
+    candidates = [
+        {"order_id": "ORD-1", "total_amount": 100},
+        {"order_id": "ORD-2", "total_amount": 200},
+    ]
+    monkeypatch.setattr(
+        select_module, "find_own_cancellable_paid_orders", lambda user_id: candidates
+    )
+    _, node = _clarification_node({"tool": "cancel_order", "args": {"reason": "不想要了"}})
+
+    output = _select_result(node({
+        "messages": [HumanMessage(content="取消吧")],
+        "route_intent": "order_mutation",
+        "user_id": "u1",
+        "context": {},
+    }))
+
+    assert output["context"]["pending_clarification"]["tool"] == "cancel_order"
+    assert output["context"]["pending_clarification"]["args"]["reason"] == "不想要了"
+    assert output["context"]["cancellation_candidates"] == candidates
 
 
 def test_select_real_model_uses_bind_tools():

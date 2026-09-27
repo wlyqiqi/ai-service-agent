@@ -18,11 +18,7 @@ from langgraph.config import get_stream_writer
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
-from ai_service_agent.prompts import (
-    CLARIFICATION_CONTEXT_TEMPLATE,
-    SELECT_BINDTOOLS_SYSTEM,
-    SELECT_SYSTEM_TEMPLATE,
-)
+from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -94,6 +90,11 @@ def _bind_json(model):
     if isinstance(model, FakeMessagesListChatModel):
         return model
     return model.bind(response_format={"type": "json_object"})
+
+
+_CLARIFICATION_CONTINUATION_REMINDER = """这是继续处理未完成操作的澄清。
+请只从用户最新消息中提取新增或修正字段；不要重复要求已收集字段；不要编造参数。
+用户最新消息：{message}"""
 
 
 def _normalise_schema_args(meta, args):
@@ -224,16 +225,8 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 last = m.content if isinstance(m.content, str) else str(m.content)
                 break
         pending_clarification = state.get("context", {}).get("pending_clarification")
-        if (
-            isinstance(pending_clarification, dict)
-            and pending_clarification.get("route_intent") == state.get("route_intent")
-        ):
-            user_message = CLARIFICATION_CONTEXT_TEMPLATE.format(
-                tool=pending_clarification.get("tool", ""),
-                args=pending_clarification.get("args", {}),
-                missing=pending_clarification.get("missing", []),
-                message=last,
-            )
+        if isinstance(pending_clarification, dict):
+            user_message = _CLARIFICATION_CONTINUATION_REMINDER.format(message=last)
         else:
             user_message = last
         messages = [
@@ -272,7 +265,9 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if len(candidates) == 1:
                 args["order_id"] = candidates[0]["order_id"]
             else:
-                refreshed = _clarify(state, ["order_id"], tool_name, args)
+                refreshed = _clarify(
+                    state, ["order_id"], tool_name, args, registry.meta_for(tool_name)
+                )
                 refreshed["context"]["cancellation_candidates"] = candidates
                 return refreshed
         if tool_name == "refund_apply" and not args.get("order_id"):
@@ -284,11 +279,15 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if len(candidates) == 1:
                 args["order_id"] = candidates[0]["order_id"]
             elif len(candidates) > 1:
-                refreshed = _clarify(state, ["order_id"], tool_name, args)
+                refreshed = _clarify(
+                    state, ["order_id"], tool_name, args, registry.meta_for(tool_name)
+                )
                 refreshed["context"]["cancellation_candidates"] = candidates
                 return refreshed
             else:
-                return _clarify(state, ["order_id"], tool_name, args)
+                return _clarify(
+                    state, ["order_id"], tool_name, args, registry.meta_for(tool_name)
+                )
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:
             return _reject(state, "unknown_tool")
