@@ -59,12 +59,15 @@ def _mutation_model():
     ])
 
 
-def _invoke(graph, text, thread_id, resume=None, user_id="u1"):
+def _invoke(graph, text, thread_id, resume=None, user_id="u1", include_context=True):
     kwargs = {"configurable": {"thread_id": thread_id}}
     if resume is not None:
         return ainvoke_graph(graph, Command(resume=resume), kwargs)
+    state = {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id}
+    if include_context:
+        state["context"] = {}
     return ainvoke_graph(graph,
-        {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id, "context": {}},
+        state,
         kwargs,
     )
 
@@ -231,6 +234,66 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
     assert "收货地址已更新" in t3["messages"][-1].content
+
+
+def test_update_order_note_multi_turn_clarification_merge_executes_once(monkeypatch, seed):
+    """订单号先收集、下一轮补备注后合并，确认只执行一次 update_order_note。"""
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO orders (
+                order_id, customer_id, status, ordered_at, signed_at,
+                cancelled_at, total_amount, currency, channel, market, note
+            )
+            SELECT 'ORD-PAID-1', customer_id, status, ordered_at, signed_at,
+                   cancelled_at, total_amount, currency, channel, market, note
+            FROM orders WHERE order_id='ORD-REFUND-1'
+            """
+        )
+        conn.commit()
+        owner = conn.execute(
+            "SELECT customer_id FROM orders WHERE order_id='ORD-PAID-1'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order", "mutation", 0.9),
+        select_json_message("update_order_note", {"order_id": "ORD-PAID-1"}),
+        router_json_message("order", "mutation", 0.9),
+        select_json_message("update_order_note", {"note": "放小区保安那里"}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    thread_id = "update-note-clarification-merge"
+
+    first = _invoke(
+        graph, "请帮我修改订单 ORD-PAID-1 的备注", thread_id, user_id=owner, include_context=False
+    )
+    assert first["execution_status"] == "clarifying"
+
+    second = _invoke(
+        graph, "我最近不在家，备注放小区保安那里", thread_id, user_id=owner, include_context=False
+    )
+    assert second.get("__interrupt__")
+    config = {"configurable": {"thread_id": thread_id}}
+    interrupted_task = next(
+        task for task in graph.get_state(config, subgraphs=True).tasks
+        if task.name == "mutation_graph" and task.state is not None
+    )
+    pending_args = interrupted_task.state.values["context"]["pending_tool"]["args"]
+    assert pending_args == {
+        "order_id": "ORD-PAID-1",
+        "note": "放小区保安那里",
+        "request_id": pending_args["request_id"],
+    }
+
+    third = _invoke(graph, "确认", thread_id, resume={"action": "confirm"}, user_id=owner)
+    assert third["execution_status"] == "completed"
+    tool_messages = [m for m in third["messages"] if getattr(m, "type", "") == "tool"]
+    assert len([m for m in tool_messages if getattr(m, "name", "") == "update_order_note"]) == 1
 
 
 def _cancel_model(payload: dict):
