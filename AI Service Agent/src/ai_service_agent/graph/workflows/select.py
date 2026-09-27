@@ -96,6 +96,60 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
+def _normalise_schema_args(meta, args):
+    if meta is None or meta.schema is None or not isinstance(args, dict):
+        return {}
+    allowed = set(meta.schema.model_fields)
+    allowed.discard("request_id")
+    return {key: value for key, value in args.items() if key in allowed}
+
+
+def _has_meaningful_value(value):
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _merge_pending_args(previous_args, latest_args):
+    merged = dict(previous_args)
+    for key, value in latest_args.items():
+        if _has_meaningful_value(value):
+            merged[key] = value
+    return merged
+
+
+def _matching_pending_clarification(state: dict, tool_name: str):
+    pending = state.get("context", {}).get("pending_clarification")
+    if not isinstance(pending, dict):
+        return None
+    if pending.get("route_intent") != state.get("route_intent"):
+        return None
+    if pending.get("tool") != tool_name:
+        return None
+    return pending
+
+
+def _refresh_pending_clarification(state: dict, tool_name: str, meta, latest_args, missing):
+    previous = _matching_pending_clarification(state, tool_name)
+    normalised_latest_args = _normalise_schema_args(meta, latest_args)
+    if previous:
+        args = _merge_pending_args(previous.get("args", {}), normalised_latest_args)
+        previous_missing = previous.get("missing", [])
+    else:
+        args = normalised_latest_args
+        previous_missing = []
+    made_progress = any(
+        _has_meaningful_value(normalised_latest_args.get(field)) for field in previous_missing
+    )
+    context = {**state.get("context", {}), "clarify_missing": missing}
+    context["pending_clarification"] = {
+        "route_intent": state.get("route_intent"),
+        "tool": tool_name,
+        "args": args,
+        "missing": missing,
+    }
+    if made_progress:
+        context["clarify_count"] = 0
+    return {"context": context}
+
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], Awaitable[dict]]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
     # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
@@ -124,12 +178,15 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             pass
         # 普通 dict 返回 + 条件边路由（LangGraph 1.2.11 实测：Command(goto) 不会抑制静态出边，
         # 静态后继与 goto 目标会并发执行导致双写；决策路由一律走条件边）
-        return {"context": {**state.get("context", {}), "precheck_reason": reason}, "execution_status": "completed"}
+        context = {**state.get("context", {}), "precheck_reason": reason}
+        context.pop("pending_clarification", None)
+        return {"context": context, "execution_status": "completed"}
 
-    def _clarify(state: dict, missing: list[str]) -> dict:
+    def _clarify(state: dict, missing: list[str], tool_name: str, latest_args=None, meta=None) -> dict:
         # 参数不完整 != 拒绝（D1）：只写 clarify_missing，由条件边路由到 clarify 节点（普通轮）。
         # 不发 safety_rejected；execution_status 由 clarify 节点置 clarifying。
-        return {"context": {**state.get("context", {}), "clarify_missing": missing}}
+        refreshed = _refresh_pending_clarification(state, tool_name, meta, latest_args or {}, missing)
+        return refreshed
 
     def _tier_clarify(state: dict, tool_name: str) -> dict:
         # B2b：已注册低档工具在写图内被选中 = 意图与风险档不匹配 -> 澄清（普通轮）。
@@ -167,7 +224,10 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 last = m.content if isinstance(m.content, str) else str(m.content)
                 break
         pending_clarification = state.get("context", {}).get("pending_clarification")
-        if pending_clarification:
+        if (
+            isinstance(pending_clarification, dict)
+            and pending_clarification.get("route_intent") == state.get("route_intent")
+        ):
             user_message = CLARIFICATION_CONTEXT_TEMPLATE.format(
                 tool=pending_clarification.get("tool", ""),
                 args=pending_clarification.get("args", {}),
@@ -212,12 +272,9 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if len(candidates) == 1:
                 args["order_id"] = candidates[0]["order_id"]
             else:
-                ctx = {
-                    **state.get("context", {}),
-                    "clarify_missing": ["order_id"],
-                    "cancellation_candidates": candidates,
-                }
-                return {"context": ctx}
+                refreshed = _clarify(state, ["order_id"], tool_name, args)
+                refreshed["context"]["cancellation_candidates"] = candidates
+                return refreshed
         if tool_name == "refund_apply" and not args.get("order_id"):
             candidates = await asyncio.to_thread(
                 find_own_refundable_orders, state.get("user_id", "")
@@ -227,18 +284,18 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if len(candidates) == 1:
                 args["order_id"] = candidates[0]["order_id"]
             elif len(candidates) > 1:
-                ctx = {
-                    **state.get("context", {}),
-                    "clarify_missing": ["order_id"],
-                    "cancellation_candidates": candidates,
-                }
-                return {"context": ctx}
+                refreshed = _clarify(state, ["order_id"], tool_name, args)
+                refreshed["context"]["cancellation_candidates"] = candidates
+                return refreshed
             else:
-                return _clarify(state, ["order_id"])
-        args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
+                return _clarify(state, ["order_id"], tool_name, args)
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:
             return _reject(state, "unknown_tool")
+        pending = _matching_pending_clarification(state, tool_name)
+        if pending:
+            args = _merge_pending_args(pending.get("args", {}), args)
+        args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
         route_allowed = state.get("allowed_tools")
         if route_allowed is not None and tool_name not in route_allowed:
             return _reject(state, "tool_not_allowed")
@@ -256,15 +313,16 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
                 if missing and len(missing) == len(errors):
                     missing = [f for f in missing if f != "request_id"]
                     if missing:
-                        return _clarify(state, missing)
+                        return _clarify(state, missing, tool_name, args, meta)
                 return _reject(state, "invalid_args")
             incomplete = _incomplete_fields(args, meta)
             if incomplete:
-                return _clarify(state, incomplete)
+                return _clarify(state, incomplete, tool_name, args, meta)
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("tier_clarify", None)
         ctx.pop("cancellation_candidates", None)
+        ctx.pop("pending_clarification", None)
         ctx["clarify_count"] = 0  # 完整成功 select 清零（D1 轮次语义）
         ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
         return {"context": ctx}

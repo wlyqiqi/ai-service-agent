@@ -33,11 +33,18 @@ class RecordingSelectModel(ToolCallingFakeModel):
 class ClarificationRecordingSelectModel(ToolCallingFakeModel):
     """记录最后一次用户提示，验证澄清草稿进入 fake JSON 输入。"""
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+    def _record_last_user(self, messages):
         object.__setattr__(self, "seen_last_user", next(
             (m.content for m in messages if getattr(m, "type", "") == "human"), ""
         ))
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._record_last_user(messages)
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._record_last_user(messages)
+        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 class SlowSelectFakeModel(ToolCallingFakeModel):
@@ -174,6 +181,104 @@ def test_select_user_prompt_carries_pending_clarification():
     assert "ORD-1" in bound_model.seen_last_user
     assert "note" in bound_model.seen_last_user
     assert "放在小区保安那里" in bound_model.seen_last_user
+
+
+def _clarification_node(response: dict) -> tuple[ClarificationRecordingSelectModel, Callable[[dict], object]]:
+    model = ClarificationRecordingSelectModel(responses=[
+        select_json_message(response["tool"], response["args"]),
+    ])
+    node = make_select_node(
+        model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
+    return model, node
+
+
+def test_select_merges_matching_pending_clarification_args():
+    pending = {
+        "route_intent": "order_mutation",
+        "tool": "update_order_note",
+        "args": {"order_id": "ORD-1"},
+        "missing": ["note"],
+    }
+    _, node = _clarification_node({"tool": "update_order_note", "args": {"note": "放小区保安那里"}})
+
+    output = _select_result(node({
+        "messages": [HumanMessage(content="放小区保安那里")],
+        "route_intent": "order_mutation",
+        "context": {"clarify_count": 1, "pending_clarification": pending},
+    }))
+
+    assert output["context"]["pending_tool"]["tool"] == "update_order_note"
+    pending_tool_args = output["context"]["pending_tool"]["args"]
+    assert pending_tool_args == {
+        "order_id": "ORD-1",
+        "note": "放小区保安那里",
+        "request_id": pending_tool_args["request_id"],
+    }
+    assert "pending_clarification" not in output["context"]
+    assert output["context"]["clarify_count"] == 0
+
+
+def test_select_matching_clarification_progress_resets_count():
+    pending = {
+        "route_intent": "order_mutation",
+        "tool": "update_address",
+        "args": {},
+        "missing": ["order_id", "address"],
+    }
+    _, node = _clarification_node({"tool": "update_address", "args": {"order_id": "ORD-10086"}})
+
+    output = _select_result(node({
+        "messages": [HumanMessage(content="订单号是 ORD-10086")],
+        "route_intent": "order_mutation",
+        "context": {"clarify_count": 1, "pending_clarification": pending},
+    }))
+
+    assert output["context"]["clarify_count"] == 0
+    assert output["context"]["pending_clarification"]["args"]["order_id"] == "ORD-10086"
+    assert output["context"]["pending_clarification"]["missing"] == ["address"]
+
+
+def test_select_pending_clarification_tool_mismatch_does_not_inherit():
+    pending = {
+        "route_intent": "order_mutation",
+        "tool": "update_order_note",
+        "args": {"order_id": "ORD-1"},
+        "missing": ["note"],
+    }
+    _, node = _clarification_node({"tool": "update_address", "args": {"address": "朝阳区"}})
+
+    output = _select_result(node({
+        "messages": [HumanMessage(content="改成朝阳区")],
+        "route_intent": "order_mutation",
+        "context": {"pending_clarification": pending},
+    }))
+
+    assert output["context"]["pending_clarification"] == {
+        "route_intent": "order_mutation",
+        "tool": "update_address",
+        "args": {"address": "朝阳区"},
+        "missing": ["order_id"],
+    }
+
+
+def test_select_matching_clarification_latest_value_overrides_old_value():
+    pending = {
+        "route_intent": "order_mutation",
+        "tool": "update_address",
+        "args": {"address": "旧地址"},
+        "missing": ["order_id"],
+    }
+    _, node = _clarification_node({"tool": "update_address", "args": {"address": "新地址"}})
+
+    output = _select_result(node({
+        "messages": [HumanMessage(content="新地址")],
+        "route_intent": "order_mutation",
+        "context": {"pending_clarification": pending},
+    }))
+
+    assert output["context"]["pending_clarification"]["args"]["address"] == "新地址"
+    assert output["context"]["pending_clarification"]["missing"] == ["order_id"]
 
 
 def test_select_real_model_uses_bind_tools():
