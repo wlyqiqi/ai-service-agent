@@ -18,7 +18,11 @@ from langgraph.config import get_stream_writer
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
-from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
+from ai_service_agent.prompts import (
+    CLARIFICATION_CONTEXT_TEMPLATE,
+    SELECT_BINDTOOLS_SYSTEM,
+    SELECT_SYSTEM_TEMPLATE,
+)
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -92,17 +96,24 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
-_CLARIFICATION_CONTINUATION_REMINDER = """这是继续处理未完成操作的澄清。
-请只从用户最新消息中提取新增或修正字段；不要重复要求已收集字段；不要编造参数。
-用户最新消息：{message}"""
-
-
 def _normalise_schema_args(meta, args):
     if meta is None or meta.schema is None or not isinstance(args, dict):
         return {}
     allowed = set(meta.schema.model_fields)
     allowed.discard("request_id")
     return {key: value for key, value in args.items() if key in allowed}
+
+
+def _safe_pending_args(args):
+    if not isinstance(args, dict):
+        return {}
+    return {key: value for key, value in args.items() if isinstance(key, str)}
+
+
+def _safe_pending_missing(missing):
+    if not isinstance(missing, list):
+        return []
+    return [field for field in missing if isinstance(field, str) and field]
 
 
 def _has_meaningful_value(value):
@@ -128,12 +139,25 @@ def _matching_pending_clarification(state: dict, tool_name: str):
     return pending
 
 
+def _prompt_pending_clarification(state: dict):
+    pending = state.get("context", {}).get("pending_clarification")
+    if not isinstance(pending, dict) or pending.get("route_intent") != state.get("route_intent"):
+        return None
+    if not isinstance(pending.get("tool"), str):
+        return None
+    return {
+        "tool": pending["tool"],
+        "args": _safe_pending_args(pending.get("args")),
+        "missing": _safe_pending_missing(pending.get("missing")),
+    }
+
+
 def _refresh_pending_clarification(state: dict, tool_name: str, meta, latest_args, missing):
     previous = _matching_pending_clarification(state, tool_name)
     normalised_latest_args = _normalise_schema_args(meta, latest_args)
     if previous:
-        args = _merge_pending_args(previous.get("args", {}), normalised_latest_args)
-        previous_missing = previous.get("missing", [])
+        args = _merge_pending_args(_safe_pending_args(previous.get("args")), normalised_latest_args)
+        previous_missing = _safe_pending_missing(previous.get("missing"))
     else:
         args = normalised_latest_args
         previous_missing = []
@@ -224,9 +248,14 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             if getattr(m, "type", "") == "human":
                 last = m.content if isinstance(m.content, str) else str(m.content)
                 break
-        pending_clarification = state.get("context", {}).get("pending_clarification")
-        if isinstance(pending_clarification, dict):
-            user_message = _CLARIFICATION_CONTINUATION_REMINDER.format(message=last)
+        pending_clarification = _prompt_pending_clarification(state)
+        if pending_clarification is not None:
+            user_message = CLARIFICATION_CONTEXT_TEMPLATE.format(
+                tool=pending_clarification["tool"],
+                args=json.dumps(pending_clarification["args"], ensure_ascii=False),
+                missing=", ".join(pending_clarification["missing"]),
+                message=last,
+            )
         else:
             user_message = last
         messages = [
@@ -293,7 +322,7 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             return _reject(state, "unknown_tool")
         pending = _matching_pending_clarification(state, tool_name)
         if pending:
-            args = _merge_pending_args(pending.get("args", {}), args)
+            args = _merge_pending_args(_safe_pending_args(pending.get("args")), args)
         args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
         route_allowed = state.get("allowed_tools")
         if route_allowed is not None and tool_name not in route_allowed:

@@ -192,6 +192,7 @@ SELECT_BINDTOOLS_SYSTEM = """你是客服操作选择器。
 """
 
 CLARIFICATION_CONTEXT_TEMPLATE = """这是继续处理未完成操作的澄清。
+如果用户最新消息明确切换到其他操作，请选择更合适的工具，并忽略不再相关的草稿。
 工具：{tool}
 已收集参数：{args}
 仍缺少：{missing}

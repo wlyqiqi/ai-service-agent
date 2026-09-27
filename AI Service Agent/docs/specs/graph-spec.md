@@ -103,7 +103,7 @@
 ### 6.2 MutationGraph（workflow）
 
 - 确定性流程：**select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**；完整 → **安全预检**（`safety-spec.md`；含业务规则，D3：`precheck_fetch` 提供订单状态事实 → `context["precheck_data"]`，`safety_check` 确定性裁决）→ `interrupt()` 用户确认（含影响摘要）→ 执行写操作工具 → 结果。
-- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串，或（全可选工具）全部业务字段为空 → 进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / schema 校验错误仍为拒绝（`safety_rejected`），不走 clarify。
+- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串，或（全可选工具）全部业务字段为空 → 进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；匹配草稿且有补齐进度时 `clarify_count` 先清零再自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / schema 校验错误仍为拒绝（`safety_rejected`），不走 clarify。
 - 写图 select 允许集为档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` →
   clarify 节点（普通轮，`clarification_required` + `reason:"tier_mismatch"`，`execution_status=clarifying`）。
 - 用户确认对应 `Command(resume={"action":"confirm"|"cancel"})`（schema 见 §3）。
@@ -160,12 +160,17 @@
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
-| select（mutation/high_risk） | `messages`、`route_intent`、`context`（`pending_clarification`、`clarify_count`、`cancellation_candidates`） | `context`（`pending_clarification`：参数澄清路径写入或刷新，匹配意图和工具的草稿合并既有 args，不匹配草稿不继承旧 args；有补齐进度时先清零 `clarify_count`；完整成功 select 或确定性 reject 清除草稿；另写 `pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
+| select（mutation/high_risk） | `messages`、`route_intent`、`context`（`pending_clarification`、`clarify_count`、`cancellation_candidates`） | `context`（`pending_clarification`：参数澄清路径写入或刷新，同 `route_intent` 的草稿注入条件提示，仅同 route + tool 合并既有 args，不匹配草稿不继承旧 args；有补齐进度时先清零 `clarify_count`；完整成功 select 或确定性 reject 清除草稿；另写 `pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
 | clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（data 契约不变） |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |
 
 - `execution_status` 由入口与图内节点按 turn 阶段维护（取值见 `state-spec.md` §1）；子图抛出 `handoff_request` 时置 `waiting_handoff`，不得置 `completed` / `failed`。
-- `clarify_count` 统计连续无进展澄清轮次；`pending_clarification` 仅在匹配 `route_intent` 和 `tool` 时合并既有 args，最新 schema args 优先。不匹配的 route/tool 草稿不继承旧 args；同 route 但 tool 不匹配的草稿不作为陈旧提示注入。
+- `clarify_count` 统计连续无进展澄清轮次；匹配草稿且有补齐进度时，select 先重置为 0，clarify 节点再自增。
+- `pending_clarification` 生命周期由 select 管控：
+  - select 澄清时写入或刷新 `route_intent`、`tool`、`args`、`missing`。
+  - 下一轮仅当持久化草稿的 `route_intent` 匹配当前 `route_intent` 时，向 fake JSON 模式与 `bind_tools()` 模式注入相同的条件草稿提示，内容包括 tool、args、missing 和最新用户消息。
+  - 该提示允许用户明确切换操作：模型可另选更合适的工具并忽略陈旧草稿；旧 args 仅在同 route + tool 时合并。
+  - `route_intent` 不匹配时不注入草稿，也不继承旧 args；完整成功或确定性拒绝时清除草稿。
 
