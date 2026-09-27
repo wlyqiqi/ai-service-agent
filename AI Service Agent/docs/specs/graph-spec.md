@@ -160,11 +160,12 @@
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
-| select（mutation/high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
-| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
+| select（mutation/high_risk） | `messages`、`route_intent`、`context`（`pending_clarification`、`clarify_count`、`cancellation_candidates`） | `context`（`pending_clarification`：参数澄清路径写入或刷新，匹配意图和工具的草稿合并既有 args，不匹配草稿不继承旧 args；有补齐进度时先清零 `clarify_count`；完整成功 select 或确定性 reject 清除草稿；另写 `pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
+| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（data 契约不变） |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |
 
 - `execution_status` 由入口与图内节点按 turn 阶段维护（取值见 `state-spec.md` §1）；子图抛出 `handoff_request` 时置 `waiting_handoff`，不得置 `completed` / `failed`。
+- `clarify_count` 统计连续无进展澄清轮次；`pending_clarification` 仅在匹配 `route_intent` 和 `tool` 时合并既有 args，最新 schema args 优先。不匹配的 route/tool 草稿不继承旧 args；同 route 但 tool 不匹配的草稿不作为陈旧提示注入。
 
