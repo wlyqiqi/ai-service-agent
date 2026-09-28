@@ -193,6 +193,26 @@ def test_multi_turn_clarify_over_limit_falls_back():
     assert not r3.get("__interrupt__")
 
 
+def test_clarify_progress_resets_count():
+    """用户补齐任一缺失字段后，select 重置进度，clarify 再递增 -> 第二轮仍为 1。"""
+    saver = MemorySaver()
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account", "mutation", 0.9),
+        select_json_message("update_address", {}),
+        router_json_message("account", "mutation", 0.9),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1"}),
+    ])
+    graph = _build(model, saver)
+    first = _turn(graph, "请帮我修改收货地址", "clarify-progress")
+    assert first["execution_status"] == "clarifying"
+    assert first["context"]["clarify_count"] == 1
+
+    second = _turn(graph, "订单号是 ORD-PAID-1", "clarify-progress")
+    assert second["execution_status"] == "clarifying"
+    assert second["context"]["clarify_count"] == 1
+    assert clarify_fallback_text() not in second["messages"][-1].content
+
+
 def _tier_model(tool_name, risk):
     return ToolCallingFakeModel(responses=[
         router_json_message("order", risk, 0.9),
