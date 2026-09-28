@@ -49,9 +49,13 @@ _JEV_ROUTE_INTENT_QUESTION = {
     "route_intent": {
         "type": "choice",
         "instructions": (
-            "判断用户当前 turn 的主要业务意图。"
-            "只根据当前系统真实支持的业务分类；"
-            "不支持的动作必须归为 unsupported_action。"
+            "判断 current_user_message 的主要业务意图。"
+            "current_user_message 是唯一主判断对象。"
+            "recent_context 仅用于解析当前消息中的指代和省略，例如“那”“这个”“它”“刚才那个订单”。"
+            "不得把 recent_context 中已经完成的历史意图当作当前意图。"
+            "只选择当前系统支持的业务分类。"
+            "用户意图清晰但系统没有对应能力时选择 unsupported_action。"
+            "无法确定当前意图时选择 unknown。"
         ),
         "criteria": {
             "faq": "产品使用、售后政策、商品参数、故障排查等知识问答",
@@ -71,7 +75,7 @@ _JEV_ROUTE_INTENT_QUESTION = {
                 "不要把取消预约、清空订单历史、订单所有权转移或人工流程类请求映射到 mutation。"
                 "这些动作归为 unsupported_action，不归 unknown。"
             ),
-            "unknown": "无法理解用户在说什么、缺少上下文或意图模糊。系统不支持的可理解操作应归为 unsupported_action，不归 unknown。",
+            "unknown": "无法理解 current_user_message，缺少当前用户意图，或即使结合 recent_context 仍无法确定意图。系统不支持的可理解操作应归为 unsupported_action，不归 unknown。",
         },
     }
 }
@@ -110,19 +114,41 @@ def _parse_route_intent_content(content) -> dict:
     return RouteIntentSchema.model_validate(content).model_dump()
 
 def _jev_state(state: dict) -> dict:
-    messages = []
-    for message in state.get("messages", [])[-6:]:
+    messages = list(state.get("messages", []))
+    last_message = messages[-1]
+    if isinstance(last_message, dict):
+        last_content = last_message.get("content", "")
+    else:
+        last_content = getattr(last_message, "content", "")
+
+    recent_context = []
+    for message in messages[-3:-1]:
         if isinstance(message, dict):
             role = message.get("type", message.get("role", "human"))
             content = message.get("content", "")
         else:
             role = getattr(message, "type", "human")
             content = getattr(message, "content", "")
-        messages.append({
+        recent_context.append({
             "role": str(role),
             "content": content if isinstance(content, str) else str(content),
         })
-    return {"messages": messages}
+
+    return {
+        "current_user_message": last_content if isinstance(last_content, str) else str(last_content),
+        "recent_context": recent_context,
+    }
+
+def _last_message_is_human(state: dict) -> bool:
+    messages = list(state.get("messages") or [])
+    if not messages:
+        return False
+    message = messages[-1]
+    if isinstance(message, dict):
+        role = message.get("type", message.get("role", "human"))
+    else:
+        role = getattr(message, "type", "human")
+    return str(role) == "human"
 
 def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | None:
     response = client.post(
@@ -216,6 +242,8 @@ def make_jev_router() -> Callable[[dict], Awaitable[dict]]:
     settings = get_settings()
 
     async def route(state: dict, config: RunnableConfig | None = None) -> dict:
+        if not _last_message_is_human(state):
+            return _route_intent_result("unknown", 0.0, "none", False)
         try:
             def call_jev():
                 with httpx.Client(timeout=settings.jev_timeout_seconds) as jev_client:

@@ -73,6 +73,7 @@
 - `routing_backend` / `routing_fallback` 只用于观测和评估，不参与路由。
 - `route_control` 是唯一的 fallback 控制信号：Jev 失败写入 `deepseek_fallback`，`router_join` 据此执行一次 DeepSeek；DeepSeek 写入 `policy` 后必须进入 Policy Gate，不得再回到自身。
 - 每轮执行；多轮中用户可切换意图。
+- JEV 请求 state 只包含 `current_user_message` 和最多 2 条 `recent_context`（旧 -> 新）。`current_user_message` 必须来自 `messages[-1]` 且 role 为 `human`；否则不调用 JEV，直接写入 `unknown`（`routing_backend=none`）。
 - v2 仅写入自身分类字段（`route_intent` / `confidence`），不得修改 `context` 等业务状态。
 - Router 失败/超时 → 直接走 Fallback。
 

@@ -1,0 +1,194 @@
+{
+  "summary": {
+    "total": 8,
+    "route_intent_accuracy": 1.0,
+    "account_profile_update_recall": 1.0,
+    "account_profile_update_to_order_mutation_rate": 0.0,
+    "cancel_order_execute_recall": 1.0,
+    "refund_apply_execute_recall": null,
+    "high_risk_recall": 1.0,
+    "unsupported_action_mutation_or_high_risk_leakage": 0.0,
+    "fallback_rate": 0.0,
+    "backend_counts": {
+      "jev": 8
+    },
+    "confusion": {},
+    "latency": {
+      "n": 8,
+      "p50_ms": 1140.1,
+      "p95_ms": 1585.9,
+      "mean_ms": 1271.2,
+      "max_ms": 1585.9
+    }
+  },
+  "results": [
+    {
+      "id": "MT-001",
+      "current_user_message": "那帮我取消",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "帮我查订单 ORD-2026-10015"
+        },
+        {
+          "role": "ai",
+          "content": "订单 ORD-2026-10015 已支付"
+        }
+      ],
+      "expected_route_intent": "cancel_order_execute",
+      "predicted_route_intent": "cancel_order_execute",
+      "confidence": 0.96,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1378.9,
+      "correct": true
+    },
+    {
+      "id": "MT-002",
+      "current_user_message": "18600001111",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "我要换绑手机号"
+        },
+        {
+          "role": "ai",
+          "content": "请提供新的手机号"
+        }
+      ],
+      "expected_route_intent": "account_profile_update",
+      "predicted_route_intent": "account_profile_update",
+      "confidence": 0.99,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1030.7,
+      "correct": true
+    },
+    {
+      "id": "MT-003",
+      "current_user_message": "看看我的订单",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "我想改手机号"
+        },
+        {
+          "role": "ai",
+          "content": "已修改"
+        }
+      ],
+      "expected_route_intent": "my_orders",
+      "predicted_route_intent": "my_orders",
+      "confidence": 0.96,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 998.6,
+      "correct": true
+    },
+    {
+      "id": "MT-004",
+      "current_user_message": "帮我查 ORD-2026-10015 的物流",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "我要改手机号"
+        },
+        {
+          "role": "ai",
+          "content": "请提供新的手机号"
+        }
+      ],
+      "expected_route_intent": "shipment_query",
+      "predicted_route_intent": "shipment_query",
+      "confidence": 1.0,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1087.8,
+      "correct": true
+    },
+    {
+      "id": "MT-005",
+      "current_user_message": "取消我的会员预约",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "帮我查订单 ORD-2026-10015"
+        },
+        {
+          "role": "ai",
+          "content": "订单 ORD-2026-10015 已支付"
+        }
+      ],
+      "expected_route_intent": "unsupported_action",
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 0.73,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1140.1,
+      "correct": true
+    },
+    {
+      "id": "MT-006",
+      "current_user_message": "把订单转给我朋友",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "帮我查订单 ORD-2026-10015"
+        },
+        {
+          "role": "ai",
+          "content": "订单 ORD-2026-10015 已支付"
+        }
+      ],
+      "expected_route_intent": "unsupported_action",
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 1.0,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1419.7,
+      "correct": true
+    },
+    {
+      "id": "MT-007",
+      "current_user_message": "帮我把订单里的收货地址记录删除",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "帮我查订单 ORD-2026-10015"
+        },
+        {
+          "role": "ai",
+          "content": "订单 ORD-2026-10015 已支付"
+        }
+      ],
+      "expected_route_intent": "unsupported_action",
+      "predicted_route_intent": "unsupported_action",
+      "confidence": 0.74,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1527.8,
+      "correct": true
+    },
+    {
+      "id": "MT-008",
+      "current_user_message": "帮我处理一下那个订单",
+      "recent_context": [
+        {
+          "role": "human",
+          "content": "这个产品怎么安装？"
+        },
+        {
+          "role": "ai",
+          "content": "请按说明书操作"
+        }
+      ],
+      "expected_route_intent": "unknown",
+      "predicted_route_intent": "unknown",
+      "confidence": 0.73,
+      "routing_backend": "jev",
+      "routing_fallback": false,
+      "latency_ms": 1585.9,
+      "correct": true
+    }
+  ]
+}

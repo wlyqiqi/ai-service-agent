@@ -15,6 +15,14 @@ def assert_async_timeout(node_spec, timeout: TimeoutPolicy):
     assert node_spec.timeout == timeout
 
 
+@pytest.fixture
+def legacy_router(monkeypatch):
+    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def test_build_graph_compiles_async_llm_timeout_policies(monkeypatch):
     monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "true")
@@ -69,7 +77,7 @@ def test_policy_maps_read_path():
 
 
 @pytest.mark.asyncio
-async def test_build_graph_read_path():
+async def test_build_graph_read_path(legacy_router):
     model = ToolCallingFakeModel(
         responses=[
             AIMessage(content='{"capability":"order","risk_level":"read","confidence":0.9}'),
@@ -83,7 +91,7 @@ async def test_build_graph_read_path():
 
 
 @pytest.mark.asyncio
-async def test_build_graph_fallback_path():
+async def test_build_graph_fallback_path(legacy_router):
     model = ToolCallingFakeModel(
         responses=[
             AIMessage(content='{"capability":"order","risk_level":"read","confidence":0.3}'),

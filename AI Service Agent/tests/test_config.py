@@ -42,7 +42,9 @@ def test_langsmith_shell_env_takes_precedence():
     assert env["LANGSMITH_TRACING"] == "true"
 
 
-def test_settings_defaults():
+def test_settings_defaults(monkeypatch):
+    monkeypatch.delenv("FAKE_MODEL", raising=False)
+    monkeypatch.delenv("ROUTER_CONF_THRESHOLD", raising=False)
     s = Settings(_env_file=None)
     assert s.db_path == "data/ai_service.db"
     assert s.fake_model is False
