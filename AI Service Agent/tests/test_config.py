@@ -80,6 +80,8 @@ def test_lightrag_defaults():
     assert s.lightrag_top_k == 5
     assert s.lightrag_include_references is True
     assert s.lightrag_enable_rerank is False
+    assert s.lightrag_max_chunk_chars == 1200
+    assert s.lightrag_max_context_chars == 4000
 
 
 def test_route_intent_feature_defaults_off(monkeypatch):

@@ -158,6 +158,7 @@ agent.py                  # 删除或保留为兼容别名
 8. **Python 3.14 很新**：依赖均装成功，但生态新库需验证 3.14 兼容（如个别 C 扩展）；升级大版本前先 `pip check`。
 9. **ARK 端点属性**：`.env` 用的是 Coding Plan 端点（`/api/coding/v3`）与 `deepseek-v4-flash`；该端点面向编码场景，生产客服建议确认标准 ARK 端点与模型额度/审核策略。
 10. **残留目录**：`.langgraph_api/` 未纳入 `.gitignore`，避免误提交。
+11. **Studio 父图中子图节点无法下钻（根因已定位，2026-09-27）**：子图用 `set_node_defaults(error_handler=...)` 做节点级容错，静态图中 `__default_error_handler__` 节点与容错节点（如 `finalize_failed`，入边来自运行时 `Command(goto=...)`）均为孤立节点（入度/出度为 0）。`langchain-core` 的 `Graph.first_node()/last_node()` 因候选不唯一返回 `None`，`langgraph/pregel/_draw.py` 的 xray 替换守卫**静默跳过**子图内联，Studio 拿到的 `GET /assistants/{id}/graph?xray=true` 中子图仅剩 `{id, name}`。**缓解**：`langgraph.json` 已把四个子图注册为独立 graph 条目（`harness/studio_graphs.py`，构建参数与 `make_ai_graph` 一致），在 Studio 图选择器中单独查看各子图完整节点与边；`langgraph.json` 变更需重启 `langgraph dev`。彻底修复需上游放宽 `_draw.py` 守卫或重构子图容错接法（动 spec §17 语义，暂不做）。
 
 ---
 
