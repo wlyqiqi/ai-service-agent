@@ -256,9 +256,11 @@ def test_jev_route_instructions_pin_current_message_priority():
     question = _JEV_ROUTE_INTENT_QUESTION["route_intent"]
     instructions = question["instructions"]
 
-    assert "current_user_message 是唯一主判断对象" in instructions
-    assert "recent_context 仅用于解析当前消息中的指代和省略" in instructions
-    assert "不得把 recent_context 中已经完成的历史意图当作当前意图" in instructions
+    assert "current_user_message 是本轮主判断对象" in instructions
+    assert "recent_context 只用于理解指代、省略或补全上一轮缺失信息" in instructions
+    assert "不能覆盖当前明确新意图" in instructions
+    assert "recent_context 不能作为系统能力边界" in instructions
+    assert "缺少订单号、手机号、金额、抬头或税号等参数不改变意图分类" in instructions
     assert "即使结合 recent_context 仍无法确定意图" in question["criteria"]["unknown"]
 
 
@@ -269,6 +271,17 @@ def test_jev_faq_criteria_covers_product_catalog_and_price():
     assert "产品目录" in criteria["faq"]
     assert "商品价格" in criteria["faq"]
     assert "报价" in criteria["faq"]
+
+
+def test_jev_order_mutation_criteria_separates_missing_params_and_policy_faq():
+    criteria = _JEV_ROUTE_INTENT_QUESTION["route_intent"]["criteria"]
+
+    assert "开发票" in criteria["order_mutation"]
+    assert "开票" in criteria["order_mutation"]
+    assert "申请发票" in criteria["order_mutation"]
+    assert "缺少订单号、金额、抬头或税号等参数不影响意图分类" in criteria["order_mutation"]
+    assert "如果只是询问发票政策、售后流程或规则，应归 faq" in criteria["order_mutation"]
+    assert "发票政策" in criteria["faq"]
 
 
 @pytest.mark.asyncio
@@ -449,7 +462,7 @@ def test_jev_route_choice_pins_profile_update_boundary():
     assert "联系电话" in criteria["account_profile_update"]
     assert "手机号" in criteria["account_profile_update"]
     assert "即使输入包含订单号" in criteria["account_profile_update"]
-    assert criteria["order_mutation"] == "修改订单备注、开发票或创建售后工单"
+    assert "不包括取消订单或退款申请" in criteria["order_mutation"]
     assert "取消预约" in criteria["unsupported_action"]
     assert "清空订单历史" in criteria["unsupported_action"]
     assert "没有对应工具" in criteria["unsupported_action"]

@@ -6,3 +6,4 @@
 {"id":"MT-006","current_user_message":"把订单转给我朋友","recent_context":[{"role":"human","content":"帮我查订单 ORD-2026-10015"},{"role":"ai","content":"订单 ORD-2026-10015 已支付"}],"expected_route_intent":"unsupported_action","category":"unsupported_boundary"}
 {"id":"MT-007","current_user_message":"帮我把订单里的收货地址记录删除","recent_context":[{"role":"human","content":"帮我查订单 ORD-2026-10015"},{"role":"ai","content":"订单 ORD-2026-10015 已支付"}],"expected_route_intent":"unsupported_action","category":"unsupported_boundary"}
 {"id":"MT-008","current_user_message":"帮我处理一下那个订单","recent_context":[{"role":"human","content":"这个产品怎么安装？"},{"role":"ai","content":"请按说明书操作"}],"expected_route_intent":"unknown","category":"ambiguous"}
+{"id":"MT-009","current_user_message":"我要开发票","recent_context":[{"role":"human","content":"你能做什么呢"},{"role":"ai","content":"我可以介绍产品、查询订单、查询配件和售后政策。"}],"expected_route_intent":"order_mutation","category":"parameter_clarification"}

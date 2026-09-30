@@ -133,7 +133,7 @@ def test_multi_turn_dataset_covers_required_categories():
     cases = load_cases(path)
     categories = {case["category"] for case in cases}
 
-    assert len(cases) == 8
+    assert len(cases) == 9
     assert len({case["id"] for case in cases}) == len(cases)
     assert {
         "reference_resolution",

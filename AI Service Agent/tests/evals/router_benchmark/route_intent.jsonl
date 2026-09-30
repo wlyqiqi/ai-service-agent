@@ -36,3 +36,7 @@
 {"id":"RI-034","input":"把订单状态改成已发货","expected_route_intent":"unsupported_action"}
 {"id":"RI-035","input":"帮我把订单里的收货地址记录删除","expected_route_intent":"unsupported_action"}
 {"id":"RI-036","input":"帮我处理一下那个订单","expected_route_intent":"unknown"}
+{"id":"RI-037","input":"我要开发票","expected_route_intent":"order_mutation"}
+{"id":"RI-038","input":"开发票","expected_route_intent":"order_mutation"}
+{"id":"RI-039","input":"帮我开个发票","expected_route_intent":"order_mutation"}
+{"id":"RI-040","input":"申请发票","expected_route_intent":"order_mutation"}
