@@ -54,7 +54,7 @@ def make_read_graph(model, tools: list, tool_hooks=None):
     )
     builder.add_node("prepare", prepare)
     builder.add_node(
-        "agent",
+        "agent_llm",
         agent_node,
         retry_policy=RETRY_LLM,
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
@@ -63,11 +63,11 @@ def make_read_graph(model, tools: list, tool_hooks=None):
     builder.add_node("finalize", finalize)
     builder.add_node("finalize_failed", finalize_failed)
     builder.add_edge(START, "prepare")
-    builder.add_edge("prepare", "agent")
+    builder.add_edge("prepare", "agent_llm")
     builder.add_conditional_edges(
-        "agent", tools_condition, {"tools": "tools", "__end__": "finalize"}
+        "agent_llm", tools_condition, {"tools": "tools", "__end__": "finalize"}
     )
-    builder.add_edge("tools", "agent")
+    builder.add_edge("tools", "agent_llm")
     builder.add_edge("finalize", END)
     builder.add_edge("finalize_failed", END)
     return builder.compile()

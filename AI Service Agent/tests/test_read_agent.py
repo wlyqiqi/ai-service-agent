@@ -34,7 +34,7 @@ class LoopingToolModel(ToolCallingFakeModel):
 def test_read_graph_async_node_and_timeout_policy():
     model = ToolCallingFakeModel(responses=[AIMessage(content="查询结果：订单已发货。")])
     graph = make_read_graph(model, tools=[kb_search])
-    node_spec = graph.nodes["agent"]
+    node_spec = graph.nodes["agent_llm"]
     assert inspect.iscoroutinefunction(node_spec.bound.afunc)
     assert node_spec.timeout == TimeoutPolicy(run_timeout=get_settings().llm_node_timeout_seconds)
 

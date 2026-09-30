@@ -317,6 +317,6 @@
 - 直接 LightRAG eval：果汁破壁机 3 chunks / 3,008 chars / 1.86s；除扫地机器人外产品 3 / 2,698 / 1.56s；电饭煲价格 3 / 2,013 / 2.88s；发票政策 3 / 1,891 / 1.44s。
 - Router 同步回归：产品列表、电饭煲价格、发票政策均命中 faq（置信度 0.97–0.99），ReadGraph 真机调用 `kb_search` 正常。
 - 回归：全量 pytest 531 passed / 2 skipped。
-- LightRAG 与客户端职责边界：服务端 `CHUNK_TOP_K` 控制召回 chunk 数；客户端 `top_k` 只约束消费候选上限，不反向配置 LightRAG。
+- LightRAG 与客户端职责边界：服务端 `CHUNK_TOP_K` 是未指定时的默认召回数；客户端 `top_k` 作为 query-time 参数发送给 LightRAG API，控制单次检索返回 chunk 数（两者均为检索配置，不是"客户端配置服务端"）。客户端 `max_chunk_chars` / `max_context_chars` 仅负责下游 prompt 截断预算。
 - JEV 路由真机回归：10/10 正确；「我要开发票」连续 5/5 命中 `order_mutation`，confidence 1.0。
 - Studio 调试入口：`langgraph.studio.json` 仅用于调试子图；生产 `langgraph.json` 保持只暴露根 `agent`。
