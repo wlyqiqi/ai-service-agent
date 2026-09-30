@@ -220,7 +220,7 @@ def create_app(
         phone = body.phone or body.account
         if not phone:
             raise HTTPException(status_code=422, detail="phone is required")
-        if secret is None:
+        if not secret:
             raise HTTPException(status_code=503, detail="JWT signing is unavailable")
         user = users.authenticate(phone, body.password)
         if user is None:
@@ -557,4 +557,3 @@ async def _wrap(events):
     else:
         for e in events:
             yield e
-
