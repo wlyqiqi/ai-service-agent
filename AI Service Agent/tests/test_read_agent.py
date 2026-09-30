@@ -5,12 +5,14 @@ from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.types import TimeoutPolicy
 
 from ai_service_agent.graph.agents import read_agent as read_agent_mod
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 from ai_service_agent.testing import ToolCallingFakeModel
 from ai_service_agent.tools.kb import kb_search
+from ai_service_agent.config import get_settings
 
 
 class LoopingToolModel(ToolCallingFakeModel):
@@ -32,7 +34,9 @@ class LoopingToolModel(ToolCallingFakeModel):
 def test_read_graph_async_node_and_timeout_policy():
     model = ToolCallingFakeModel(responses=[AIMessage(content="查询结果：订单已发货。")])
     graph = make_read_graph(model, tools=[kb_search])
-    assert "agent" in graph.nodes
+    node_spec = graph.nodes["agent"]
+    assert inspect.iscoroutinefunction(node_spec.bound.afunc)
+    assert node_spec.timeout == TimeoutPolicy(run_timeout=get_settings().llm_node_timeout_seconds)
 
 
 def test_read_graph_answers_and_completes():

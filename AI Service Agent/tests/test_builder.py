@@ -43,7 +43,10 @@ def test_build_graph_compiles_async_llm_timeout_policies(monkeypatch):
         )
 
         read_graph = graph.nodes["read_graph"].bound
-        assert "agent" in read_graph.nodes
+        assert_async_timeout(
+            read_graph.nodes["agent"],
+            TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
+        )
 
         fallback_graph = graph.nodes["fallback"].bound
         assert_async_timeout(

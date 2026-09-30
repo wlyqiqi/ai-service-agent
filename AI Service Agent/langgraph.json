@@ -1,11 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "agent": "./src/ai_service_agent/harness/graph.py:app",
-    "read_graph": "./src/ai_service_agent/harness/studio_graphs.py:read_graph",
-    "mutation_graph": "./src/ai_service_agent/harness/studio_graphs.py:mutation_graph",
-    "high_risk_graph": "./src/ai_service_agent/harness/studio_graphs.py:high_risk_graph",
-    "fallback": "./src/ai_service_agent/harness/studio_graphs.py:fallback_graph"
+    "agent": "./src/ai_service_agent/harness/graph.py:app"
   },
   "env": "./.env"
 }

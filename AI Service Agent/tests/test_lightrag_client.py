@@ -111,6 +111,31 @@ def test_query_context_limits_single_long_chunk():
     }
 
 
+def test_query_context_allows_chunk_truncated_to_equal_total_budget():
+    def handler(request):
+        return httpx.Response(200, json={"references": [
+            {"reference_id": "1", "file_path": "a.md", "content": "a" * 120},
+        ]})
+
+    client = LightRagClient(
+        base_url="http://test",
+        max_chunk_chars=100,
+        max_context_chars=100,
+        transport=httpx.MockTransport(handler),
+    )
+
+    out = client.query_context("x")
+
+    assert out["context"] == "a" * 100
+    assert out["metadata"] == {
+        "retrieved_chunks": 1,
+        "selected_chunks": 1,
+        "retrieved_chars": 120,
+        "context_chars": 100,
+        "truncated": True,
+    }
+
+
 def test_query_context_stops_at_total_budget():
     def handler(request):
         return httpx.Response(200, json={"references": [
