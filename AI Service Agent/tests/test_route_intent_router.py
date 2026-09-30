@@ -209,6 +209,15 @@ def test_jev_route_instructions_pin_current_message_priority():
     assert "即使结合 recent_context 仍无法确定意图" in question["criteria"]["unknown"]
 
 
+def test_jev_faq_criteria_covers_product_catalog_and_price():
+    criteria = _JEV_ROUTE_INTENT_QUESTION["route_intent"]["criteria"]
+
+    assert "产品清单" in criteria["faq"]
+    assert "产品目录" in criteria["faq"]
+    assert "商品价格" in criteria["faq"]
+    assert "报价" in criteria["faq"]
+
+
 @pytest.mark.asyncio
 async def test_jev_low_confidence_returns_unknown_without_deepseek(jev_route_settings, monkeypatch):
     client = _JevClient(_jev_route_payload("cancel_order_execute", 0.79))
