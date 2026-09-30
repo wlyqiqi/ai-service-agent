@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 from langgraph.types import TimeoutPolicy
 
-from ai_service_agent.graph.builder import POLICY, build_graph
+from ai_service_agent.graph.builder import _latest_user_text, POLICY, build_graph
 from ai_service_agent.config import get_settings
 from ai_service_agent.testing import ToolCallingFakeModel, make_fake_model
 from ai_service_agent.tools.kb import kb_search
@@ -13,6 +13,14 @@ from ai_service_agent.tools.kb import kb_search
 def assert_async_timeout(node_spec, timeout: TimeoutPolicy):
     assert inspect.iscoroutinefunction(node_spec.bound.afunc)
     assert node_spec.timeout == timeout
+
+
+@pytest.fixture
+def legacy_router(monkeypatch):
+    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def test_build_graph_compiles_async_llm_timeout_policies(monkeypatch):
@@ -68,8 +76,22 @@ def test_policy_maps_read_path():
     assert POLICY[("account", "high_risk")] == "high_risk_graph"
 
 
+def test_latest_user_text_reads_content_block_list():
+    state = {
+        "messages": [
+            AIMessage(content="请提供订单号"),
+            HumanMessage(content=[
+                {"type": "text", "text": "ORD-1 官网买的"},
+                {"type": "text", "text": "修改收货地址"},
+            ]),
+        ]
+    }
+
+    assert _latest_user_text(state) == "ORD-1 官网买的\n修改收货地址"
+
+
 @pytest.mark.asyncio
-async def test_build_graph_read_path():
+async def test_build_graph_read_path(legacy_router):
     model = ToolCallingFakeModel(
         responses=[
             AIMessage(content='{"capability":"order","risk_level":"read","confidence":0.9}'),
@@ -83,7 +105,7 @@ async def test_build_graph_read_path():
 
 
 @pytest.mark.asyncio
-async def test_build_graph_fallback_path():
+async def test_build_graph_fallback_path(legacy_router):
     model = ToolCallingFakeModel(
         responses=[
             AIMessage(content='{"capability":"order","risk_level":"read","confidence":0.3}'),

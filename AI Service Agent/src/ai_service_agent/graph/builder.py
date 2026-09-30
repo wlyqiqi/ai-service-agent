@@ -6,8 +6,9 @@ from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from ai_service_agent.config import get_settings, make_model
+from ai_service_agent.config import get_settings
 from ai_service_agent.graph.agents.read_agent import make_read_graph
+from ai_service_agent.graph.messages import message_text
 from ai_service_agent.graph.route_policy import resolve_route_policy
 from ai_service_agent.graph.fault_tolerance import (
     RETRY_DEEPSEEK_ROUTER,
@@ -59,7 +60,7 @@ def _latest_user_text(state: dict) -> str:
             role = getattr(message, "type", "")
             content = getattr(message, "content", "")
         if role == "human":
-            return content if isinstance(content, str) else str(content)
+            return message_text(message)
     return ""
 
 
@@ -199,7 +200,3 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
     builder.add_edge("safety_final", "final")
     builder.add_edge("final", END)
     return builder.compile(checkpointer=checkpointer)
-
-
-# langgraph platform / CLI 入口（langgraph.json -> builder.py:app）
-app = build_graph(make_model(), tools=[])

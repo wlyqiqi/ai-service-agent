@@ -42,7 +42,9 @@ def test_langsmith_shell_env_takes_precedence():
     assert env["LANGSMITH_TRACING"] == "true"
 
 
-def test_settings_defaults():
+def test_settings_defaults(monkeypatch):
+    monkeypatch.delenv("FAKE_MODEL", raising=False)
+    monkeypatch.delenv("ROUTER_CONF_THRESHOLD", raising=False)
     s = Settings(_env_file=None)
     assert s.db_path == "data/ai_service.db"
     assert s.fake_model is False
@@ -78,6 +80,8 @@ def test_lightrag_defaults():
     assert s.lightrag_top_k == 5
     assert s.lightrag_include_references is True
     assert s.lightrag_enable_rerank is False
+    assert s.lightrag_max_chunk_chars == 1200
+    assert s.lightrag_max_context_chars == 4000
 
 
 def test_route_intent_feature_defaults_off(monkeypatch):

@@ -220,7 +220,7 @@ def create_app(
         phone = body.phone or body.account
         if not phone:
             raise HTTPException(status_code=422, detail="phone is required")
-        if secret is None:
+        if not secret:
             raise HTTPException(status_code=503, detail="JWT signing is unavailable")
         user = users.authenticate(phone, body.password)
         if user is None:
@@ -440,6 +440,8 @@ def create_app(
         lock = await _thread_lock(thread_id)
         async with lock:
             rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
+            # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
+            approvals.mark_decided(approval_id, decided, decided_by="approver")
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver)
                 cfg = {"configurable": {"thread_id": thread_id}}
@@ -449,8 +451,6 @@ def create_app(
                 final, final_message_id = await new_assistant_text_and_id(graph, cfg, before_ids)
                 if final is not None:
                     messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
-            # mark_decided 在锁内（T6 裁定）：锁释放前落库，第二个并发请求的锁内 precheck 才能看到非 pending
-            approvals.mark_decided(approval_id, decided, decided_by="approver")
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
@@ -557,4 +557,3 @@ async def _wrap(events):
     else:
         for e in events:
             yield e
-

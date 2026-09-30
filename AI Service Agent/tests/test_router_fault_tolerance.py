@@ -149,12 +149,12 @@ async def test_jev_error_retries_only_deepseek(monkeypatch):
 async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
     jev_calls = []
 
-    def slow_failing_jev(client, state, settings):
+    async def slow_failing_to_thread(func, /, *args, **kwargs):
         jev_calls.append("jev")
-        time.sleep(0.10)
+        await asyncio.sleep(0.10)
         raise httpx.ConnectError("jev unavailable")
 
-    monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", slow_failing_jev)
+    monkeypatch.setattr(router_mod.asyncio, "to_thread", slow_failing_to_thread)
     monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("FAKE_MODEL", "false")
