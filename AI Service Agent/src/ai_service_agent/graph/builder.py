@@ -200,7 +200,3 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
     builder.add_edge("safety_final", "final")
     builder.add_edge("final", END)
     return builder.compile(checkpointer=checkpointer)
-
-
-# langgraph platform / CLI 入口（langgraph.json -> builder.py:app）
-app = build_graph(make_model(), tools=[])
