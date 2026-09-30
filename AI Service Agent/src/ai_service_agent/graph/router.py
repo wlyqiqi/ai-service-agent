@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.messages import message_text
 from ai_service_agent.graph.route_policy import (
     ROUTE_POLICY,
     route_intent_is_confident,
@@ -119,26 +120,27 @@ def _parse_route_intent_content(content) -> dict:
 def _jev_state(state: dict) -> dict:
     messages = list(state.get("messages", []))
     last_message = messages[-1]
-    if isinstance(last_message, dict):
-        last_content = last_message.get("content", "")
-    else:
-        last_content = getattr(last_message, "content", "")
+    current_user_message = message_text(last_message)
 
     recent_context = []
-    for message in messages[-3:-1]:
+    for message in reversed(messages[:-1]):
         if isinstance(message, dict):
             role = message.get("type", message.get("role", "human"))
-            content = message.get("content", "")
         else:
             role = getattr(message, "type", "human")
-            content = getattr(message, "content", "")
+        role = str(role)
+        if role not in {"human", "ai", "assistant"}:
+            continue
         recent_context.append({
-            "role": str(role),
-            "content": content if isinstance(content, str) else str(content),
+            "role": "ai" if role == "assistant" else role,
+            "content": message_text(message),
         })
+        if len(recent_context) == 2:
+            break
+    recent_context.reverse()
 
     return {
-        "current_user_message": last_content if isinstance(last_content, str) else str(last_content),
+        "current_user_message": current_user_message,
         "recent_context": recent_context,
     }
 
@@ -246,6 +248,8 @@ def make_jev_router() -> Callable[[dict], Awaitable[dict]]:
 
     async def route(state: dict, config: RunnableConfig | None = None) -> dict:
         if not _last_message_is_human(state):
+            return _route_intent_result("unknown", 0.0, "none", False)
+        if not _jev_state(state)["current_user_message"]:
             return _route_intent_result("unknown", 0.0, "none", False)
         try:
             def call_jev():

@@ -1,6 +1,7 @@
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import ToolMessage
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.router import (
@@ -53,6 +54,22 @@ class _JevClient:
         return False
 
     def post(self, *args, **kwargs):
+        return _JevResponse(self.data)
+
+
+class _JevCaptureClient:
+    def __init__(self, data: dict):
+        self.data = data
+        self.payloads = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def post(self, url, *args, **kwargs):
+        self.payloads.append(kwargs["json"])
         return _JevResponse(self.data)
 
 
@@ -132,6 +149,20 @@ async def test_jev_route_intent_is_primary(jev_route_settings, monkeypatch):
     assert out["routing_fallback"] is False
 
 
+@pytest.mark.asyncio
+async def test_jev_sends_normalized_current_message(jev_route_settings, monkeypatch):
+    client = _JevCaptureClient(_jev_route_payload("order_mutation", 0.94))
+    monkeypatch.setattr("ai_service_agent.graph.router.httpx.Client", lambda timeout: client)
+    node = make_jev_router()
+    out = await node({
+        "messages": [HumanMessage(content=[{"type": "text", "text": "我要开发票"}])],
+        "user_id": "u1",
+    })
+
+    assert client.payloads[0]["state"]["current_user_message"] == "我要开发票"
+    assert out["route_intent"] == "order_mutation"
+
+
 def test_jev_state_separates_current_message_and_recent_context():
     state = {
         "messages": [
@@ -144,11 +175,33 @@ def test_jev_state_separates_current_message_and_recent_context():
             HumanMessage(content="那帮我取消"),
         ]
     }
-
     assert _jev_state(state) == {
         "current_user_message": "那帮我取消",
         "recent_context": [
             {"role": "human", "content": "看看我的订单"},
+            {"role": "ai", "content": "请提供订单号"},
+        ],
+    }
+
+
+def test_jev_state_normalizes_content_blocks_and_filters_tool_messages():
+    state = {
+        "messages": [
+            HumanMessage(content="我想开发票"),
+            AIMessage(content=[{"type": "text", "text": "请提供订单号"}]),
+            ToolMessage(content="large kb search result", tool_call_id="call_1"),
+            HumanMessage(content=[
+                {"type": "text", "text": "ORD-1 官网买的"},
+                {"type": "text", "text": "开个人发票"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            ]),
+        ]
+    }
+
+    assert _jev_state(state) == {
+        "current_user_message": "ORD-1 官网买的\n开个人发票",
+        "recent_context": [
+            {"role": "human", "content": "我想开发票"},
             {"role": "ai", "content": "请提供订单号"},
         ],
     }

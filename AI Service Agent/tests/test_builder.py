@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 from langgraph.types import TimeoutPolicy
 
-from ai_service_agent.graph.builder import POLICY, build_graph
+from ai_service_agent.graph.builder import _latest_user_text, POLICY, build_graph
 from ai_service_agent.config import get_settings
 from ai_service_agent.testing import ToolCallingFakeModel, make_fake_model
 from ai_service_agent.tools.kb import kb_search
@@ -74,6 +74,20 @@ def test_policy_maps_read_path():
     assert POLICY[("unknown", "read")] == "fallback"
     assert POLICY[("order", "high_risk")] == "high_risk_graph"  # Task 5 纳入审批
     assert POLICY[("account", "high_risk")] == "high_risk_graph"
+
+
+def test_latest_user_text_reads_content_block_list():
+    state = {
+        "messages": [
+            AIMessage(content="请提供订单号"),
+            HumanMessage(content=[
+                {"type": "text", "text": "ORD-1 官网买的"},
+                {"type": "text", "text": "修改收货地址"},
+            ]),
+        ]
+    }
+
+    assert _latest_user_text(state) == "ORD-1 官网买的\n修改收货地址"
 
 
 @pytest.mark.asyncio
