@@ -32,7 +32,7 @@ import pytest
 from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 
-from ai_service_agent.graph.router import _parse_router_content, _router_model, make_deepseek_router
+from ai_service_agent.graph.router import _router_model, make_deepseek_router
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
 
@@ -87,3 +87,8 @@ async def test_router_low_confidence_goes_unknown():
     node = make_deepseek_router(model, route_intent_enabled=False)
     out = await node({"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["capability"] == "unknown"
+
+
+def test_router_system_prompt_deleted():
+    from ai_service_agent import prompts
+    assert not hasattr(prompts, "ROUTER_SYSTEM")

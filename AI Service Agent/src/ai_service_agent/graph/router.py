@@ -16,7 +16,7 @@ from ai_service_agent.graph.route_policy import (
     ROUTE_POLICY,
     route_intent_is_confident,
 )
-from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM, ROUTER_SYSTEM
+from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM
 
 def _route_intent_result(route_intent: str, confidence: float, backend: str, fallback: bool) -> dict:
     return {
@@ -36,11 +36,6 @@ def jev_fallback_result() -> dict:
         "route_control": "deepseek_fallback",
     }
 
-
-class RouterSchema(BaseModel):
-    capability: str
-    risk_level: Literal["read", "mutation", "high_risk"]
-    confidence: float
 
 class RouteIntentSchema(BaseModel):
     route_intent: str
@@ -139,18 +134,6 @@ def _router_model(model):
     if isinstance(model, FakeMessagesListChatModel):
         return model
     return model.bind(response_format={"type": "json_object"})
-
-def _parse_router_content(content) -> dict:
-    """解析 Router 模型输出：只接受 JSON 字符串 / dict。
-
-    ToolStrategy 的 "Returning structured response: ..." 描述性文本不是稳定契约，
-    必须让 json.loads 显式失败（回归钉，见 test_router.py），不得新增解析分支。
-    """
-    if isinstance(content, str):
-        return json.loads(content)
-    if isinstance(content, dict):
-        return content
-    return RouterSchema.model_validate(content).model_dump()
 
 def _parse_route_intent_content(content) -> dict:
     if isinstance(content, str):
