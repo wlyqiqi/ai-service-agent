@@ -92,3 +92,19 @@ async def test_router_low_confidence_goes_unknown():
 def test_router_system_prompt_deleted():
     from ai_service_agent import prompts
     assert not hasattr(prompts, "ROUTER_SYSTEM")
+
+
+@pytest.mark.asyncio
+async def test_deepseek_fallback_outputs_route_intent():
+    from ai_service_agent.testing import ToolCallingFakeModel
+    from langchain_core.messages import AIMessage
+    from ai_service_agent.graph.router import make_deepseek_router
+
+    model = ToolCallingFakeModel(responses=[AIMessage(content='{"route_intent":"faq","confidence":0.95}')])
+    node = make_deepseek_router(model)
+    state = {"messages": [{"role": "human", "content": "产品怎么用"}]}
+    result = await node(state)
+    assert result["route_intent"] == "faq"
+    assert result["routing_backend"] == "deepseek"
+    assert result["routing_fallback"] is True
+    assert result["route_control"] == "policy"
