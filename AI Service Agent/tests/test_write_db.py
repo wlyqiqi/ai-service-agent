@@ -207,7 +207,7 @@ def test_mutation_graph_rejects_cross_user_without_pollution(monkeypatch, seed):
     _use_db(monkeypatch, db_path)
     before = _snapshot(db_path)
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("order_mutation", 0.9),
         select_json_message("update_order_note", {"order_id": "ORD-2", "note": "越权修改"}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -227,7 +227,7 @@ def test_mutation_graph_rejects_invoice_over_remaining(monkeypatch, seed):
     _, db_path = seed
     _use_db(monkeypatch, db_path)
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("order_mutation", 0.9),
         select_json_message(
             "create_invoice",
             {"order_id": "ORD-10086", "amount": 9999.0, "company": "A", "tax_no": "T"},

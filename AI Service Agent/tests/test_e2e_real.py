@@ -51,7 +51,7 @@ class E2EFakeModel(ToolCallingFakeModel):
                 user = m.content or ""
                 break
 
-        if "路由器" in system:
+        if "客服路由意图分类器" in system:
             payload = self._route(user)
         elif "选择器" in system:
             payload = self._select(user)
@@ -62,14 +62,14 @@ class E2EFakeModel(ToolCallingFakeModel):
 
     def _route(self, user: str) -> str:
         if "转人工" in user:
-            return '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
+            return '{"route_intent": "unknown", "confidence": 0.2}'
         if "退款" in user or "退了吧" in user or "取消订单" in user:
-            return '{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'
+            return '{"route_intent": "refund_apply_execute", "confidence": 0.9}'
         if "地址" in user or "手机号" in user:
-            return '{"capability": "account", "risk_level": "mutation", "confidence": 0.9}'
+            return '{"route_intent": "account_profile_update", "confidence": 0.9}'
         if "备注" in user or "开票" in user or "售后" in user:
-            return '{"capability": "order", "risk_level": "mutation", "confidence": 0.9}'
-        return '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+            return '{"route_intent": "order_mutation", "confidence": 0.9}'
+        return '{"route_intent": "faq", "confidence": 0.9}'
 
     def _select(self, user: str) -> str:
         if "退款" in user or "退了吧" in user:

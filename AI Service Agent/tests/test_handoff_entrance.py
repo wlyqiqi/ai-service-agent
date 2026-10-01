@@ -37,9 +37,9 @@ class ApprovalFlowFakeModel(ToolCallingFakeModel):
         if "选择器" in system:
             return ChatResult(generations=[ChatGeneration(
                 message=AIMessage(content='{"tool": "refund_apply", "args": {"order_id": "10086"}}'))])
-        if "路由器" in system:
+        if "客服路由意图分类器" in system:
             return ChatResult(generations=[ChatGeneration(
-                message=AIMessage(content='{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'))])
+                message=AIMessage(content='{"route_intent": "refund_apply_execute", "confidence": 0.9}'))])
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="已受理"))])
 
 

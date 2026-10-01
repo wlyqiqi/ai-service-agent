@@ -6,12 +6,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.builder import build_graph
 from conftest import ainvoke_graph
-from ai_service_agent.testing import (
-    ToolCallingFakeModel,
-    route_intent_json_message,
-    router_json_message,
-    select_json_message,
-)
+from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_message, router_json_message, select_json_message
 from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools.orders import my_orders, order_lookup, shipment_query
 
@@ -31,10 +26,10 @@ def disabled(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_feature_off_uses_legacy_route_fields(disabled):
+def test_router_always_outputs_route_intent(disabled):
     model = ToolCallingFakeModel(
         responses=[
-            router_json_message("order", "read", 0.94),
+            router_json_message("order_query", 0.94),
             AIMessage(content="ORD-1 是已发货订单，金额 99 元。"),
         ]
     )
@@ -52,13 +47,11 @@ def test_feature_off_uses_legacy_route_fields(disabled):
         },
         {"configurable": {"thread_id": "route-legacy-order-1"}},
     )
-    assert out["capability"] == "order"
-    assert out["risk_level"] == "read"
+    assert out["route_intent"] == "order_query"
     assert out["execution_status"] == "completed"
-    assert "target_graph" not in out
-    assert "route_intent" not in out
-    assert "execution_class" not in out
-    assert "allowed_tools" not in out
+    assert out["target_graph"] == "read_graph"
+    assert out["execution_class"] == "read_only"
+    assert out["allowed_tools"] == ["order_lookup"]
 
 
 def test_route_intent_graph_routes_order_query(enabled):

@@ -19,7 +19,7 @@ from ai_service_agent.testing import ApprovalFlowFakeModel, ToolCallingFakeModel
 class RaceKeywordModel(ToolCallingFakeModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         user = next((m.content for m in reversed(messages) if getattr(m, "type", "") == "human"), "")
-        payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}' if "转人工" in user else '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        payload = '{"route_intent": "unknown", "confidence": 0.2}' if "转人工" in user else '{"route_intent": "faq", "confidence": 0.9}'
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 

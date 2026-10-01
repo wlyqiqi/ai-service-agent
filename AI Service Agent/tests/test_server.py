@@ -180,9 +180,9 @@ class KeywordHandoffFakeModel(ToolCallingFakeModel):
                 user = m.content or ""
                 break
         if "转人工" in user:
-            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
+            payload = '{"route_intent": "unknown", "confidence": 0.2}'
         else:
-            payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+            payload = '{"route_intent": "faq", "confidence": 0.9}'
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 
@@ -194,8 +194,8 @@ class ResolveProactiveFakeModel(ToolCallingFakeModel):
         system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
         user = next((m.content for m in reversed(messages) if getattr(m, "type", "") == "human"), "")
         users = [m for m in messages if getattr(m, "type", "") == "human"]
-        if "路由器" in system:
-            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}' if "转人工" in user else '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        if "客服路由意图分类器" in system:
+            payload = '{"route_intent": "unknown", "confidence": 0.2}' if "转人工" in user else '{"route_intent": "faq", "confidence": 0.9}'
         else:
             payload = f"echo-{len(users)}"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
@@ -251,7 +251,7 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
 
     monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
     model = ToolCallingFakeModel(responses=[
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区测试路 99 号"}),
     ])
     db = str(tmp_path / "confirm.db")

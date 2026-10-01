@@ -47,18 +47,8 @@ def test_guard_fail_ignores_route_target(enabled):
     assert _guard_aware_target({"guard_status": "fail", "target_graph": "high_risk_graph"}) == "safety_final"
 
 
-def test_feature_off_uses_legacy_policy(monkeypatch):
-    get_settings.cache_clear()
-    try:
-        assert _policy_gate({"route_intent": "order_query"}) == {}
-        assert _route_target_legacy() == "fallback"
-    finally:
-        get_settings.cache_clear()
-
-
-def _route_target_legacy():
-    from ai_service_agent.graph.builder import _route_target
-    return _route_target({"capability": "unknown", "risk_level": "read"})
+def test_policy_gate_ignores_unknown_inputs():
+    assert _policy_gate({"route_intent": "update_phone"})["target_graph"] == "fallback"
 
 
 def test_policy_gate_corrects_address_mutation(enabled):

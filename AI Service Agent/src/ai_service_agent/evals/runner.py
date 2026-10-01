@@ -1,13 +1,14 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.graph.builder import POLICY
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
+from ai_service_agent.graph.route_policy import resolve_route_policy
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
@@ -65,14 +66,29 @@ def load_cases(path: str | Path) -> list[dict]:
     return cases
 
 
-def policy_target(capability: str, risk_level: str) -> str:
-    """确定性 Policy 归一化（graph-spec.md §5）：图名去 _graph 后缀 -> read/mutation/high_risk/fallback。
+def route_intent_for_case(case: dict) -> str:
+    """Derive the route_intent used for deterministic offline evaluation."""
+    if case.get("expected_route_intent"):
+        return case["expected_route_intent"]
+    ep = case["expected_policy"]
+    if ep in ("fallback", "handoff", "guard_reject"):
+        return "unknown"
+    input_text = case["input"]
+    if ep in ("approval", "clarify"):
+        return "refund_apply_execute"
+    if ep == "confirm":
+        return "account_profile_update"
+    if ep == "deny":
+        script = DENY_TOOL_SCRIPT.get(case["id"])
+        if script:
+            return "cancel_order_execute" if script["tool"] == "cancel_order" else "refund_apply_execute"
+        return "order_query"
+    return "faq" if case["expected_capability"] == "faq" else "order_query"
 
-    read_graph -> read、mutation_graph -> mutation、high_risk_graph -> high_risk、fallback 保持。
-    （T7 裁定：计划文本只归一化 read_graph，会让 confirm/approval 全部 fail，与计划自身预期
-    policy pass=76 矛盾；按 POLICY_EXPECTED 键对齐。）
-    """
-    target = POLICY.get((capability, risk_level), "fallback")
+
+def policy_target(case: dict) -> str:
+    """Resolve expected route intent to the deterministic Policy target graph."""
+    target = resolve_route_policy(route_intent_for_case(case)).target_graph
     return target.removesuffix("_graph")
 
 
@@ -85,7 +101,7 @@ def evaluate_policy(cases: list[dict]) -> list[dict]:
             results.append({"id": case["id"], "status": "skip", "skip_reason": "not_applicable"})
             continue
         expected = POLICY_EXPECTED[ep]
-        actual = policy_target(case["expected_capability"], case["expected_risk_level"])
+        actual = policy_target(case)
         results.append({
             "id": case["id"], "status": "pass" if actual == expected else "fail",
             "actual": actual, "expected": expected,
@@ -122,33 +138,22 @@ def evaluate_handoff(cases: list[dict]) -> list[dict]:
     return results
 
 
-def _router_payload(case: dict) -> dict:
-    """离线确定性驱动（OQ-2/OQ-6）：由 case 期望构造 Router 输出，不调真实 LLM。"""
-    ep = case["expected_policy"]
-    if ep in ("handoff", "fallback"):
-        return {"capability": "unknown", "risk_level": "read", "confidence": 0.2}
-    if ep == "guard_reject":
-        # 证明 Router 输出不被消费：即使分类为 high_risk 也不进审批
-        return {"capability": "order", "risk_level": "high_risk", "confidence": 0.9}
-    return {"capability": case["expected_capability"], "risk_level": case["expected_risk_level"], "confidence": 0.9}
-
-
 def _scripted_responses(case: dict) -> list:
     ep = case["expected_policy"]
     if ep == "allow":
-        return [router_json_message(case["expected_capability"], "read", 0.9), AIMessage(content=READ_MARKER)]
+        return [router_json_message(route_intent_for_case(case), 0.9), AIMessage(content=READ_MARKER)]
     if ep == "fallback":
-        return [router_json_message("unknown", "read", 0.2), AIMessage(content=FALLBACK_MARKER)]
+        return [router_json_message("unknown", 0.2), AIMessage(content=FALLBACK_MARKER)]
     if ep == "confirm":
-        return [router_json_message(case["expected_capability"], "mutation", 0.9),
+        return [router_json_message(route_intent_for_case(case), 0.9),
                 select_json_message("update_phone", {"phone": "13800000000"})]
     if ep == "approval":
-        return [router_json_message(case["expected_capability"], "high_risk", 0.9),
+        return [router_json_message(route_intent_for_case(case), 0.9),
                 select_json_message("refund_apply", {"order_id": "10086"})]
     if ep == "deny" and case["id"] == "CTRL-0087":
         # 读侧数据边界（D4）：脚本发起 order_lookup 查同事订单（ORD-2 属主 u2），工具层返回 data_boundary。
         return [
-            router_json_message("order", "read", 0.9),
+            router_json_message("order_query", 0.9),
             AIMessage(content="", tool_calls=[
                 {"name": "order_lookup", "args": {"order_id": "ORD-2"}, "id": "call-0087", "type": "tool_call"},
             ]),
@@ -157,20 +162,22 @@ def _scripted_responses(case: dict) -> list:
     if ep == "deny":
         script = DENY_TOOL_SCRIPT[case["id"]]
         risk = "high_risk" if script["tool"] in ("refund_apply", "cancel_order") else "mutation"
-        return [router_json_message(case["expected_capability"], risk, 0.9),
+        return [router_json_message(route_intent_for_case(case), 0.9),
                 select_json_message(script["tool"], script["args"])]
     if ep == "guard_reject":
-        return [router_json_message("order", "high_risk", 0.9)]
+        return [router_json_message("unknown", 0.9)]
     if ep == "handoff":
-        return [router_json_message("unknown", "read", 0.2)]
+        return [router_json_message("unknown", 0.2)]
     if ep == "clarify":
         # D8/OQ-3：scripted = router(high_risk) + select 缺参（refund_apply {} -> 缺 order_id -> clarify）
-        return [router_json_message("order", "high_risk", 0.9),
+        return [router_json_message(route_intent_for_case(case), 0.9),
                 select_json_message("refund_apply", {})]
     raise ValueError(f"unexpected expected_policy: {ep}")
 
 
 async def _run_case_graph(case: dict, responses: list, user_id: str) -> dict:
+    os.environ["JEV_ENABLED"] = "false"
+    get_settings.cache_clear()
     model = ToolCallingFakeModel(responses=responses)
     graph = make_ai_graph(model, MemorySaver())
     thread_id = f"eval-{case['id']}"
