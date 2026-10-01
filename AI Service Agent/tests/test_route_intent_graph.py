@@ -18,7 +18,6 @@ from ai_service_agent.tools.orders import my_orders, order_lookup, shipment_quer
 
 @pytest.fixture
 def enabled(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     yield
@@ -27,7 +26,6 @@ def enabled(monkeypatch):
 
 @pytest.fixture
 def disabled(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

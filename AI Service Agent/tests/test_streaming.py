@@ -145,7 +145,6 @@ def test_stream_never_duplicates_timeout_error():
 
 
 def test_stream_deduplicates_exhausted_node_timeout(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "0.05")
     get_settings.cache_clear()

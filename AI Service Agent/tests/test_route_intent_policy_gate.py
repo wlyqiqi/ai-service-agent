@@ -8,7 +8,6 @@ from ai_service_agent.graph.builder import _guard_aware_target, _policy_gate
 
 @pytest.fixture
 def enabled(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -49,7 +48,6 @@ def test_guard_fail_ignores_route_target(enabled):
 
 
 def test_feature_off_uses_legacy_policy(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
     get_settings.cache_clear()
     try:
         assert _policy_gate({"route_intent": "order_query"}) == {}

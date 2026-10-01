@@ -15,7 +15,6 @@ from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_mes
 
 @pytest.fixture
 def route_intent_settings(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     yield get_settings()

@@ -52,7 +52,6 @@ class OverlapTrackingFakeModel(ToolCallingFakeModel):
 
 @pytest.fixture(autouse=True)
 def offline_settings(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
     monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     try:

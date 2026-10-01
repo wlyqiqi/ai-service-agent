@@ -119,7 +119,6 @@ class FirstBoundaryDelayTransport(httpx.AsyncHTTPTransport):
 def _configure_model_environment(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setenv("FAKE_MODEL", "false")
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("TYPESAFE_API_KEY", settings.jev_api_key or "test-key")
     get_settings.cache_clear()
