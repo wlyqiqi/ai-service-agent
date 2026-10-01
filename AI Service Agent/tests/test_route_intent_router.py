@@ -113,7 +113,7 @@ async def test_deepseek_route_intent_path(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("my_orders", 0.94)]
     )
-    node = make_deepseek_router(model, route_intent_enabled=True)
+    node = make_deepseek_router(model)
     out = await node(_current_user_state())
     assert out["route_intent"] == "my_orders"
     assert out["confidence"] == 0.94
@@ -126,7 +126,7 @@ async def test_deepseek_low_confidence_becomes_unknown(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.79)]
     )
-    node = make_deepseek_router(model, route_intent_enabled=True)
+    node = make_deepseek_router(model)
     out = await node(_current_user_state())
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
@@ -436,24 +436,6 @@ async def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings
 
     assert len(created_clients) == 2
     assert all(client.closed for client in created_clients)
-
-
-@pytest.mark.asyncio
-async def test_feature_off_keeps_legacy_router(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
-    get_settings.cache_clear()
-    try:
-        from ai_service_agent.testing import router_json_message
-
-        model = ToolCallingFakeModel(
-            responses=[router_json_message("faq", "read", 0.9)]
-        )
-        node = make_deepseek_router(model, route_intent_enabled=False)
-        out = await node({"messages": [], "user_id": "u1", "context": {}})
-        assert out["capability"] == "faq"
-        assert out["risk_level"] == "read"
-    finally:
-        get_settings.cache_clear()
 
 
 def test_jev_route_choice_pins_profile_update_boundary():
