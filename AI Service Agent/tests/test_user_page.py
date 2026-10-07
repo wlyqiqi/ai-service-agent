@@ -124,6 +124,11 @@ def test_single_file_no_external_network(html):
     assert "http://" not in html and "https://" not in html, "禁止外部网络资源"
 
 
+def test_mount_node_tolerates_childless_elements(html):
+    assert "var children = node.children || [];" in html
+    assert "children.forEach(function (child)" in html
+
+
 def test_has_two_views_and_login_fields(html):
     for marker in (
         'id="view-login"', 'id="view-chat"',
@@ -333,6 +338,19 @@ def test_apply_done_final_appends_text_when_no_token(tmp_path):
     assert last["role"] == "assistant"
     assert "联系人工客服" in last["content"]
     assert out["conn"]["status"] == "idle"
+
+
+def test_apply_done_final_skips_text_for_pending_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'};"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',data:{missing:['phone']}});"
+        "s=UserPage.applyEvent(s,{type:'done',data:{final:'请提供手机号'}});"
+        "({kinds:s.messages.map(function(m){return m.kind;}),status:s.messages[0].meta.status})",
+        tmp_path,
+    )
+    assert out["kinds"] == ["form"]
+    assert out["status"] == "pending"
 
 
 def test_apply_done_final_idempotent_with_token(tmp_path):
