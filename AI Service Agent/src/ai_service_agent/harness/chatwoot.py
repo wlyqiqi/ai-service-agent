@@ -203,12 +203,42 @@ class ChatwootClient:
 
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
         rec = self.mapping.get(conversation_id)
+        body = {"content": content, "sender_type": "Contact", "message_type": "incoming"}
+        await self._post_message(conversation_id, body)
+
+    async def send_bot_message(
+        self,
+        conversation_id: str,
+        content: str,
+        content_type: str | None = None,
+        content_attributes: dict | None = None,
+    ) -> None:
+        """以 AgentBot 身份发送 outgoing 消息；无映射时跳过。"""
+        body: dict = {"content": content, "message_type": "outgoing"}
+        if content_type is not None:
+            body["content_type"] = content_type
+        if content_attributes is not None:
+            body["content_attributes"] = content_attributes
+        await self._post_message(conversation_id, body)
+
+    async def send_interactive_message(
+        self,
+        conversation_id: str,
+        content: str,
+        content_type: str,
+        content_attributes: dict,
+    ) -> None:
+        """发送 Chatwoot 原生 form/input_select 等交互消息。"""
+        await self.send_bot_message(conversation_id, content, content_type, content_attributes)
+
+    async def _post_message(self, conversation_id: str, body: dict) -> None:
+        rec = self.mapping.get(conversation_id)
         if rec is None:
             return  # 未建立 Chatwoot conversation：跳过，不阻塞 Runtime
         r = await self.client.post(
             f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}/messages",
             headers=self._headers(),
-            json={"content": content, "sender_type": "Contact", "message_type": "incoming"},  # v4.x: content 在顶层
+            json=body,
         )
         r.raise_for_status()
         msg_id = r.json().get("id")

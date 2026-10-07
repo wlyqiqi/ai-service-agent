@@ -129,6 +129,42 @@ async def test_send_as_contact_posts_content_and_skips_without_mapping(tmp_path)
     assert mapping.is_runtime_message(1) is True  # 推送消息 id 记录（webhook 回显去重用）
 
 
+@pytest.mark.asyncio
+async def test_send_bot_message_posts_outgoing_content(tmp_path):
+    def handler(request):
+        assert request.headers["api_access_token"] == "tok"
+        body = json.loads(request.content)
+        assert body["content"] == "Hello from AI"
+        assert body["message_type"] == "outgoing"
+        return Response(200, json={"id": 100})
+
+    cw, mapping, calls = _client_with(handler, tmp_path)
+    await cw.send_bot_message("c-nope", "Hello from AI")
+    assert calls == []
+    mapping.put("c1", 555)
+    await cw.send_bot_message("c1", "Hello from AI")
+    assert len(calls) == 1
+    assert mapping.is_runtime_message(100) is True
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_message_posts_form_contract(tmp_path):
+    attrs = {"items": [{"name": "addr", "type": "text", "label": "Address"}]}
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["content"] == "Fill address"
+        assert body["content_type"] == "form"
+        assert body["content_attributes"] == attrs
+        assert body["message_type"] == "outgoing"
+        return Response(200, json={"id": 101})
+
+    cw, mapping, _ = _client_with(handler, tmp_path)
+    mapping.put("c1", 555)
+    await cw.send_interactive_message("c1", "Fill address", "form", attrs)
+    assert mapping.is_runtime_message(101) is True
+
+
 def test_agent_message_contract():
     from ai_service_agent.harness.chatwoot import is_agent_message
 
@@ -262,3 +298,4 @@ def test_mapping_runtime_message(tmp_path):
     m.put_runtime_message(88, "c1")
     assert m.is_runtime_message(88) is True
     assert m.is_runtime_message(99) is False
+import json
