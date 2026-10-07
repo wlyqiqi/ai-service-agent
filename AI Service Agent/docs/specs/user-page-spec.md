@@ -77,8 +77,12 @@ UX 规则：
 - Form definitions and field validation are frontend presentation logic.
 - The backend does not send or understand a form schema.
 - `GET /me/profile` is read-only and returns only the authenticated caller's phone and address.
+- `GET /me/orders?address_editable=true` is read-only and returns only the authenticated caller's address-editable orders.
 - Old profile values are display-only and are not submitted as tool arguments.
 - `update_phone` and `update_address` P0 forms collect each new value once.
+- The address form displays a single editable order as read-only context, or a dropdown when multiple editable orders exist.
+- The address form does not offer free-text order ID entry and does not display orders that safety precheck will reject.
+- If no editable orders exist or order options fail to load, the frontend shows a status notice instead of a manual order-ID fallback.
 - Form submission produces a normalized text message and continues through the existing chat flow.
 
 ## 6. 前端状态与数据流
