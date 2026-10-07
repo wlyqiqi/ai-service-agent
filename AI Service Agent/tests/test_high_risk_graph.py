@@ -1071,6 +1071,23 @@ def test_transaction_prechecks_reject_signed_address_and_refunded_refunding_invo
     ) == "invoice_not_allowed"
 
 
+def test_address_editable_rule_is_whitelisted():
+    from ai_service_agent.tools.orders import is_address_editable_status
+
+    assert is_address_editable_status("paid") is True
+    for status in ("shipped", "signed", "completed", "cancelled", "refunding", "refunded", ""):
+        assert is_address_editable_status(status) is False
+
+
+def test_address_precheck_requires_paid_status():
+    pending = {
+        "tool": "update_address",
+        "args": {"order_id": "ORD-1", "address": "New address"},
+    }
+    facts = {"order_id": "ORD-1", "user_id": "u1", "status": "shipped"}
+    assert _apply_business_rules(pending, facts, "u1") == "address_not_editable"
+
+
 def test_refund_order_expired_does_not_write_db(monkeypatch, tmp_path):
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-expired")
     _use_cancel_db(monkeypatch, db_path)
