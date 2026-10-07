@@ -557,6 +557,22 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return '';
   }
 
+  function applyConfirmedAction(store, result) {
+    var next = JSON.parse(JSON.stringify(store));
+    var hasFinal = false;
+    (result.events || []).forEach(function (event) {
+      if (event.type === 'tool_call' || event.type === 'tool_result') return;
+      if (event.type === 'done' && event.data && event.data.final) hasFinal = true;
+      next = applyEvent(next, event);
+    });
+    if (result.final && !hasFinal) {
+      next.messages.push({ id: msgId(), role: 'assistant', kind: 'text', content: result.final, meta: {} });
+    }
+    next.conn.status = 'idle';
+    next = applyEvent(next, { type: 'confirmation_updated', data: { action: 'confirmed' } });
+    return next;
+  }
+
   function resetConversation(store) {
     var s = JSON.parse(JSON.stringify(store));
     s.conversation = { conversation_id: null, mode: 'ai' };
@@ -568,20 +584,29 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
 
   function mergeHistory(existing, incoming) {
     var seen = {};
+    var seenContent = {};
     var out = [];
-    existing.forEach(function (m) { if (m.id) seen[m.id] = true; out.push(m); });
+    existing.forEach(function (m) {
+      if (m.id) seen[m.id] = true;
+      var c = m.content || '';
+      if (m.role && c) seenContent[m.role + '|' + c] = true;
+      out.push(m);
+    });
     (incoming || []).forEach(function (m) {
       var id = m.id || msgId();
       var content = m.text || m.content || '';
       if (content.indexOf('[表单提交] 修改联系电话') === 0 ||
           content.indexOf('[表单提交] 修改收货地址') === 0) return;
+      var role = m.role === 'user' ? 'user' : 'assistant';
       if (seen[id]) return;
+      if (role && content && seenContent[role + '|' + content]) return;
       seen[id] = true;
+      if (role && content) seenContent[role + '|' + content] = true;
       out.push({
         id: id,
-        role: m.role === 'user' ? 'user' : 'assistant',
+        role: role,
         kind: 'text',
-        content: m.text || m.content || '',
+        content: content,
         meta: m.meta || {},
       });
     });
@@ -916,9 +941,10 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           var block = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
-          block.split('\n').forEach(function (line) {
-            if (line.indexOf('data: ') === 0) onEvent(JSON.parse(line.slice(6)));
-          });
+        for (var lineIndex = 0; lineIndex < block.split('\n').length; lineIndex++) {
+          var line = block.split('\n')[lineIndex];
+          if (line.indexOf('data: ') === 0) await onEvent(JSON.parse(line.slice(6)));
+        }
         }
       }
       return { ok: true };
@@ -1010,7 +1036,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         var events = mockStream().filter(function (e) { return e.type !== 'handoff_resolved'; });
         for (var i = 0; i < events.length; i++) {
           if (events[i].type === 'handoff_created') { handoffSeen = true; seatDelivered = false; }
-          onEvent(events[i]);
+          await onEvent(events[i]);
           if (i < events.length - 1) await mockDelay(delayMs);
         }
         return { ok: true };
@@ -1112,6 +1138,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       buildFormContent: buildFormContent,
       validateFormValues: validateFormValues,
       formatFormSubmission: formatFormSubmission,
+      applyConfirmedAction: applyConfirmedAction,
       buildView: buildView,
       createApi: createApi,
       createMockApi: createMockApi,
@@ -1204,7 +1231,7 @@ function showFormError(formElement, message) {
 
   function loadAuth() {
     try {
-      var raw = window.sessionStorage.getItem(AUTH_KEY);
+      var raw = window.localStorage.getItem(AUTH_KEY);
       return raw ? JSON.parse(raw) : null;
     } catch (e) {
       return null;
@@ -1212,11 +1239,11 @@ function showFormError(formElement, message) {
   }
 
   function saveAuth(auth) {
-    window.sessionStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+    window.localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
   }
 
   function clearAuth() {
-    window.sessionStorage.removeItem(AUTH_KEY);
+    window.localStorage.removeItem(AUTH_KEY);
   }
 
   function showView(name) {
@@ -1350,7 +1377,21 @@ function showFormError(formElement, message) {
 
   function startUserTurn(text, options) {
     pushUserMessage(text, !(options && options.visible === false));
-    api.sendMessage(store.conversation.conversation_id, text, function (event) {
+    api.sendMessage(store.conversation.conversation_id, text, async function (event) {
+      if (options && options.autoConfirm && event.type === 'confirmation_required') {
+        store.conn.status = 'streaming';
+        applyView();
+        try {
+          var result = await api.confirm(store.conversation.conversation_id, 'confirmed');
+          var next = applyConfirmedAction(store, result);
+          store = next;
+          applyView();
+        } catch (e) {
+          store = applyEvent(store, { type: 'error', data: { code: 'E_CONFIRM', message: e.message } });
+          applyView();
+        }
+        return;
+      }
       store = applyEvent(store, event);
       applyView();
     }).catch(function (e) {
@@ -1466,7 +1507,10 @@ function showFormError(formElement, message) {
         }
       }
       showFormError(formElement, '');
-      startUserTurn(UserPage.formatFormSubmission(formMessage.content.form_type, values), { visible: false });
+      startUserTurn(UserPage.formatFormSubmission(formMessage.content.form_type, values), {
+        visible: false,
+        autoConfirm: true,
+      });
       return;
     }
     if (action === 'clarify') {

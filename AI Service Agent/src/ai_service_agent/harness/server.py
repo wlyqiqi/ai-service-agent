@@ -49,6 +49,15 @@ _locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve frontend updates immediately in local development."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 class CreateSessionBody(BaseModel):
     user_id: str
 
@@ -616,7 +625,7 @@ def create_app(
     if _web_dir.exists():
         # 同源托管用户页面（user-page-spec §10）：baseUrl='' 相对路径 + file:// 强制 mock，
         # 真实模式需 Runtime 同源提供页面；API 路由已在挂载前注册，优先级不变。
-        app.mount("/", StaticFiles(directory=_web_dir, html=True), name="web")
+        app.mount("/", NoCacheStaticFiles(directory=_web_dir, html=True), name="web")
 
     return app
 

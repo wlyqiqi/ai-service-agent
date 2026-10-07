@@ -265,13 +265,13 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True and body["action"] == "confirm"
-    assert "收货地址已更新" in body["final"]
+    assert "收货地址已修改成功" in body["final"]
 
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
     assert rows[-1]["role"] == "assistant"
-    assert "收货地址已更新" in rows[-1]["content"]
+    assert "收货地址已修改成功" in rows[-1]["content"]
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):

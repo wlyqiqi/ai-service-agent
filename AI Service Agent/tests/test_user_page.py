@@ -900,6 +900,34 @@ def test_build_view_address_form_buttons(tmp_path):
     assert any(field.get("data-action") == "form-submit" for field in out["fields"])
 
 
+def test_apply_confirmed_action_hides_tool_events_and_shows_final(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.conn.status='streaming';"
+        "s=UserPage.applyConfirmedAction(s,{events:["
+        "{type:'tool_call',data:{name:'update_address',args:{}}},"
+        "{type:'tool_result',data:{name:'update_address',ok:true,summary:'ok'}},"
+        "{type:'confirmation_updated',data:{action:'confirmed'}},"
+        "{type:'done',data:{final:'地址已更新'}}],"
+        "final:'地址已更新'});"
+        "({status:s.conn.status,kinds:s.messages.map(function(m){return m.kind;}),"
+        "last:s.messages[s.messages.length-1].content,"
+        "finalCount:s.messages.filter(function(m){return m.content==='地址已更新';}).length})",
+        tmp_path,
+    )
+    assert out == {
+        "status": "idle",
+        "kinds": ["text"],
+        "last": "地址已更新",
+        "finalCount": 1,
+    }
+
+
+def test_form_submit_uses_backend_auto_confirmation(html: str):
+    assert "autoConfirm: true" in html
+    assert "options.autoConfirm && event.type === 'confirmation_required'" in html
+
+
 def test_api_clarify_placeholder_both_layers(tmp_path):
     out = _run_js(
         "var sent=null;"

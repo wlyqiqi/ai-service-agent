@@ -230,7 +230,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     assert t3["execution_status"] == "completed"
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
-    assert "收货地址已更新" in t3["messages"][-1].content
+    assert "收货地址已修改成功" in t3["messages"][-1].content
 
 
 def _cancel_model(payload: dict):

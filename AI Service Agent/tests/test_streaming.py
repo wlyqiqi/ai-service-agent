@@ -246,7 +246,7 @@ def test_stream_resume_done_final_from_new_message():
     ))
     done = events[-1]
     assert done["type"] == "done"
-    assert "收货地址已更新" in done["data"]["final"]
+    assert "收货地址已修改成功" in done["data"]["final"]
     assert done["data"]["message_id"]
 
 

@@ -70,7 +70,15 @@ def confirmation_summary(tool: str, args: dict) -> str:
     return f"您即将进行「{_label(tool)}」操作，参数：{args}，请确认是否继续。"
 
 
-def completion_text(tool: str) -> str:
+def completion_text(tool: str, args: dict | None = None) -> str:
+    if tool == "update_address" and args:
+        order_id = args.get("order_id")
+        address = args.get("address")
+        if order_id and address:
+            return (
+                f"订单 {order_id} 的收货地址已修改成功：{address}。"
+                "后续包裹将按新地址配送。"
+            )
     return _COMPLETION_TEXTS.get(tool, f"好的，您的{_label(tool)}已办理完成。")
 
 

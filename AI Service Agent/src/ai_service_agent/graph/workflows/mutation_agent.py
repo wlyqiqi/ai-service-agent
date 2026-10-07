@@ -74,7 +74,7 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=N
 
     def finalize_ok(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
-        return {"messages": [AIMessage(content=completion_text(pending["tool"]))], "execution_status": "completed"}
+        return {"messages": [AIMessage(content=completion_text(pending["tool"], pending["args"]))], "execution_status": "completed"}
 
     def finalize_rejected(state: dict) -> dict:
         return {"messages": [AIMessage(content=operation_cancelled_text())], "execution_status": "completed"}
