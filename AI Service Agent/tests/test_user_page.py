@@ -151,7 +151,6 @@ def test_initial_store_shape(tmp_path):
     assert out["view"] is None
     assert out["auth"] is None
     assert out["conversation"] == {"conversation_id": None, "mode": "ai"}
-    assert out["messages"] == []
     assert out["conn"]["status"] == "idle"
     assert out["pendingAction"] is None
 
@@ -192,10 +191,13 @@ def test_apply_done_final_appends_text_when_no_token(tmp_path):
 
 
 def test_apply_done_final_idempotent_with_token(tmp_path):
-    """已有 token 流时 done.final 不重复追加（幂等）。"""
+    """已有 token 流时，即使 tool 事件插在中间，done.final 也不重复追加。"""
     out = _run_js(
-        "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
-        "{type:'token',data:{text:'您好'}}), {type:'done',data:{final:'您好'}})",
+        "var s=UserPage.createInitialStore();"
+        "s=UserPage.applyEvent(s,{type:'token',data:{text:'您好'}});"
+        "s=UserPage.applyEvent(s,{type:'tool_call',data:{name:'kb_search',args:{}}});"
+        "s=UserPage.applyEvent(s,{type:'tool_result',data:{name:'kb_search',ok:true,summary:'ok'}});"
+        "s=UserPage.applyEvent(s,{type:'done',data:{final:'您好'}})",
         tmp_path,
     )
     texts = [m for m in out["messages"] if m["kind"] == "text" and m["role"] == "assistant"]
@@ -203,17 +205,16 @@ def test_apply_done_final_idempotent_with_token(tmp_path):
     assert texts[0]["content"] == "您好"
 
 
-def test_apply_tool_call_then_result(tmp_path):
+def test_apply_tool_events_are_not_user_visible(tmp_path):
+    """工具执行是内部过程事件，用户页面不展示工具调用信息。"""
     out = _run_js(
-        "UserPage.applyEvent(UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "(function(){var s=UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
         "{type:'tool_call',data:{name:'order_lookup',args:{order_id:'A1001'}}}), "
-        "{type:'tool_result',data:{name:'order_lookup',ok:true,summary:'已发货'}}), "
-        "{type:'done',data:{}})",
+        "{type:'tool_result',data:{name:'order_lookup',ok:true,summary:'已发货'}});"
+        "return s.messages;})()",
         tmp_path,
     )
-    tool = [m for m in out["messages"] if m["kind"] == "tool"][0]
-    assert tool["content"]["name"] == "order_lookup"
-    assert tool["meta"] == {"phase": "result", "ok": True, "summary": "已发货"}
+    assert out == []
 
 
 def test_apply_clarify_and_safety(tmp_path):
@@ -387,9 +388,9 @@ def test_build_view_full_event_stream(tmp_path):
         "({count:v.messages.length,classes:v.messages.map(function(m){return m.attrs['class'];})})",
         tmp_path,
     )
-    assert out["count"] == 6
+    assert out["count"] == 5
     assert out["classes"] == [
-        "msg assistant", "card tool-card", "card", "card", "notice", "error-bar",
+        "msg assistant", "card", "card", "notice", "error-bar",
     ]
 
 

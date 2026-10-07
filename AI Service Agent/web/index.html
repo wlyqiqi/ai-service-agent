@@ -220,7 +220,6 @@ html[data-theme="dark"] .msg.assistant::before,html[data-theme="dark"] .card::be
   align-self:flex-start;margin-left:44px;box-shadow:var(--shadow-card);overflow-wrap:break-word}
 .card h4{margin:0 0 8px;font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--accent-text)}
 .card p{margin:4px 0;color:var(--ink-2);line-height:1.6}
-.tool-card h4{color:var(--ink-2)}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 
 .notice,.error-bar,.handoff-banner{max-width:86%;align-self:stretch;border-radius:var(--r-md);
@@ -472,17 +471,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         }
         break;
       case 'tool_call':
-        s.conn.status = 'streaming';
-        s.messages.push({ id: msgId(), role: 'assistant', kind: 'tool',
-          content: { name: data.name, args: data.args || {} }, meta: { phase: 'call' } });
-        break;
       case 'tool_result':
-        for (var i = s.messages.length - 1; i >= 0; i--) {
-          if (s.messages[i].kind === 'tool' && s.messages[i].meta.phase === 'call') {
-            s.messages[i].meta = { phase: 'result', ok: !!data.ok, summary: data.summary || '' };
-            break;
-          }
-        }
         break;
       case 'clarification_required':
         s.messages.push({ id: msgId(), role: 'assistant', kind: 'clarify',
@@ -574,13 +563,6 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     switch (m.kind) {
       case 'text':
         return { tag: 'div', attrs: { class: 'msg ' + m.role }, children: [m.content] };
-      case 'tool':
-        return { tag: 'div', attrs: { class: 'card tool-card' }, children: [
-          { tag: 'h4', children: ['工具 · ' + m.content.name] },
-          { tag: 'p', children: [m.meta.phase === 'result'
-            ? (m.meta.ok ? '✓ ' + m.meta.summary : '✗ ' + m.meta.summary)
-            : '执行中…'] },
-        ] };
       case 'clarify':
         var missing = m.content.missing || [];
         var kids = [
