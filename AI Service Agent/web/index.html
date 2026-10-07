@@ -609,7 +609,20 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         break;
       case 'clarification_required': {
         var form = buildFormContent(data.missing || [], s.profile, s.orders);
-        if (form) {
+        if (form && form.empty_reason) {
+          s.messages.push({
+            id: msgId(),
+            role: 'assistant',
+            kind: 'notice',
+            content: {
+              rule: 'address_options_unavailable',
+              reason: s.ordersStatus === 'error'
+                ? '订单列表加载失败，请重新打开会话或稍后重试。'
+                : form.empty_reason,
+            },
+            meta: {},
+          });
+        } else if (form) {
           s.messages.push({
             id: msgId(), role: 'assistant', kind: 'form',
             content: form, meta: { status: 'pending' },
@@ -796,7 +809,13 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         return { tag: 'div', attrs: { class: 'card' }, children: approvalKids };
       }
       case 'notice':
-        return { tag: 'div', attrs: { class: 'notice' }, children: ['安全拦截：' + m.content.reason] };
+        return {
+          tag: 'div',
+          attrs: { class: 'notice' },
+          children: [m.content.rule === 'address_options_unavailable'
+            ? m.content.reason
+            : '安全拦截：' + m.content.reason],
+        };
       case 'handoff':
         return m.meta.state === 'created'
           ? { tag: 'div', attrs: { class: 'handoff-banner' }, children: ['已转人工客服' + (m.content.summary ? '：' + m.content.summary : '')] }

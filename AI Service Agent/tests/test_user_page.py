@@ -266,6 +266,35 @@ def test_build_address_form_renders_dropdown_for_multiple_orders(tmp_path):
     ]
 
 
+def test_empty_editable_orders_render_notice_not_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={address:'Old address'};"
+        "s.orders=[];s.ordersStatus='ready';"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',"
+        "data:{missing:['order_id','address']}});"
+        "({kinds:s.messages.map(function(m){return m.kind;}),"
+        "reason:s.messages[0].content.reason})",
+        tmp_path,
+    )
+    assert out["kinds"] == ["notice"]
+    assert out["reason"] == "当前没有可修改收货地址的订单。"
+
+
+def test_failed_order_options_render_retry_notice_not_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={address:'Old address'};"
+        "s.orders=[];s.ordersStatus='error';"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',"
+        "data:{missing:['order_id','address']}});"
+        "({kind:s.messages[0].kind,reason:s.messages[0].content.reason})",
+        tmp_path,
+    )
+    assert out["kind"] == "notice"
+    assert out["reason"] == "订单列表加载失败，请重新打开会话或稍后重试。"
+
+
 def test_apply_clarification_creates_phone_form(tmp_path):
     out = _run_js(
         "var s=UserPage.createInitialStore();"
