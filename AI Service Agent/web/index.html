@@ -447,7 +447,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return null;
   }
 
-  function buildFormContent(missing, profile) {
+  function buildFormContent(missing, profile, orders) {
     var formType = resolveFormType(missing);
     if (!formType) return null;
     var safeProfile = profile || {};
@@ -464,15 +464,47 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       };
     }
 
+    var orderOptions = orders || [];
+    var requiresOrder = (missing || []).indexOf('order_id') >= 0;
+    if (requiresOrder && orderOptions.length === 0) {
+      return {
+        form_type: formType,
+        empty_reason: '当前没有可修改收货地址的订单。',
+      };
+    }
+    var oldInfo = { '当前收货地址': safeProfile.address || '未知' };
     var fields = [];
-    if ((missing || []).indexOf('order_id') >= 0) {
-      fields.push({ name: 'order_id', label: '订单号', type: 'text', required: true });
+    if (requiresOrder) {
+      if (orderOptions.length === 1) {
+        var onlyOrder = orderOptions[0];
+        oldInfo['目标订单'] = onlyOrder.order_id + ' · ' + (onlyOrder.status_display || '订单');
+        return {
+          form_type: formType,
+          title: '修改收货地址',
+          old_info: oldInfo,
+          order_id: onlyOrder.order_id,
+          fields: [{ name: 'address', label: '新收货地址', type: 'text', required: true }],
+          submit_label: '确认修改',
+        };
+      }
+      fields.push({
+        name: 'order_id',
+        label: '选择订单',
+        type: 'select',
+        required: true,
+        options: orderOptions.map(function (order) {
+          return {
+            value: order.order_id,
+            label: order.order_id + ' · ' + (order.status_display || '订单'),
+          };
+        }),
+      });
     }
     fields.push({ name: 'address', label: '新收货地址', type: 'text', required: true });
     return {
       form_type: formType,
       title: '修改收货地址',
-      old_info: { '当前收货地址': safeProfile.address || '未知' },
+      old_info: oldInfo,
       fields: fields,
       submit_label: '确认修改',
     };
@@ -576,7 +608,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       case 'tool_result':
         break;
       case 'clarification_required': {
-        var form = buildFormContent(data.missing || [], s.profile);
+        var form = buildFormContent(data.missing || [], s.profile, s.orders);
         if (form) {
           s.messages.push({
             id: msgId(), role: 'assistant', kind: 'form',
@@ -689,6 +721,19 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
             'aria-label': field.label,
           };
           if (field.required) attrs.required = 'required';
+          if (field.type === 'select') {
+            delete attrs.type;
+            return { tag: 'div', children: [
+              { tag: 'label', children: [field.label] },
+              { tag: 'select', attrs: attrs, children: (field.options || []).map(function (option) {
+                return {
+                  tag: 'option',
+                  attrs: { value: option.value },
+                  children: [option.label],
+                };
+              }) },
+            ] };
+          }
           return { tag: 'div', children: [
             { tag: 'label', children: [field.label] },
             { tag: 'input', attrs: attrs },
@@ -1386,6 +1431,9 @@ function showFormError(formElement, message) {
       if (!formMessage || formMessage.meta.status === 'submitted') return;
 
       var values = collectFormValues(formElement);
+      if (formMessage.content.order_id) {
+        values.order_id = formMessage.content.order_id;
+      }
       var validationError = UserPage.validateFormValues(formMessage.content, values, store.profile);
       if (validationError) {
         showFormError(formElement, validationError);

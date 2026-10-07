@@ -210,7 +210,9 @@ def test_build_phone_form_content(tmp_path):
 def test_build_address_form_content_requires_order_id_when_missing(tmp_path):
     out = _run_js(
         "UserPage.buildFormContent(['order_id','address'], "
-        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'})",
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'}, "
+        "[{order_id:'ORD-1',status_display:'已付款'},"
+        "{order_id:'ORD-2',status_display:'已付款'}])",
         tmp_path,
     )
     assert out["form_type"] == "update_address"
@@ -230,6 +232,38 @@ def test_build_address_form_content_omits_order_id_when_not_missing(tmp_path):
 def test_build_form_content_falls_back_to_none(tmp_path):
     out = _run_js("UserPage.buildFormContent(['order_id'], null)", tmp_path)
     assert out is None
+
+
+def test_build_address_form_uses_single_order_without_input(tmp_path):
+    out = _run_js(
+        "var form=UserPage.buildFormContent(['order_id','address'],"
+        "{address:'Old address'},[{order_id:'ORD-1',status_display:'已付款'}]);"
+        "({form:form})",
+        tmp_path,
+    )
+    assert out["form"]["order_id"] == "ORD-1"
+    assert out["form"]["old_info"]["目标订单"] == "ORD-1 · 已付款"
+    assert all(field["name"] != "order_id" for field in out["form"]["fields"])
+    assert any(field["name"] == "address" for field in out["form"]["fields"])
+
+
+def test_build_address_form_renders_dropdown_for_multiple_orders(tmp_path):
+    orders = [
+        {"order_id": "ORD-1", "status_display": "已付款"},
+        {"order_id": "ORD-2", "status_display": "已付款"},
+    ]
+    out = _run_js(
+        "var form=UserPage.buildFormContent(['order_id','address'],"
+        "{address:'Old address'}," + json.dumps(orders) + ");"
+        "var field=form.fields.find(function(item){return item.name==='order_id';});"
+        "({field:field})",
+        tmp_path,
+    )
+    assert out["field"]["type"] == "select"
+    assert out["field"]["options"] == [
+        {"value": "ORD-1", "label": "ORD-1 · 已付款"},
+        {"value": "ORD-2", "label": "ORD-2 · 已付款"},
+    ]
 
 
 def test_apply_clarification_creates_phone_form(tmp_path):
@@ -815,12 +849,15 @@ def test_merge_history_hides_ui_generated_form_submissions(tmp_path):
 
 def test_build_view_address_form_buttons(tmp_path):
     out = _run_js(
-        "var a=UserPage.applyEvent(UserPage.createInitialStore(),"
+        "var a=UserPage.createInitialStore();"
+        "a.orders=[{order_id:'ORD-1',status_display:'已付款'},"
+        "{order_id:'ORD-2',status_display:'已付款'}];"
+        "a=UserPage.applyEvent(a,"
         "{type:'clarification_required',data:{missing:['order_id','address']}});"
         "var v=UserPage.buildView(a);"
         "var fields=[];"
         "function scan(n){if(n&&n.tag==='button')fields.push(n.attrs);"
-        "if(n&&n.tag==='input')fields.push(n.attrs);"
+        "if(n&&n.tag==='input'||n&&n.tag==='select')fields.push(n.attrs);"
         "if(n&&n.children)(n.children||[]).forEach(scan);}"
         "scan(v.messages[0]);"
         "({class:v.messages[0].attrs.class,fields:fields,text:JSON.stringify(v.messages[0])})",
@@ -828,7 +865,7 @@ def test_build_view_address_form_buttons(tmp_path):
     )
     assert out["class"] == "card form-card"
     assert out["text"].count("data-form-field") == 2
-    assert "订单号" in out["text"]
+    assert "选择订单" in out["text"]
     assert "新收货地址" in out["text"]
     assert "确认修改" in out["text"]
     assert any(field.get("data-action") == "form-submit" for field in out["fields"])
