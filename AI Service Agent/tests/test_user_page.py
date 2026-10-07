@@ -161,6 +161,16 @@ def test_initial_store_shape(tmp_path):
     assert out["pendingAction"] is None
 
 
+def test_initial_store_includes_order_options_state(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "({orders:s.orders,status:s.ordersStatus})",
+        tmp_path,
+    )
+    assert out["orders"] == []
+    assert out["status"] == "idle"
+
+
 def test_mask_phone_hides_middle_digits(tmp_path):
     out = _run_js("UserPage.maskPhone('+8492722552')", tmp_path)
     assert out == "+84****2552"
@@ -840,6 +850,33 @@ def test_api_clarify_placeholder_both_layers(tmp_path):
     assert out["mockOk"] is True
     assert out["real"] is True
     assert out["mockFn"] is True
+
+
+def test_api_get_orders_requests_editable_orders(tmp_path):
+    out = _run_js(
+        "var sent=null;"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,opts:opts};"
+        "return {ok:true,status:200,json:async function(){return {orders:[],count:0};}};},"
+        "baseUrl:'http://x'});"
+        "var result=await api.getOrders();"
+        "({url:sent.url,result:result})",
+        tmp_path,
+    )
+    assert out["url"] == "http://x/me/orders?address_editable=true"
+    assert out["result"] == {"orders": [], "count": 0}
+
+
+def test_mock_api_get_orders_returns_options(tmp_path):
+    out = _run_js(
+        "var api=await UserPage.createMockApi();"
+        "var result=await api.getOrders();"
+        "({count:result.count,first:result.orders[0]})",
+        tmp_path,
+    )
+    assert out["count"] == 1
+    assert out["first"]["order_id"] == "ORD-PAID-1"
+    assert out["first"]["status_display"] == "已付款"
+
 
 def test_mock_get_messages_empty_before_handoff(tmp_path):
     """P1: mock getMessages 在未发生转人工前必须为空 + mode=ai（登录/刷新不得预置坐席回复）。"""

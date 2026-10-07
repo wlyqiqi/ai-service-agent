@@ -412,6 +412,8 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       conn: { status: 'idle', lastError: null },
       pendingAction: null,
       profile: null,
+      orders: [],
+      ordersStatus: 'idle',
       config: { mock: false, baseUrl: '' },
     };
   }
@@ -827,6 +829,12 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return await r.json();
     }
 
+    async function getOrders() {
+      var r = await fetchImpl(base + '/me/orders?address_editable=true', { headers: headers() });
+      if (!r.ok) throw apiError('ORDERS_FAILED', r);
+      return await r.json();
+    }
+
     async function sendMessage(conversationId, text, onEvent) {
       var r = await fetchImpl(base + '/chat', {
         method: 'POST', headers: headers(),
@@ -889,6 +897,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return {
       login: login, createSession: createSession, getMessages: getMessages,
       sendMessage: sendMessage, confirm: confirm, approve: approve, reject: reject, clarify: clarify,
+      getOrders: getOrders,
       getProfile: getProfile,
     };
   }
@@ -908,6 +917,13 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     var seatDelivered = false;
     var seat = { id: 'seat-1', role: 'assistant', text: '人工客服：您好，您的退款申请已加急处理，预计 24 小时内到账。' };
     var profile = { user_id: 'demo-user', phone: '+6581234567', address: 'No. 1, Demo Road' };
+    var orders = [{
+      order_id: 'ORD-PAID-1',
+      status_display: '已付款',
+      ordered_at: '2026-10-07T00:00:00+08:00',
+      amount: 99.0,
+      currency: 'CNY',
+    }];
     return {
       async login(account) {
         return { token: 'mock-token', user: { name: account || '演示用户' } };
@@ -924,6 +940,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         return { messages: [], mode: 'ai' }; // 模拟人工已解决
       },
       async getProfile() { return profile; },
+      async getOrders() { return { orders: orders, count: orders.length }; },
       async sendMessage(conversationId, text, onEvent) {
         // mock 演示流去掉 handoff_resolved：让转人工后的轮询真实跑起来（getMessages 返回 mode=ai 模拟人工解决）
         var events = mockStream().filter(function (e) { return e.type !== 'handoff_resolved'; });
@@ -1218,6 +1235,15 @@ function showFormError(formElement, message) {
     } catch (e) {
       if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
       store.profile = null;
+    }
+    try {
+      var orderResult = await api.getOrders();
+      store.orders = orderResult.orders || [];
+      store.ordersStatus = 'ready';
+    } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
+      store.orders = [];
+      store.ordersStatus = 'error';
     }
     var loaded = await loadHistory();
     if (!loaded) return false; // 401 已由 handleAuthExpired 处理
