@@ -221,6 +221,11 @@ html[data-theme="dark"] .msg.assistant::before,html[data-theme="dark"] .card::be
 .card h4{margin:0 0 8px;font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--accent-text)}
 .card p{margin:4px 0;color:var(--ink-2);line-height:1.6}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.form-card .old-info{margin:0 0 12px;padding:10px;background:var(--surface-2);border-radius:10px}
+.form-card .old-info div{font-size:13px;color:var(--ink-2)}
+.form-card label{display:block;margin:10px 0 5px;font-size:13px;color:var(--ink-2)}
+.form-card input{width:100%;margin-bottom:4px}
+.form-error{display:none;margin-top:8px;color:#ef4444;font-size:13px}
 
 .notice,.error-bar,.handoff-banner{max-width:86%;align-self:stretch;border-radius:var(--r-md);
   padding:11px 14px;font-size:13px;line-height:1.6;overflow-wrap:break-word;
@@ -471,6 +476,53 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     };
   }
 
+  var PHONE_PATTERN = /^\+?[0-9][0-9\- ]{5,19}$/;
+
+  function validateFormValues(form, values, profile) {
+    var safeProfile = profile || {};
+    var fields = form.fields || [];
+    for (var i = 0; i < fields.length; i++) {
+      var field = fields[i];
+      var value = String(values[field.name] || '').trim();
+      if (field.required && !value) return '请填写' + field.label;
+      if (field.name === 'order_id' && value && value.length > 64) {
+        return '订单号长度不能超过 64 个字符';
+      }
+    }
+
+    if (form.form_type === 'update_phone') {
+      var phone = String(values.phone || '').trim();
+      if (!PHONE_PATTERN.test(phone)) return '请输入有效的新手机号';
+      if (safeProfile.phone && phone === safeProfile.phone) {
+        return '新手机号不能与当前手机号相同';
+      }
+    }
+
+    if (form.form_type === 'update_address') {
+      var address = String(values.address || '').trim();
+      if (address.length < 5) return '新收货地址长度不能少于 5 个字符';
+      if (safeProfile.address && address === safeProfile.address) {
+        return '新收货地址不能与当前收货地址相同';
+      }
+    }
+
+    return '';
+  }
+
+  function formatFormSubmission(formType, values) {
+    if (formType === 'update_phone') {
+      return '[表单提交] 修改联系电话\n新手机号：' + String(values.phone || '').trim();
+    }
+    if (formType === 'update_address') {
+      var lines = ['[表单提交] 修改收货地址'];
+      var orderId = String(values.order_id || '').trim();
+      if (orderId) lines.push('订单号：' + orderId);
+      lines.push('新地址：' + String(values.address || '').trim());
+      return lines.join('\n');
+    }
+    return '';
+  }
+
   function resetConversation(store) {
     var s = JSON.parse(JSON.stringify(store));
     s.conversation = { conversation_id: null, mode: 'ai' };
@@ -518,10 +570,19 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       case 'tool_call':
       case 'tool_result':
         break;
-      case 'clarification_required':
-        s.messages.push({ id: msgId(), role: 'assistant', kind: 'clarify',
-          content: { missing: data.missing || [], reason: data.reason || null }, meta: {} });
+      case 'clarification_required': {
+        var form = buildFormContent(data.missing || [], s.profile);
+        if (form) {
+          s.messages.push({
+            id: msgId(), role: 'assistant', kind: 'form',
+            content: form, meta: { status: 'pending' },
+          });
+        } else {
+          s.messages.push({ id: msgId(), role: 'assistant', kind: 'clarify',
+            content: { missing: data.missing || [], reason: data.reason || null }, meta: {} });
+        }
         break;
+      }
       case 'confirmation_required':
         s.pendingAction = { kind: 'confirm', status: 'pending', summary: data.summary || '' };
         s.messages.push({ id: msgId(), role: 'assistant', kind: 'confirm',
@@ -608,6 +669,41 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     switch (m.kind) {
       case 'text':
         return { tag: 'div', attrs: { class: 'msg ' + m.role }, children: [m.content] };
+      case 'form': {
+        var oldInfo = m.content.old_info || {};
+        var oldKeys = Object.keys(oldInfo);
+        var oldKids = oldKeys.map(function (key) {
+          return { tag: 'div', children: [key + '：' + oldInfo[key]] };
+        });
+        var fieldNodes = (m.content.fields || []).map(function (field) {
+          var attrs = {
+            name: field.name,
+            type: field.type || 'text',
+            'data-form-field': field.name,
+            'aria-label': field.label,
+          };
+          if (field.required) attrs.required = 'required';
+          return { tag: 'div', children: [
+            { tag: 'label', children: [field.label] },
+            { tag: 'input', attrs: attrs },
+          ] };
+        });
+        var buttonAttrs = {
+          class: 'btn primary',
+          'data-action': 'form-submit',
+          'data-form-id': m.id,
+        };
+        if (m.meta.status === 'submitted') buttonAttrs.disabled = 'disabled';
+        return { tag: 'div', attrs: { class: 'card form-card', 'data-form-id': m.id }, children: [
+          { tag: 'h4', children: [m.content.title] },
+          { tag: 'div', attrs: { class: 'old-info' }, children: oldKids },
+          fieldNodes,
+          { tag: 'div', attrs: { class: 'form-error' }, children: [''] },
+          { tag: 'div', attrs: { class: 'row' }, children: [
+            { tag: 'button', attrs: buttonAttrs, children: [m.content.submit_label] },
+          ] },
+        ] };
+      }
       case 'clarify':
         var missing = m.content.missing || [];
         var kids = [
@@ -929,6 +1025,8 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       maskPhone: maskPhone,
       resolveFormType: resolveFormType,
       buildFormContent: buildFormContent,
+      validateFormValues: validateFormValues,
+      formatFormSubmission: formatFormSubmission,
       buildView: buildView,
       createApi: createApi,
       createMockApi: createMockApi,
@@ -956,6 +1054,22 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     node.children.forEach(function (child) { el.appendChild(mountNode(child)); });
     return el;
   }
+
+function collectFormValues(formElement) {
+  var inputs = formElement.querySelectorAll('[data-form-field]');
+  var values = {};
+  for (var i = 0; i < inputs.length; i++) {
+    values[inputs[i].getAttribute('data-form-field')] = inputs[i].value.trim();
+  }
+  return values;
+}
+
+function showFormError(formElement, message) {
+  var errorElement = formElement.querySelector('.form-error');
+  if (!errorElement) return;
+  errorElement.textContent = message;
+  errorElement.style.display = message ? 'block' : 'none';
+}
 
   var prevMsgCount = 0; // 入场动画判定：仅当消息数量增加时视为新消息
   function applyView() {
@@ -1137,13 +1251,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     }
   }
 
-  function doSend() {
-    var input = document.getElementById('msg-input');
-    var text = input.value.trim();
-    if (!text) return;
-    // P2: 流式/重连期间禁止重复发送（chips 点击也走 doSend）
-    if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
-    input.value = '';
+  function startUserTurn(text) {
     pushUserMessage(text);
     api.sendMessage(store.conversation.conversation_id, text, function (event) {
       store = applyEvent(store, event);
@@ -1156,6 +1264,16 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     }).then(function () {
       if (store.conversation.mode === 'human' && typeof startPolling === 'function') startPolling();
     });
+  }
+
+  function doSend() {
+    var input = document.getElementById('msg-input');
+    var text = input.value.trim();
+    if (!text) return;
+    // P2: 流式/重连期间禁止重复发送（chips 点击也走 doSend）
+    if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
+    input.value = '';
+    startUserTurn(text);
   }
 
   async function doLogin() {
@@ -1220,6 +1338,37 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     var btn = ev.target.closest('button[data-action]');
     if (!btn) return;
     var action = btn.getAttribute('data-action');
+    if (action === 'form-submit') {
+      var formElement = btn.closest('.form-card');
+      var formId = btn.getAttribute('data-form-id');
+      if (!formElement || !formId) return;
+      if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
+      var formMessage = null;
+      for (var formIndex = 0; formIndex < store.messages.length; formIndex++) {
+        if (store.messages[formIndex].id === formId) {
+          formMessage = store.messages[formIndex];
+          break;
+        }
+      }
+      if (!formMessage || formMessage.meta.status === 'submitted') return;
+
+      var values = collectFormValues(formElement);
+      var validationError = UserPage.validateFormValues(formMessage.content, values, store.profile);
+      if (validationError) {
+        showFormError(formElement, validationError);
+        return;
+      }
+
+      for (var submittedIndex = 0; submittedIndex < store.messages.length; submittedIndex++) {
+        if (store.messages[submittedIndex].id === formId) {
+          store.messages[submittedIndex].meta.status = 'submitted';
+          break;
+        }
+      }
+      showFormError(formElement, '');
+      startUserTurn(UserPage.formatFormSubmission(formMessage.content.form_type, values));
+      return;
+    }
     if (action === 'clarify') {
       // 澄清快捷补全：点击把字段名带入输入框并聚焦，用户补值后回车发送
       var field = btn.getAttribute('data-field') || '';

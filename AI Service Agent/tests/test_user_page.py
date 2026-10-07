@@ -217,6 +217,89 @@ def test_build_form_content_falls_back_to_none(tmp_path):
     assert out is None
 
 
+def test_apply_clarification_creates_phone_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'};"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',data:{missing:['phone']}});"
+        "s.messages[0]",
+        tmp_path,
+    )
+    assert out["kind"] == "form"
+    assert out["content"]["form_type"] == "update_phone"
+    assert out["meta"] == {"status": "pending"}
+
+
+def test_apply_clarification_keeps_text_card_for_unknown_fields(tmp_path):
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'clarification_required',data:{missing:['order_id']}})",
+        tmp_path,
+    )
+    assert out["messages"][0]["kind"] == "clarify"
+
+
+def test_validate_phone_form(tmp_path):
+    out = _run_js(
+        "var form={form_type:'update_phone',fields:[{name:'phone',label:'新手机号',required:true}]};"
+        "({empty:UserPage.validateFormValues(form,{phone:''},null),"
+        "invalid:UserPage.validateFormValues(form,{phone:'123'},null),"
+        "same:UserPage.validateFormValues(form,{phone:'+8492722552'},"
+        "{phone:'+8492722552'}),"
+        "ok:UserPage.validateFormValues(form,{phone:'+8413800138000'},"
+        "{phone:'+8492722552'})})",
+        tmp_path,
+    )
+    assert out["empty"] == "请填写新手机号"
+    assert out["invalid"] == "请输入有效的新手机号"
+    assert out["same"] == "新手机号不能与当前手机号相同"
+    assert out["ok"] == ""
+
+
+def test_validate_address_form(tmp_path):
+    out = _run_js(
+        "var form={form_type:'update_address',fields:["
+        "{name:'order_id',label:'订单号',required:true},"
+        "{name:'address',label:'新收货地址',required:true}]};"
+        "({missing_order:UserPage.validateFormValues(form,{order_id:'',address:'New address'},null),"
+        "same:UserPage.validateFormValues(form,{order_id:'ORD-1',address:'No. 1, Chengyuan VN'},"
+        "{address:'No. 1, Chengyuan VN'}),"
+        "ok:UserPage.validateFormValues(form,{order_id:'ORD-1',address:'New address'},"
+        "{address:'No. 1, Chengyuan VN'})})",
+        tmp_path,
+    )
+    assert out["missing_order"] == "请填写订单号"
+    assert out["same"] == "新收货地址不能与当前收货地址相同"
+    assert out["ok"] == ""
+
+
+def test_format_form_submissions(tmp_path):
+    out = _run_js(
+        "({phone:UserPage.formatFormSubmission('update_phone',{phone:'+8413800138000'}),"
+        "address:UserPage.formatFormSubmission('update_address',"
+        "{order_id:'ORD-1',address:'New address'})})",
+        tmp_path,
+    )
+    assert out["phone"] == "[表单提交] 修改联系电话\n新手机号：+8413800138000"
+    assert out["address"] == "[表单提交] 修改收货地址\n订单号：ORD-1\n新地址：New address"
+
+
+def test_build_view_renders_form_card_without_second_entry(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'};"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',data:{missing:['phone']}});"
+        "var v=UserPage.buildView(s);"
+        "({class:v.messages[0].attrs.class,text:JSON.stringify(v.messages[0])})",
+        tmp_path,
+    )
+    assert out["class"] == "card form-card"
+    assert "修改联系电话" in out["text"]
+    assert "+84****2552" in out["text"]
+    assert "新手机号" in out["text"]
+    assert "确认修改" in out["text"]
+
+
 def test_apply_token_appends_streaming_text(tmp_path):
     out = _run_js(
         "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
@@ -689,22 +772,25 @@ def test_merge_history_dedupes_and_appends_legacy(tmp_path):
     assert out["contents"] == ["hi", "legacy"]
 
 
-def test_build_view_clarify_quick_fill_buttons(tmp_path):
+def test_build_view_address_form_buttons(tmp_path):
     out = _run_js(
         "var a=UserPage.applyEvent(UserPage.createInitialStore(),"
         "{type:'clarification_required',data:{missing:['order_id','address']}});"
         "var v=UserPage.buildView(a);"
         "var fields=[];"
-        "function scan(n){if(n&&n.tag==='button')fields.push({field:n.attrs['data-field'],action:n.attrs['data-action']});"
+        "function scan(n){if(n&&n.tag==='button')fields.push(n.attrs);"
+        "if(n&&n.tag==='input')fields.push(n.attrs);"
         "if(n&&n.children)(n.children||[]).forEach(scan);}"
         "scan(v.messages[0]);"
-        "fields",
+        "({class:v.messages[0].attrs.class,fields:fields,text:JSON.stringify(v.messages[0])})",
         tmp_path,
     )
-    assert out == [
-        {"field": "order_id", "action": "clarify"},
-        {"field": "address", "action": "clarify"},
-    ]
+    assert out["class"] == "card form-card"
+    assert out["text"].count("data-form-field") == 2
+    assert "订单号" in out["text"]
+    assert "新收货地址" in out["text"]
+    assert "确认修改" in out["text"]
+    assert any(field.get("data-action") == "form-submit" for field in out["fields"])
 
 
 def test_api_clarify_placeholder_both_layers(tmp_path):
