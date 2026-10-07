@@ -152,7 +152,69 @@ def test_initial_store_shape(tmp_path):
     assert out["auth"] is None
     assert out["conversation"] == {"conversation_id": None, "mode": "ai"}
     assert out["conn"]["status"] == "idle"
+    assert out["profile"] is None
     assert out["pendingAction"] is None
+
+
+def test_mask_phone_hides_middle_digits(tmp_path):
+    out = _run_js("UserPage.maskPhone('+8492722552')", tmp_path)
+    assert out == "+84****2552"
+
+
+def test_resolve_form_type_maps_p0_missing_fields(tmp_path):
+    out = _run_js(
+        "({phone:UserPage.resolveFormType(['phone']),"
+        "address:UserPage.resolveFormType(['address']),"
+        "address_with_order:UserPage.resolveFormType(['order_id','address']),"
+        "unknown:UserPage.resolveFormType(['order_id'])})",
+        tmp_path,
+    )
+    assert out == {
+        "phone": "update_phone",
+        "address": "update_address",
+        "address_with_order": "update_address",
+        "unknown": None,
+    }
+
+
+def test_build_phone_form_content(tmp_path):
+    out = _run_js(
+        "UserPage.buildFormContent(['phone'], "
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'})",
+        tmp_path,
+    )
+    assert out["form_type"] == "update_phone"
+    assert out["title"] == "修改联系电话"
+    assert out["old_info"] == {"当前手机号": "+84****2552"}
+    assert out["fields"] == [
+        {"name": "phone", "label": "新手机号", "type": "tel", "required": True}
+    ]
+    assert out["submit_label"] == "确认修改"
+
+
+def test_build_address_form_content_requires_order_id_when_missing(tmp_path):
+    out = _run_js(
+        "UserPage.buildFormContent(['order_id','address'], "
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'})",
+        tmp_path,
+    )
+    assert out["form_type"] == "update_address"
+    assert out["old_info"] == {"当前收货地址": "No. 1, Chengyuan VN"}
+    assert [field["name"] for field in out["fields"]] == ["order_id", "address"]
+
+
+def test_build_address_form_content_omits_order_id_when_not_missing(tmp_path):
+    out = _run_js(
+        "UserPage.buildFormContent(['address'], "
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'})",
+        tmp_path,
+    )
+    assert [field["name"] for field in out["fields"]] == ["address"]
+
+
+def test_build_form_content_falls_back_to_none(tmp_path):
+    out = _run_js("UserPage.buildFormContent(['order_id'], null)", tmp_path)
+    assert out is None
 
 
 def test_apply_token_appends_streaming_text(tmp_path):

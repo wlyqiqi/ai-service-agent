@@ -406,6 +406,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       messages: [],
       conn: { status: 'idle', lastError: null },
       pendingAction: null,
+      profile: null,
       config: { mock: false, baseUrl: '' },
     };
   }
@@ -424,6 +425,50 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
 
   function msgId() {
     return 'm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function maskPhone(value) {
+    var text = String(value || '');
+    if (text.length <= 7) return '****';
+    return text.slice(0, 3) + '****' + text.slice(-4);
+  }
+
+  function resolveFormType(missing) {
+    var fields = missing || [];
+    if (fields.indexOf('phone') >= 0) return 'update_phone';
+    if (fields.indexOf('address') >= 0) return 'update_address';
+    return null;
+  }
+
+  function buildFormContent(missing, profile) {
+    var formType = resolveFormType(missing);
+    if (!formType) return null;
+    var safeProfile = profile || {};
+
+    if (formType === 'update_phone') {
+      return {
+        form_type: formType,
+        title: '修改联系电话',
+        old_info: { '当前手机号': maskPhone(safeProfile.phone || '未知') },
+        fields: [
+          { name: 'phone', label: '新手机号', type: 'tel', required: true },
+        ],
+        submit_label: '确认修改',
+      };
+    }
+
+    var fields = [];
+    if ((missing || []).indexOf('order_id') >= 0) {
+      fields.push({ name: 'order_id', label: '订单号', type: 'text', required: true });
+    }
+    fields.push({ name: 'address', label: '新收货地址', type: 'text', required: true });
+    return {
+      form_type: formType,
+      title: '修改收货地址',
+      old_info: { '当前收货地址': safeProfile.address || '未知' },
+      fields: fields,
+      submit_label: '确认修改',
+    };
   }
 
   function resetConversation(store) {
@@ -676,6 +721,12 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return { messages: (data && data.items) || [], mode: data && data.mode };
     }
 
+    async function getProfile() {
+      var r = await fetchImpl(base + '/me/profile', { headers: headers() });
+      if (!r.ok) throw apiError('PROFILE_FAILED', r);
+      return await r.json();
+    }
+
     async function sendMessage(conversationId, text, onEvent) {
       var r = await fetchImpl(base + '/chat', {
         method: 'POST', headers: headers(),
@@ -738,6 +789,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return {
       login: login, createSession: createSession, getMessages: getMessages,
       sendMessage: sendMessage, confirm: confirm, approve: approve, reject: reject, clarify: clarify,
+      getProfile: getProfile,
     };
   }
 
@@ -755,6 +807,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     var handoffSeen = false;
     var seatDelivered = false;
     var seat = { id: 'seat-1', role: 'assistant', text: '人工客服：您好，您的退款申请已加急处理，预计 24 小时内到账。' };
+    var profile = { user_id: 'demo-user', phone: '+6581234567', address: 'No. 1, Demo Road' };
     return {
       async login(account) {
         return { token: 'mock-token', user: { name: account || '演示用户' } };
@@ -770,6 +823,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         }
         return { messages: [], mode: 'ai' }; // 模拟人工已解决
       },
+      async getProfile() { return profile; },
       async sendMessage(conversationId, text, onEvent) {
         // mock 演示流去掉 handoff_resolved：让转人工后的轮询真实跑起来（getMessages 返回 mode=ai 模拟人工解决）
         var events = mockStream().filter(function (e) { return e.type !== 'handoff_resolved'; });
@@ -872,6 +926,9 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       resolveView: resolveView,
       applyEvent: applyEvent,
       EVENT_TYPES: EVENT_TYPES,
+      maskPhone: maskPhone,
+      resolveFormType: resolveFormType,
+      buildFormContent: buildFormContent,
       buildView: buildView,
       createApi: createApi,
       createMockApi: createMockApi,
@@ -1036,6 +1093,12 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     } catch (e) {
       if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
       return false; // 会话启动失败不阻塞对话视图
+    }
+    try {
+      store.profile = await api.getProfile();
+    } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
+      store.profile = null;
     }
     var loaded = await loadHistory();
     if (!loaded) return false; // 401 已由 handleAuthExpired 处理
