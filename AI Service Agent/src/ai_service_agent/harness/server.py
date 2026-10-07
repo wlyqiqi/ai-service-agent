@@ -115,6 +115,7 @@ def create_app(
     chatwoot_webhook_secret: str | None = None,
     auth_enabled: bool | None = None,
     jwt_secret: str | None = None,
+    profile_db_path: str | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -122,6 +123,7 @@ def create_app(
     持久化 / 水合（state.messages 工作视图，handoff-spec.md §5.2）。
     """
     settings = get_settings()
+    resolved_profile_db_path = profile_db_path or settings.mock_ecommerce_db_path
     required_auth = settings.auth_enabled if auth_enabled is None else auth_enabled
     secret = jwt_secret or settings.jwt_secret
     if required_auth and not secret:
@@ -153,6 +155,12 @@ def create_app(
         if not required_auth:
             return None
         return verify_bearer(request.headers, secret)
+
+    def _require_auth_user(request: Request):
+        user_id = _auth_user(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="authentication required")
+        return user_id
 
     def _ensure_conversation_owner(auth_user: str | None, conversation_id: str):
         if auth_user is not None and status.get_user_id(conversation_id) != auth_user:
@@ -227,6 +235,32 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid credentials")
         token = create_access_token(user["user_id"], secret, settings.jwt_expires_minutes)
         return {"token": token, "user": {"id": user["user_id"], "name": user["name"]}}
+
+    @app.get("/me/profile")
+    def me_profile(request: Request):
+        """Read-only presentation data for frontend form old-info display."""
+        user_id = _require_auth_user(request)
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            raise HTTPException(status_code=503, detail="profile data source unavailable")
+
+        conn = None
+        try:
+            conn = sqlite3.connect(profile_path)
+            row = conn.execute(
+                "SELECT phone, address FROM customers WHERE customer_id = ?",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=503, detail="profile data source unavailable") from exc
+        finally:
+            if conn is not None:
+                conn.close()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail="profile not found")
+
+        return {"user_id": user_id, "phone": row[0], "address": row[1]}
 
     @app.post("/sessions")
     def create_session(body: CreateSessionBody, request: Request):
