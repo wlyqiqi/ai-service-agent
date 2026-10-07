@@ -25,7 +25,7 @@ from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 
 def _hr_model():
     return ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": "10086"}),
     ])
 
@@ -59,7 +59,7 @@ def test_high_risk_approve_executes_tool(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -96,7 +96,7 @@ def test_high_risk_tool_exception_uses_local_finalize_failed(monkeypatch, tmp_pa
         MagicMock(side_effect=RuntimeError("database unavailable")),
     )
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -134,7 +134,7 @@ def test_high_risk_expired_no_tool():
 
 def test_high_risk_unknown_tool_rejected():
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("cancel_order_execute", 0.9),
         select_json_message("order_set_status", {"order_id": "10086"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -207,7 +207,7 @@ def test_precheck_fetch_writes_facts_only():
 def test_high_risk_0086_refund_window_expired():
     """0086：refund_apply + ORD-10086（签收 10 天前，超 7 天窗口）-> 预检拒绝，不进入审批。"""
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": "ORD-10086"}),
     ])
     out = _invoke(_hr_graph(model), "我签收已经 10 天了，就要无理由退货", "t3-0086")
@@ -220,7 +220,7 @@ def test_high_risk_0086_refund_window_expired():
 def test_high_risk_0090_cancel_already_cancelled():
     """0090：cancel_order + ORD-CANCEL-1（已取消）-> 预检拒绝。"""
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", {"order_id": "ORD-CANCEL-1"}),
     ])
     out = _invoke(_hr_graph(model), "这个订单已经取消了，再帮我取消一次", "t3-0090")
@@ -340,7 +340,7 @@ def test_refund_precheck_rejects_wrong_status(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -375,7 +375,7 @@ def test_refund_precheck_rejects_over_amount(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message(
             "refund_apply", {"order_id": order_id, "amount": float(total_amount) + 99999.0}
         ),
@@ -413,7 +413,7 @@ def test_refund_precheck_rejects_completed_order(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -446,7 +446,7 @@ def test_refund_order_approval_summary_contains_amount(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": order_id, "amount": 25.5}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -496,7 +496,7 @@ def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"amount": 10.0}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -535,7 +535,7 @@ def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -558,7 +558,7 @@ def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
 def test_high_risk_refund_unknown_order_still_approval():
     """规则不误伤：订单不在种子库 -> 无事实 -> 正常进入审批。"""
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": "ORD-UNKNOWN"}),
     ])
     out = _invoke(_hr_graph(model), "申请退款", "t3-pos")
@@ -595,7 +595,7 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
         conn.close()
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", {"order_id": order_id}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -657,7 +657,7 @@ def test_cancel_approval_fails_closed_without_valid_paid_facts(monkeypatch, tmp_
     monkeypatch.setattr(high_risk_agent_mod, "make_safety_check_node", passing_safety_check)
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", {"order_id": order_id}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -729,7 +729,7 @@ def _load_cancel_seed(tmp_path, label):
 
 def _cancel_graph(order_id, request_id):
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", {"order_id": order_id, "request_id": request_id}),
     ])
     return build_graph(model, tools=[], checkpointer=MemorySaver())
@@ -737,7 +737,7 @@ def _cancel_graph(order_id, request_id):
 
 def _refund_graph(order_id, request_id, amount=1.0):
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message(
             "refund_apply", {"order_id": order_id, "amount": amount, "request_id": request_id}
         ),

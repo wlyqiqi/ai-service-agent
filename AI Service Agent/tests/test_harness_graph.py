@@ -50,7 +50,7 @@ def test_make_ai_graph_injects_read_tools_by_default(monkeypatch):
 
     monkeypatch.setattr(kb_module._lightrag, "get_lightrag_client", lambda: _FakeLightRag())
     model = ToolCallingFakeModel(responses=[
-        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content='{"route_intent":"faq","confidence":0.9}'),
         AIMessage(content="", tool_calls=[{"name": "kb_search", "args": {"text": "退款"}, "id": "call_1", "type": "tool_call"}]),
         AIMessage(content="查到了。"),
     ])
@@ -64,7 +64,7 @@ def test_make_ai_graph_injects_read_tools_by_default(monkeypatch):
 
 def test_default_registry_order_lookup_injected():
     model = ToolCallingFakeModel(responses=[
-        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content='{"route_intent":"order_query","confidence":0.9}'),
         AIMessage(content="", tool_calls=[{"name": "order_lookup", "args": {"order_id": "ORD-1"}, "id": "call_2", "type": "tool_call"}]),
         AIMessage(content="完成。"),
     ])
@@ -78,7 +78,7 @@ def test_make_ai_graph_respects_registry_read_tier():
     reg = ToolRegistry()
     reg.register(ToolMeta("kb_search", "检索", "read"), kb_search)
     model = ToolCallingFakeModel(responses=[
-        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content='{"route_intent":"order_query","confidence":0.9}'),
         AIMessage(content="", tool_calls=[{"name": "order_lookup", "args": {"order_id": "ORD-1"}, "id": "call_3", "type": "tool_call"}]),
         AIMessage(content="完成。"),
     ])

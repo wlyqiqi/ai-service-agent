@@ -11,7 +11,6 @@ sys.path.insert(0, str(ROOT / "src"))
 def pytest_configure(config):
     os.environ["FAKE_MODEL"] = "true"
     os.environ["JEV_ENABLED"] = "false"
-    os.environ["JEV_ROUTE_INTENT_ENABLED"] = "false"
     os.environ["AUTH_ENABLED"] = "false"
     os.environ["CHATWOOT_ENABLED"] = "false"
     os.environ["LANGSMITH_TRACING"] = "false"

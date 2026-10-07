@@ -108,6 +108,15 @@ def test_select_system_template_examples_match_tier():
     assert "参数不完整" in model.seen_system                     # 缺参示例
 
 
+def test_select_system_template_service_ticket_vs_refund_boundary():
+    """售后/退款边界：select prompt 必须包含 create_service_ticket ≠ refund_apply 的对照示例。"""
+    model, node = _select_node()
+    _select_result(node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}}))
+    assert "售后工单" in model.seen_system
+    assert "退款申请" in model.seen_system
+    assert "退货" in model.seen_system
+
+
 def test_select_real_model_uses_bind_tools():
     bound_model = AsyncMock()
     bound_model.ainvoke.return_value = AIMessage(

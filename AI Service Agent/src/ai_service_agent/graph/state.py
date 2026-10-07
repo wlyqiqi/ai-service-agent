@@ -16,8 +16,6 @@ class CustomerServiceState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     user_id: str
     session_id: str
-    capability: str
-    risk_level: Literal["read", "mutation", "high_risk"]
     route_intent: str
     target_graph: Literal[
         "read_graph", "mutation_graph", "high_risk_graph", "fallback"

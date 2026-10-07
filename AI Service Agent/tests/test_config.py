@@ -82,18 +82,3 @@ def test_lightrag_defaults():
     assert s.lightrag_enable_rerank is False
     assert s.lightrag_max_chunk_chars == 1200
     assert s.lightrag_max_context_chars == 4000
-
-
-def test_route_intent_feature_defaults_off(monkeypatch):
-    monkeypatch.delenv("JEV_ROUTE_INTENT_ENABLED", raising=False)
-    settings = Settings(_env_file=None)
-    assert settings.route_intent_enabled is False
-
-
-def test_route_intent_feature_can_be_enabled(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
-    get_settings.cache_clear()
-    try:
-        assert get_settings().route_intent_enabled is True
-    finally:
-        get_settings.cache_clear()

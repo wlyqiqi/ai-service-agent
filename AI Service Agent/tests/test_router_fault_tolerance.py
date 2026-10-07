@@ -116,7 +116,6 @@ async def test_jev_error_retries_only_deepseek(monkeypatch):
         raise httpx.ConnectError("jev unavailable")
 
     monkeypatch.setattr(router_mod, "_classify_route_intent_with_jev", failing_jev)
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("FAKE_MODEL", "false")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
@@ -155,7 +154,6 @@ async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
         raise httpx.ConnectError("jev unavailable")
 
     monkeypatch.setattr(router_mod.asyncio, "to_thread", slow_failing_to_thread)
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "true")
     monkeypatch.setenv("FAKE_MODEL", "false")
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
@@ -201,7 +199,6 @@ async def test_jev_node_timeout_falls_back_without_chain_retry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_deepseek_node_timeout_retries_only_router(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "0.05")
     get_settings.cache_clear()
@@ -240,7 +237,6 @@ async def test_deepseek_node_timeout_retries_only_router(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_non_jev_route_intent_invokes_deepseek_once(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     try:

@@ -217,7 +217,7 @@ def test_mutation_graph_runs_tool_hooks(hook_seed, monkeypatch):
     _patch_hook_db(monkeypatch, db_path)
     recorder = Recorder()
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-REFUND-1", "address": "Beijing Chaoyang"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
@@ -258,7 +258,7 @@ def test_high_risk_graph_runs_tool_hooks(monkeypatch, tmp_path):
         conn.close()
     recorder = Recorder()
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": order_id, "amount": 1.0}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
@@ -319,7 +319,7 @@ def test_make_ai_graph_default_logging_hook_wired(monkeypatch):
 
     monkeypatch.setattr(graph_mod, "LoggingToolHook", SpyHook)
     model = ToolCallingFakeModel(responses=[
-        router_json_message("faq", "read", 0.9),
+        router_json_message("faq", 0.9),
         AIMessage(content="", tool_calls=[
             {"name": "kb_search", "args": {"text": "退款"}, "id": "call-1", "type": "tool_call"},
         ]),
@@ -344,7 +344,7 @@ def test_sse_tool_events_unchanged_with_hooks(monkeypatch):
     _patch_kb_client(monkeypatch)
     recorder = Recorder()
     model = ToolCallingFakeModel(responses=[
-        router_json_message("faq", "read", 0.9),
+        router_json_message("faq", 0.9),
         AIMessage(content="", tool_calls=[
             {"name": "kb_search", "args": {"text": "退款"}, "id": "call-1", "type": "tool_call"},
         ]),

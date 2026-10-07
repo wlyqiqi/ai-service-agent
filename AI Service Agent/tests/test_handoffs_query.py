@@ -11,7 +11,7 @@ class _UnknownReadFakeModel(ToolCallingFakeModel):
     """Router 恒 unknown/read -> Fallback（P0 起显式转人工由入口层 detector 拦截，不进图）。"""
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", "read", 0.5))])
+        return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", 0.5))])
 
 
 def test_get_handoffs_by_conversation(tmp_path):

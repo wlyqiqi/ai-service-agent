@@ -60,7 +60,7 @@ def _invoke(graph, text, thread_id, user_id="u1", context=None):
 def _highrisk_model(args: dict):
     """refund_apply 属 high_risk 档，须走 high_risk 图（mutation 图里它会 unknown_tool）。"""
     return ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", args),
     ])
 
@@ -115,7 +115,7 @@ def test_highrisk_empty_required_clarifies():
 def test_mutation_empty_args_clarifies():
     """2026-09-17 工具集定案：mutation 图空参 select（update_address 缺必填）-> 澄清，非 interrupt。"""
     model = ToolCallingFakeModel(responses=[
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {}),
     ])
     out = _invoke(_graph(model), "改一下收货地址", "c3")
@@ -195,42 +195,39 @@ def test_multi_turn_clarify_over_limit_falls_back():
 
 def _tier_model(tool_name, risk):
     return ToolCallingFakeModel(responses=[
-        router_json_message("order", risk, 0.9),
+        router_json_message("cancel_order_execute" if risk == "high_risk" else "order_mutation", 0.9),
         select_json_message(tool_name, {}),
     ])
 
 
-def test_highrisk_read_tool_selected_tier_clarifies():
-    """B2b：high_risk 图内 fake select 只读工具 order_lookup -> tier_mismatch 澄清（普通轮），
-    不进审批闸、无 interrupt。镜像真机冒烟 §7 Run 2 的漂移路径。"""
+def test_highrisk_read_tool_selected_rejected_by_policy():
+    """B2b：route_policy 限定 high_risk 候选后，只读工具漂移被安全拒绝，不进审批。"""
     out = _invoke(_graph(_tier_model("order_lookup", "high_risk")), "退了吧", "b2-h1")
-    assert out["execution_status"] == "clarifying"
+    assert out["execution_status"] == "completed"
     assert not out.get("__interrupt__")
-    assert out["context"].get("tier_clarify") == "order_lookup"
+    assert out["context"].get("precheck_reason") == "tool_not_allowed"
     assert "pending_tool" not in out["context"]
-    assert "明确说明" in out["messages"][-1].content
 
 
-def test_mutation_read_tool_selected_tier_clarifies():
-    """B2b：mutation 图内 fake select 只读工具 kb_search -> tier_mismatch 澄清。"""
+def test_mutation_read_tool_selected_rejected_by_policy():
+    """B2b：route_policy 限定 mutation 候选后，只读工具漂移被安全拒绝。"""
     out = _invoke(_graph(_tier_model("kb_search", "mutation")), "先查一下再改", "b2-m1")
-    assert out["execution_status"] == "clarifying"
-    assert out["context"].get("tier_clarify") == "kb_search"
+    assert out["execution_status"] == "completed"
+    assert out["context"].get("precheck_reason") == "tool_not_allowed"
     assert not out.get("__interrupt__")
 
 
-def test_tier_clarify_streams_event_with_reason():
-    """B2b：事件契约——clarification_required 带 reason=tier_mismatch，末事件 done。"""
+def test_policy_tool_boundary_streams_rejection_event():
+    """B2b：事件契约——route_policy 越界候选发 safety_rejected，末事件 done。"""
     events = asyncio.run(_acollect(event_stream(
         _graph(_tier_model("order_lookup", "high_risk")),
         {"configurable": {"thread_id": "b2-s1"}},
         [HumanMessage(content="退了吧")],
     )))
     types = [e["type"] for e in events]
-    assert "clarification_required" in types
-    clar = next(e for e in events if e["type"] == "clarification_required")
-    assert clar["data"].get("reason") == "tier_mismatch"
-    assert clar["data"]["missing"] == []
+    assert "safety_rejected" in types
+    rejection = next(e for e in events if e["type"] == "safety_rejected")
+    assert rejection["data"].get("reason") == "tool_not_allowed"
     assert types[-1] == "done"
 
 

@@ -18,9 +18,9 @@ class ConcurrentFakeModel(ToolCallingFakeModel):
     """并发离线模型：路由请求返回合法 JSON，其余调用返回固定回复。"""
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-        router_prompt = any("客服意图路由器" in str(message.content) for message in messages)
+        router_prompt = any("客服路由意图分类器" in str(message.content) for message in messages)
         message = (
-            router_json_message("faq", "read", 0.95)
+            router_json_message("faq", 0.95)
             if router_prompt
             else AIMessage(content="离线并发回复")
         )
@@ -41,9 +41,9 @@ class OverlapTrackingFakeModel(ToolCallingFakeModel):
         finally:
             self.active_count -= 1
 
-        router_prompt = any("客服意图路由器" in str(message.content) for message in messages)
+        router_prompt = any("客服路由意图分类器" in str(message.content) for message in messages)
         message = (
-            router_json_message("faq", "read", 0.95)
+            router_json_message("faq", 0.95)
             if router_prompt
             else AIMessage(content="离线 SQLite 并发回复")
         )
@@ -52,7 +52,6 @@ class OverlapTrackingFakeModel(ToolCallingFakeModel):
 
 @pytest.fixture(autouse=True)
 def offline_settings(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
     monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     try:

@@ -28,22 +28,6 @@ from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
-# Policy 纯确定性映射（graph-spec.md §5）：read 组合走 ReadGraph；mutation / high_risk 在
-# P3 Task 4/5 陆续纳入；未映射组合由默认值兜底到 Fallback。
-POLICY = {
-    ("faq", "read"): "read_graph",
-    ("order", "read"): "read_graph",
-    ("account", "read"): "read_graph",
-    ("smalltalk", "read"): "read_graph",
-    ("unknown", "read"): "fallback",
-    ("order", "mutation"): "mutation_graph",
-    ("account", "mutation"): "mutation_graph",
-    ("faq", "mutation"): "mutation_graph",     # CTRL-0094（deny，需进 MutationGraph 由预检拦截）
-    ("order", "high_risk"): "high_risk_graph",
-    ("account", "high_risk"): "high_risk_graph",
-}
-
-
 _PROFILE_UPDATE_PATTERN = re.compile(
     r"(收货地址|联系电话|手机号)[^。\n]{0,24}(修改|改成|改为|换成|换绑|更新)"
     r"|(修改|改成|改为|换成|换绑|更新)[^。\n]{0,24}(收货地址|联系电话|手机号)"
@@ -65,9 +49,7 @@ def _latest_user_text(state: dict) -> str:
 
 
 def _route_target(state: dict) -> str:
-    if get_settings().route_intent_enabled:
-        return state.get("target_graph", "fallback")
-    return POLICY.get((state.get("capability", "unknown"), state.get("risk_level", "read")), "fallback")
+    return state.get("target_graph", "fallback")
 
 
 def _guard_aware_target(state: dict) -> str:
@@ -78,10 +60,7 @@ def _guard_aware_target(state: dict) -> str:
 
 
 def _policy_gate(state: dict) -> dict:
-    """Router/Guard join. v2 deterministically derives the route policy; v1 is a no-op join."""
-    if not get_settings().route_intent_enabled:
-        return {}
-
+    """Router/Guard join. Deterministically derives route policy from route_intent."""
     route_intent = state.get("route_intent", "unknown")
     if (
         route_intent == "order_mutation"
@@ -137,8 +116,7 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
     builder = StateGraph(CustomerServiceState).set_node_defaults(error_handler=root_error_handler)
     settings = get_settings()
     use_jev = (
-        settings.route_intent_enabled
-        and settings.jev_enabled
+        settings.jev_enabled
         and bool(settings.jev_api_key)
         and not settings.fake_model
     )
@@ -149,21 +127,13 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
             error_handler=_jev_timeout_error_handler,
             timeout=make_timeout_policy(settings.jev_node_timeout_seconds),
         )
-        builder.add_node(
-            "router_deepseek",
-            make_deepseek_router(model, route_intent_enabled=True),
-            error_handler=root_error_handler,
-            retry_policy=RETRY_DEEPSEEK_ROUTER,
-            timeout=make_timeout_policy(settings.router_node_timeout_seconds),
-        )
-    else:
-        builder.add_node(
-            "router_deepseek",
-            make_deepseek_router(model, route_intent_enabled=settings.route_intent_enabled),
-            error_handler=root_error_handler,
-            retry_policy=RETRY_DEEPSEEK_ROUTER,
-            timeout=make_timeout_policy(settings.router_node_timeout_seconds),
-        )
+    builder.add_node(
+        "router_deepseek",
+        make_deepseek_router(model),
+        error_handler=root_error_handler,
+        retry_policy=RETRY_DEEPSEEK_ROUTER,
+        timeout=make_timeout_policy(settings.router_node_timeout_seconds),
+    )
     builder.add_node("guard", guard)
     builder.add_node("policy_gate", _policy_gate)
     builder.add_node("safety_final", _safety_final)
