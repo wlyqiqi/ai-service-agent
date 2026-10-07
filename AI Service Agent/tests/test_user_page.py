@@ -790,6 +790,19 @@ def test_merge_history_dedupes_and_appends_legacy(tmp_path):
     assert out["contents"] == ["hi", "legacy"]
 
 
+def test_merge_history_hides_ui_generated_form_submissions(tmp_path):
+    out = _run_js(
+        "var r=UserPage.mergeHistory([], ["
+        "{id:'m1',role:'user',text:'[表单提交] 修改联系电话\\n新手机号：+8413800138000'},"
+        "{id:'m2',role:'user',text:'[表单提交] 修改收货地址\\n订单号：ORD-1\\n新地址：New address'},"
+        "{id:'m3',role:'user',text:'我要修改电话号码'}"
+        "]);"
+        "({contents:r.map(function(m){return m.content;})})",
+        tmp_path,
+    )
+    assert out["contents"] == ["我要修改电话号码"]
+
+
 def test_build_view_address_form_buttons(tmp_path):
     out = _run_js(
         "var a=UserPage.applyEvent(UserPage.createInitialStore(),"

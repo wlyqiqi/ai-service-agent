@@ -156,6 +156,7 @@ def make_safety_check_node(tier: str, registry: ToolRegistry) -> Callable[[dict]
     """预检节点：位于写操作执行前、interrupt 前（safety-spec §1.1）；失败不进入 interrupt 不调工具。"""
     def safety_check(state: dict) -> dict:
         ctx = state.get("context", {})
+        ctx = {key: value for key, value in ctx.items() if key != "precheck_reason"}
         reason = _check(ctx.get("pending_tool") or {}, tier, registry, state.get("user_id", ""))
         if reason is None:
             reason = _apply_business_rules(
@@ -174,6 +175,7 @@ def make_recheck_node(tier: str, registry: ToolRegistry) -> Callable[[dict], dic
     完整语义校验见 safety-spec 后续增量。"""
     def recheck(state: dict) -> dict:
         ctx = state.get("context", {})
+        ctx = {key: value for key, value in ctx.items() if key != "recheck_reason"}
         pending = ctx.get("pending_tool") or {}
         reason = _check(pending, tier, registry, state.get("user_id", ""))
         if not pending.get("request_id"):

@@ -174,6 +174,21 @@ def test_safety_check_node_empty_required_backstop():
     assert out["execution_status"] == "completed"
 
 
+def test_safety_check_clears_stale_precheck_reason():
+    graph = _safety_mini_graph(make_safety_check_node("mutation", DEFAULT_TOOL_REGISTRY))
+    out = ainvoke_graph(graph, {
+        "messages": [],
+        "user_id": "u1",
+        "session_id": "d2-h1-stale",
+        "context": {
+            "precheck_reason": "data_boundary",
+            "pending_tool": {"tool": "update_phone", "args": {"phone": "+84-92722552", "request_id": "r1"}, "request_id": "r1"},
+        },
+    })
+    assert "precheck_reason" not in out["context"]
+    assert out["context"]["precheck"] == "pass"
+
+
 def test_recheck_node_empty_required_backstop():
     """recheck（resume 路径）同样兜底：空必填标识符 -> recheck_reason=invalid_args。"""
     graph = _safety_mini_graph(make_recheck_node("high_risk", DEFAULT_TOOL_REGISTRY))
@@ -185,6 +200,21 @@ def test_recheck_node_empty_required_backstop():
     })
     assert out["context"]["recheck_reason"] == "invalid_args"
     assert out["execution_status"] == "completed"
+
+
+def test_recheck_clears_stale_recheck_reason():
+    graph = _safety_mini_graph(make_recheck_node("mutation", DEFAULT_TOOL_REGISTRY))
+    out = ainvoke_graph(graph, {
+        "messages": [],
+        "user_id": "u1",
+        "session_id": "d2-h2-stale",
+        "context": {
+            "recheck_reason": "invalid_args",
+            "pending_tool": {"tool": "update_phone", "args": {"phone": "+84-92722552", "request_id": "r1"}, "request_id": "r1"},
+        },
+    })
+    assert "recheck_reason" not in out["context"]
+    assert out["context"]["recheck"] == "ok"
 
 
 # ---- D3（P4 Task 3）：订单状态 stub + precheck_fetch + 业务规则（safety-spec §1.2）----

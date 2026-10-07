@@ -538,6 +538,9 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     existing.forEach(function (m) { if (m.id) seen[m.id] = true; out.push(m); });
     (incoming || []).forEach(function (m) {
       var id = m.id || msgId();
+      var content = m.text || m.content || '';
+      if (content.indexOf('[表单提交] 修改联系电话') === 0 ||
+          content.indexOf('[表单提交] 修改收货地址') === 0) return;
       if (seen[id]) return;
       seen[id] = true;
       out.push({
@@ -1223,8 +1226,10 @@ function showFormError(formElement, message) {
     return true;
   }
 
-  function pushUserMessage(text) {
-    store.messages.push({ id: msgId(), role: 'user', kind: 'text', content: text, meta: {} });
+  function pushUserMessage(text, visible) {
+    if (visible !== false) {
+      store.messages.push({ id: msgId(), role: 'user', kind: 'text', content: text, meta: {} });
+    }
     store.conn.status = 'streaming';
     applyView();
   }
@@ -1253,8 +1258,8 @@ function showFormError(formElement, message) {
     }
   }
 
-  function startUserTurn(text) {
-    pushUserMessage(text);
+  function startUserTurn(text, options) {
+    pushUserMessage(text, !(options && options.visible === false));
     api.sendMessage(store.conversation.conversation_id, text, function (event) {
       store = applyEvent(store, event);
       applyView();
@@ -1368,7 +1373,7 @@ function showFormError(formElement, message) {
         }
       }
       showFormError(formElement, '');
-      startUserTurn(UserPage.formatFormSubmission(formMessage.content.form_type, values));
+      startUserTurn(UserPage.formatFormSubmission(formMessage.content.form_type, values), { visible: false });
       return;
     }
     if (action === 'clarify') {
