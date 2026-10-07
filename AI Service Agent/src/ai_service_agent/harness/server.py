@@ -23,6 +23,7 @@ from ai_service_agent.harness.approvals import (
     ApprovalService,
 )
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
+from ai_service_agent.harness.agent_bot import handle_agent_bot_message
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
@@ -622,6 +623,13 @@ def create_app(
         return {"ok": True}
 
     _web_dir = Path(__file__).resolve().parents[3] / "web"
+    @app.post("/webhooks/agent_bot")
+    async def agent_bot_webhook(request: Request):
+        data = await request.json()
+        if chatwoot is not None:
+            await handle_agent_bot_message(data, chatwoot)
+        return {"ok": True}
+
     if _web_dir.exists():
         # 同源托管用户页面（user-page-spec §10）：baseUrl='' 相对路径 + file:// 强制 mock，
         # 真实模式需 Runtime 同源提供页面；API 路由已在挂载前注册，优先级不变。
