@@ -41,6 +41,7 @@ from ai_service_agent.harness.resume import (
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.harness.streaming import event_stream, new_assistant_text_and_id, snapshot_assistant_ids
 from ai_service_agent.testing import make_fake_model
+from ai_service_agent.tools.orders import ADDRESS_EDITABLE_STATUSES, ORDER_DISPLAY_STATUS
 
 logger = logging.getLogger("ai_service_agent")
 
@@ -261,6 +262,58 @@ def create_app(
             raise HTTPException(status_code=404, detail="profile not found")
 
         return {"user_id": user_id, "phone": row[0], "address": row[1]}
+
+    @app.get("/me/orders")
+    def me_orders(request: Request, address_editable: bool = False):
+        """Read-only order options for frontend forms."""
+        user_id = _require_auth_user(request)
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            raise HTTPException(status_code=503, detail="profile data source unavailable")
+
+        conn = None
+        try:
+            conn = sqlite3.connect(profile_path)
+            exists = conn.execute(
+                "SELECT 1 FROM customers WHERE customer_id = ?",
+                (user_id,),
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=404, detail="profile not found")
+
+            sql = (
+                "SELECT order_id, status, ordered_at, total_amount, currency "
+                "FROM orders WHERE customer_id = ?"
+            )
+            params: list = [user_id]
+            if address_editable:
+                placeholders = ",".join("?" for _ in ADDRESS_EDITABLE_STATUSES)
+                sql += f" AND status IN ({placeholders})"
+                params.extend(sorted(ADDRESS_EDITABLE_STATUSES))
+            sql += " ORDER BY ordered_at DESC LIMIT 20"
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=503, detail="profile data source unavailable") from exc
+        finally:
+            if conn is not None:
+                conn.close()
+
+        orders = [
+            {
+                "order_id": row[0],
+                "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1]),
+                "ordered_at": row[2],
+                "amount": row[3],
+                "currency": row[4],
+            }
+            for row in rows
+        ]
+        return {
+            "user_id": user_id,
+            "address_editable": address_editable,
+            "orders": orders,
+            "count": len(orders),
+        }
 
     @app.post("/sessions")
     def create_session(body: CreateSessionBody, request: Request):

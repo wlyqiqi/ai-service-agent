@@ -66,3 +66,46 @@ def test_me_profile_returns_404_for_unknown_user(tmp_path):
     )
 
     assert response.status_code == 404
+
+
+def test_me_orders_requires_bearer_token(tmp_path):
+    client, _ = _client(tmp_path)
+    response = client.get("/me/orders?address_editable=true")
+
+    assert response.status_code == 401
+
+
+def test_me_orders_filters_address_editable_orders(tmp_path):
+    client, secret = _client(tmp_path)
+    token = create_access_token("u0010", secret, expires_minutes=60)
+    response = client.get(
+        "/me/orders?address_editable=true",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": "u0010",
+        "address_editable": True,
+        "orders": [
+            {
+                "order_id": "ORD-2026-10119",
+                "status_display": "已付款",
+                "ordered_at": "2026-08-21T21:24:29+08:00",
+                "amount": 6360.2,
+                "currency": "THB",
+            }
+        ],
+        "count": 1,
+    }
+
+
+def test_me_orders_returns_404_for_unknown_user(tmp_path):
+    client, secret = _client(tmp_path)
+    token = create_access_token("u9999", secret, expires_minutes=60)
+    response = client.get(
+        "/me/orders?address_editable=true",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
