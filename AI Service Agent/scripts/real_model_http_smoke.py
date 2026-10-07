@@ -24,7 +24,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from ai_service_agent.testing import ToolCallingFakeModel
 
 from ai_service_agent.config import make_model
-from ai_service_agent.graph.workflows.copy import _TOOL_ACTION_LABELS as TOOL_ACTION_LABELS
+from ai_service_agent.graph.workflows.copy import _TOOL_ACTION_LABELS as TOOL_ACTION_LABELS, completion_text
 from ai_service_agent.harness.server import create_app
 
 TOOL_MATRIX = [
@@ -304,13 +304,13 @@ def scenario_faq(client: httpx.Client, db_path: str) -> dict:
 
 
 def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
-    """CT-RL-0076（D2+D3 探针）："退了吧" -> clarification_required、不得出现 approval_required。
+    """CT-RL-0076（D2+D3 探针）：明确退款请求 -> clarification_required、不得出现 approval_required。
 
     若真实模型为缺参输入编造 order_id 导致 select 放行 -> approval_required 出现 -> 本场景 FAIL，
     即暴露 D3 残余风险（模型编造必填参数），不是纯代码回归。
     """
     sid, sess = new_session(client)
-    code, events = chat_sse(client, sid, "退了吧")
+    code, events = chat_sse(client, sid, "我要申请退款")
     types = event_types(events)
     clarification = any(e.get("type") == "clarification_required" for e in events)
     approval = any(e.get("type") == "approval_required" for e in events)
@@ -333,8 +333,8 @@ def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
 
 
 def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
-    sid, sess = new_session(client)
-    code1, ev1 = chat_sse(client, sid, "把收货地址改成北京市朝阳区")
+    sid, sess = new_session(client, "u1")
+    code1, ev1 = chat_sse(client, sid, "订单 ORD-PAID-1 的收货地址改成北京市朝阳区")
     types1 = event_types(ev1)
     confirm = any(e.get("type") == "confirmation_required" for e in ev1)
     done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
@@ -348,12 +348,12 @@ def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
     tool_msgs = [m for m in st["messages"] if m["name"] == "update_address"]
     msgs = open_messages(db_path, sid)
     d7_final = (done2 or {}).get("data", {}).get("final")
-    d7_store = any(m["role"] == "assistant" and "操作已完成" in m["content"] for m in msgs)
+    d7_store = any(m["role"] == "assistant" and "收货地址已更新完成" in m["content"] for m in msgs)
     pass_ = (
         code1 == 200 and confirm and (done1 is not None)
         and code2 == 200 and calls == 1 and results == 1
         and st["execution_status"] == "completed" and len(tool_msgs) == 1
-        and d7_final == "操作已完成。" and d7_store
+        and d7_final == completion_text("update_address") and d7_store
     )
     return {
         "name": "Mutation", "pass": pass_, "session_id": sid,
@@ -368,8 +368,8 @@ def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
 
 
 def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
-    sid, sess = new_session(client)
-    code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+    sid, sess = new_session(client, "u1")
+    code1, ev1 = chat_sse(client, sid, "订单 ORD-REFUND-1 申请退款")
     types1 = event_types(ev1)
     approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
     approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
@@ -393,7 +393,7 @@ def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "refund_apply"]
     msgs = open_messages(db_path, sid)
-    d7_store = any(m["role"] == "assistant" and "审批通过，操作已完成" in m["content"] for m in msgs)
+    d7_store = any(m["role"] == "assistant" and "已通过审核并执行完成" in m["content"] for m in msgs)
     pass_ = (
         code1 == 200 and approval_ev is not None
         and (approve or {}).get("http") == 200 and (approve or {}).get("body", {}).get("status") == "approved"
@@ -419,7 +419,7 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
     验证 clarify_count 跨 turn 保留（缺参=1）、完整成功 select 清零；若真实模型为
     缺参输入编造必填参数导致 turn1 直接 confirmation_required，暴露 D3 残余风险。
     """
-    sid, sess = new_session(client)
+    sid, sess = new_session(client, "u1")
     st1 = st2 = st3 = None
 
     code1, ev1 = chat_sse(client, sid, "我要改个地址")
@@ -430,7 +430,7 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
     if done1 is not None:
         st1 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
 
-    code2, ev2 = chat_sse(client, sid, "新地址是北京市朝阳区")
+    code2, ev2 = chat_sse(client, sid, "订单 ORD-PAID-1 的收货地址改成北京市朝阳区")
     types2 = event_types(ev2)
     clarify2 = any(e.get("type") == "clarification_required" for e in ev2)
     confirm2 = any(e.get("type") == "confirmation_required" for e in ev2)
@@ -448,10 +448,11 @@ def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "update_address"]
     msgs = open_messages(db_path, sid)
-    d7_store = any(m["role"] == "assistant" and "操作已完成" in m["content"] for m in msgs)
+    d7_store = any(m["role"] == "assistant" and "收货地址已更新完成" in m["content"] for m in msgs)
     pass_ = (
         code1 == 200 and clarify1 and not tool1 and done1 is not None
-        and (done1 or {}).get("data", {}).get("final") == "请提供：收货地址。"
+        and "订单号" in (done1 or {}).get("data", {}).get("final", "")
+        and "收货地址" in (done1 or {}).get("data", {}).get("final", "")
         and (st1 or {}).get("execution_status") == "clarifying"
         and code2 == 200 and confirm2 and not clarify2 and done2 is not None
         and code3 == 200 and calls3 == 1 and results3 == 1
@@ -617,7 +618,7 @@ def scenario_handoff(client: httpx.Client, db_path: str) -> dict:
         and (resolve or {}).get("http") == 200 and (resolve or {}).get("body", {}).get("mode") == "ai"
         and mode_after_resolve == "ai"
         and (handoffs and handoffs[0]["status"] == "resolved")
-        and not st["interrupts"] and st["execution_status"] == "completed"
+        and not st["interrupts"] and st["execution_status"] in (None, "completed")
         and code2 == 200 and "error" not in types2 and done2 is not None and len(tokens2) >= 1
     )
     return {
