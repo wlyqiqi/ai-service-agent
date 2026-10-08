@@ -33,7 +33,7 @@
 - Consumes: existing `ChatwootClient`, `ChatwootMappingStore`
 - Produces: `send_bot_message(conversation_id, content, content_type=None, content_attributes=None)` — sends outgoing message as bot; `send_interactive_message(conversation_id, content, content_type, content_attributes)` — sends form/input_select/cards
 
-- [ ] **Step 1: Write failing tests for send_bot_message and send_interactive_message**
+- [x] **Step 1: Write failing tests for send_bot_message and send_interactive_message**
 
 ```python
 # tests/test_chatwoot.py — append these tests
@@ -79,12 +79,12 @@ async def test_send_interactive_message_form():
         assert body["content_attributes"] == attrs
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run --no-sync pytest tests/test_chatwoot.py::test_send_bot_message_outgoing tests/test_chatwoot.py::test_send_interactive_message_form -v`
 Expected: FAIL with `AttributeError: 'ChatwootClient' object has no attribute 'send_bot_message'`
 
-- [ ] **Step 3: Implement send_bot_message and send_interactive_message in ChatwootClient**
+- [x] **Step 3: Implement send_bot_message and send_interactive_message in ChatwootClient**
 
 ```python
 # src/ai_service_agent/harness/chatwoot.py — append to ChatwootClient class
@@ -119,12 +119,12 @@ Expected: FAIL with `AttributeError: 'ChatwootClient' object has no attribute 's
         await self.send_bot_message(conversation_id, content, content_type, content_attributes)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run --no-sync pytest tests/test_chatwoot.py::test_send_bot_message_outgoing tests/test_chatwoot.py::test_send_interactive_message_form -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/harness/chatwoot.py tests/test_chatwoot.py
@@ -145,7 +145,7 @@ git commit -m "feat(chatwoot): add send_bot_message and send_interactive_message
 - Consumes: `ChatwootClient.send_bot_message`, `event_stream`, `make_ai_graph`, `MessageStore`, `ConversationStatusStore`, `verify_chatwoot_signature`
 - Produces: `handle_agent_bot_message(payload: dict, chatwoot: ChatwootClient, ...) -> dict` — main handler called from FastAPI endpoint
 
-- [ ] **Step 1: Add AgentBot config settings**
+- [x] **Step 1: Add AgentBot config settings**
 
 ```python
 # src/ai_service_agent/config.py — add after chatwoot_webhook_secret line
@@ -153,7 +153,7 @@ git commit -m "feat(chatwoot): add send_bot_message and send_interactive_message
     chatwoot_website_token: str | None = Field(default=None, validation_alias="CHATWOOT_WEBSITE_TOKEN")
 ```
 
-- [ ] **Step 2: Write failing test for handle_agent_bot_message**
+- [x] **Step 2: Write failing test for handle_agent_bot_message**
 
 ```python
 # tests/test_agent_bot.py
@@ -200,12 +200,12 @@ async def test_handle_agent_bot_message_ignores_outgoing():
     assert result is None  # no processing for outgoing messages
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `uv run --no-sync pytest tests/test_agent_bot.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'ai_service_agent.harness.agent_bot'`
 
-- [ ] **Step 4: Implement agent_bot.py**
+- [x] **Step 4: Implement agent_bot.py**
 
 ```python
 # src/ai_service_agent/harness/agent_bot.py
@@ -264,12 +264,12 @@ async def handle_agent_bot_message(
     return {"cw_conv_id": cw_conv_id, "response": response_text}
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `uv run --no-sync pytest tests/test_agent_bot.py -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ai_service_agent/config.py src/ai_service_agent/harness/agent_bot.py tests/test_agent_bot.py
@@ -289,7 +289,7 @@ git commit -m "feat(agentbot): add AgentBot webhook handler skeleton and config 
 - Consumes: `make_ai_graph`, `event_stream`, `MessageStore`, `ConversationStatusStore`, `ChatwootMappingStore`
 - Produces: FastAPI endpoint `POST /webhooks/agent_bot` that processes incoming widget messages and routes them through LangGraph
 
-- [ ] **Step 1: Write failing test for graph integration**
+- [x] **Step 1: Write failing test for graph integration**
 
 ```python
 # tests/test_agent_bot.py — append
@@ -320,12 +320,12 @@ async def test_agent_bot_invokes_graph():
     chatwoot.send_bot_message.assert_awaited_once()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run --no-sync pytest tests/test_agent_bot.py::test_agent_bot_invokes_graph -v`
 Expected: FAIL (no graph parameter handling in current implementation)
 
-- [ ] **Step 3: Implement graph invocation in agent_bot.py**
+- [x] **Step 3: Implement graph invocation in agent_bot.py**
 
 ```python
 # src/ai_service_agent/harness/agent_bot.py — update handle_agent_bot_message
@@ -390,12 +390,12 @@ async def handle_agent_bot_message(
     return {"cw_conv_id": cw_conv_id, "response": None}
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run --no-sync pytest tests/test_agent_bot.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Register AgentBot endpoint in server.py**
+- [x] **Step 5: Register AgentBot endpoint in server.py**
 
 ```python
 # src/ai_service_agent/harness/server.py — add after the existing chatwoot_webhook endpoint
@@ -417,12 +417,12 @@ Expected: PASS
         return {"ok": True}
 ```
 
-- [ ] **Step 6: Run full test suite**
+- [x] **Step 6: Run full test suite**
 
 Run: `uv run --no-sync pytest -q`
 Expected: PASS (all existing + new tests)
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/ai_service_agent/harness/agent_bot.py src/ai_service_agent/harness/server.py tests/test_agent_bot.py
@@ -441,7 +441,7 @@ git commit -m "feat(agentbot): wire AgentBot webhook to LangGraph and register F
 - Consumes: `clarification_required` event data (missing fields list), `confirmation_required` event data
 - Produces: `send_clarify_form(chatwoot, conv_id, missing_fields, profile, orders)` and `send_confirmation(chatwoot, conv_id, tool, args)` — converts LangGraph events to Chatwoot interactive messages
 
-- [ ] **Step 1: Write failing test for clarify form conversion**
+- [x] **Step 1: Write failing test for clarify form conversion**
 
 ```python
 # tests/test_agent_bot.py — append
@@ -468,12 +468,12 @@ async def test_send_clarify_form_address():
     assert len(select_field["options"]) == 2
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run --no-sync pytest tests/test_agent_bot.py::test_send_clarify_form_address -v`
 Expected: FAIL with `ImportError: cannot import name 'send_clarify_form'`
 
-- [ ] **Step 3: Implement send_clarify_form**
+- [x] **Step 3: Implement send_clarify_form**
 
 ```python
 # src/ai_service_agent/harness/agent_bot.py — append
@@ -522,12 +522,12 @@ async def send_clarify_form(
     await chatwoot.send_interactive_message(cw_conv_id, title, "form", {"items": items})
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run --no-sync pytest tests/test_agent_bot.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ai_service_agent/harness/agent_bot.py tests/test_agent_bot.py
@@ -546,7 +546,7 @@ git commit -m "feat(agentbot): convert MutationGraph clarification to Chatwoot i
 - Consumes: Chatwoot `websiteToken` from `.env` (injected as `window.CHATWOOT_WEBSITE_TOKEN` by server or hardcoded for dev)
 - Produces: Chatwoot Widget available at page load; `window.$chatwoot.setUser()` called after login
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```python
 # tests/test_user_page.py — append
@@ -564,12 +564,12 @@ def test_chatwoot_widget_hidden_bubble(html):
     assert "true" in html
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run --no-sync pytest tests/test_user_page.py::test_chatwoot_widget_script_embedded -v`
 Expected: FAIL
 
-- [ ] **Step 3: Add Chatwoot Widget SDK to index.html**
+- [x] **Step 3: Add Chatwoot Widget SDK to index.html**
 
 Add before `</body>`:
 
@@ -611,12 +611,12 @@ if (window.$chatwoot && auth.user) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run --no-sync pytest tests/test_user_page.py::test_chatwoot_widget_script_embedded tests/test_user_page.py::test_chatwoot_widget_hidden_bubble -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add web/index.html tests/test_user_page.py
@@ -629,7 +629,7 @@ git commit -m "feat(frontend): embed Chatwoot Widget SDK with hideMessageBubble 
 
 **Files:** No new files; verification only.
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
 ```bash
 uv run --no-sync pytest -q
@@ -637,14 +637,14 @@ uv run --no-sync pytest -q
 
 Expected: ALL PASS
 
-- [ ] **Step 2: Start server with Website Channel Inbox**
+- [x] **Step 2: Start server with Website Channel Inbox**
 
 ```bash
 # .env must have CHATWOOT_WEBSITE_TOKEN set to the new Website Inbox token
 # AI_SERVICE_PORT=8000
 ```
 
-- [ ] **Step 3: Browser E2E test**
+- [x] **Step 3: Browser E2E test**
 
 1. Open `http://127.0.0.1:8000/`
 2. Login with `+65-89136375 / 123456`
@@ -657,7 +657,7 @@ Expected: ALL PASS
 9. Agent resolves → status back to pending → AI responds again
 10. Send "我刚才说的订单问题怎么样了？" → AI understands context
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -673,3 +673,4 @@ Tasks 1-5 are sequential (each builds on the previous). Task 6 is the final veri
 **Prerequisites before starting:**
 - User must create a Website Channel Inbox in Chatwoot Dashboard and provide the `websiteToken`
 - User must create an AgentBot in Chatwoot pointing to `http://172.99.46.165:8000/webhooks/agent_bot`
+`n`n### E2E Result (2026-10-08)`n`n- Full regression: 580 passed, 2 skipped.`n- Real-model Widget E2E: address form -> AgentBot `message_updated` -> confirmation select -> mutation success. Final message included `ORD-2026-10119` and `Chatwoot表单地址4001`.

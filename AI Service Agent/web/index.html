@@ -1248,7 +1248,7 @@ function showFormError(formElement, message) {
 
   async function openChatwootWidget(auth) {
     try {
-      var response = await fetch(base + '/config');
+      var response = await fetch('/config');
       if (!response.ok) return;
       var config = await response.json();
       var websiteToken = config.chatwoot_website_token;
@@ -1276,6 +1276,7 @@ function showFormError(formElement, message) {
       if (window.$chatwoot) {
         window.$chatwoot.setUser((auth && auth.user && auth.user.id) || 'chatwoot-user', {
           name: (auth && auth.user && auth.user.name) || '用户',
+          email: auth && auth.user && auth.user.id ? auth.user.id + '@chengyuan.local' : undefined,
         });
         window.$chatwoot.toggleBubbleVisibility('show');
         window.$chatwoot.toggle('open');

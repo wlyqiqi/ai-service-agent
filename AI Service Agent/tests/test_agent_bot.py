@@ -112,3 +112,100 @@ async def test_send_confirmation_uses_input_select():
         {"title": "确认执行", "value": "confirmed"},
         {"title": "取消操作", "value": "canceled"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_message_updated_submitted_values_runs_one_turn():
+    payload = {
+        "event": "message_updated",
+        "id": "103",
+        "content": "ORD-1\n新地址",
+        "message_type": "incoming",
+        "content_type": "form",
+        "content_attributes": {
+            "submitted_values": {"order_id": "ORD-1", "address": "新地址"}
+        },
+        "conversation": {"id": 44},
+        "contact": {"id": 3, "identifier": "u0100", "name": "郑军"},
+    }
+    chatwoot = AsyncMock()
+
+    result = await handle_agent_bot_message(payload, chatwoot)
+
+    assert result is not None
+    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    chatwoot.send_bot_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_message_updated_widget_array_values_formats_address_turn():
+    payload = {
+        "event": "message_updated",
+        "id": "105",
+        "content": "ORD-1 新地址",
+        "message_type": "incoming",
+        "content_type": "form",
+        "content_attributes": {
+            "submitted_values": [
+                {"name": "order_id", "value": "ORD-1"},
+                {"name": "address", "value": "新地址"},
+            ]
+        },
+        "conversation": {"id": 46},
+        "contact": {"id": 3, "identifier": "u0100", "name": "郑军"},
+    }
+    chatwoot = AsyncMock()
+
+    result = await handle_agent_bot_message(payload, chatwoot)
+
+    assert result is not None
+    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    chatwoot.send_bot_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_message_updated_outgoing_form_array_runs_one_turn():
+    payload = {
+        "event": "message_updated",
+        "id": "106",
+        "content": "ORD-1 新地址",
+        "message_type": 1,
+        "content_type": "form",
+        "content_attributes": {
+            "submitted_values": [
+                {"name": "order_id", "value": "ORD-1"},
+                {"name": "address", "value": "新地址"},
+            ]
+        },
+        "conversation": {"id": 47},
+        "contact": {"id": 3, "identifier": "u0100", "name": "郑军"},
+    }
+    chatwoot = AsyncMock()
+
+    result = await handle_agent_bot_message(payload, chatwoot)
+
+    assert result is not None
+    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    chatwoot.send_bot_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_message_updated_submitted_values_formats_address_turn():
+    payload = {
+        "event": "message_updated",
+        "id": "104",
+        "content": "ORD-1\n新地址",
+        "message_type": "incoming",
+        "content_type": "form",
+        "content_attributes": {
+            "submitted_values": {"order_id": "ORD-1", "address": "新地址"}
+        },
+        "conversation": {"id": 45},
+        "contact": {"id": 3, "identifier": "u0100", "name": "郑军"},
+    }
+    chatwoot = AsyncMock()
+
+    result = await handle_agent_bot_message(payload, chatwoot)
+
+    assert result is not None
+    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"

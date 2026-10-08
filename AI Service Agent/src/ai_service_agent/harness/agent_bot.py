@@ -7,7 +7,24 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.harness.chatwoot import ChatwootClient
 from ai_service_agent.graph.workflows.copy import FIELD_LABELS
+from ai_service_agent.harness.resume import resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
+
+
+def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
+    """兼容 Chatwoot form 提交的 object 与 widget/agent-bot 的 [{name, value}] 数组。"""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, list):
+        return None
+    normalized: dict[str, Any] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("title")
+        if name is not None and "value" in item:
+            normalized[str(name)] = item["value"]
+    return normalized or None
 
 
 async def handle_agent_bot_message(
@@ -21,14 +38,34 @@ async def handle_agent_bot_message(
     orders_loader=None,
 ) -> dict[str, Any] | None:
     """处理 AgentBot incoming 消息，并回写 outgoing 消息。"""
-    if payload.get("event") != "message_created":
+    event = payload.get("event")
+    if event not in ("message_created", "message_updated"):
         return None
 
     message_type = payload.get("message_type")
-    if message_type not in ("incoming", 0):
+    is_form_update = (
+        event == "message_updated"
+        and payload.get("content_type") in ("form", "input_select")
+    )
+    if message_type not in ("incoming", 0) and not is_form_update:
         return None
 
-    content = payload.get("content")
+    submitted_values = _normalize_submitted_values(
+        (payload.get("content_attributes") or {}).get("submitted_values")
+    )
+    if event == "message_updated" and submitted_values is None:
+        return None
+
+    if submitted_values:
+        if submitted_values.get("order_id") and submitted_values.get("address"):
+            content = (
+                f"订单 {submitted_values['order_id']} 的收货地址改成 "
+                f"{submitted_values['address']}"
+            )
+        else:
+            content = ", ".join(f"{key}={value}" for key, value in submitted_values.items())
+    else:
+        content = payload.get("content")
     if not isinstance(content, str) or not content.strip():
         return None
 
@@ -37,14 +74,14 @@ async def handle_agent_bot_message(
     if not cw_conv_id:
         return None
 
-    contact = payload.get("contact") or {}
+    contact = payload.get("contact") or (conversation.get("meta") or {}).get("sender") or {}
     contact_id = contact.get("id")
     rec = mapping.find(int(cw_conv_id)) if mapping is not None else None
     if rec is not None:
         conversation_id = rec["conversation_id"]
         thread_id = status.get_thread_id(conversation_id) if status is not None else conversation_id
     else:
-        user_id = f"chatwoot-{contact_id or contact.get('name') or cw_conv_id}"
+        user_id = contact.get("identifier") or f"chatwoot-{contact_id or contact.get('name') or cw_conv_id}"
         if status is not None:
             session = status.create_session(user_id)
             conversation_id = session["conversation_id"]
@@ -68,15 +105,25 @@ async def handle_agent_bot_message(
     confirmation_summary = None
 
     if graph is None:
-        final_text = f"[AgentBot] Received: {content.strip()}"
+        final_text = (
+            f"[AgentBot] 收到表单：{content.strip()}"
+            if submitted_values is not None
+            else f"[AgentBot] Received: {content.strip()}"
+        )
     else:
         config = {"configurable": {"thread_id": thread_id}}
         final_text = None
+        resume_payload = None
+        if getattr(graph, "checkpointer", None):
+            state = await graph.aget_state(config)
+            if state.interrupts:
+                resume_payload = resolve_resume_payload(state.interrupts[0].value, content.strip())
         async for event in event_stream(
             graph,
             config,
             history,
-            extra_state={"user_id": status.get_user_id(conversation_id) if status is not None else ""},
+            resume_payload=resume_payload,
+            extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
         ):
             if event.get("type") == "done":
                 final_text = event.get("data", {}).get("final")
@@ -91,7 +138,7 @@ async def handle_agent_bot_message(
             messages_store.append(conversation_id, "assistant", final_text)
 
     if clarification_data is not None:
-        user_id = status.get_user_id(conversation_id) if status is not None else None
+        user_id = contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else None)
         await send_clarify_form(
             chatwoot,
             conversation_id,
