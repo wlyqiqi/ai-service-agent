@@ -5,9 +5,9 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from ai_service_agent.harness.chatwoot import ChatwootClient
+from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.workflows.copy import FIELD_LABELS
-from ai_service_agent.harness.resume import resolve_resume_payload
+from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
 
@@ -36,6 +36,10 @@ async def handle_agent_bot_message(
     mapping=None,
     profile_loader=None,
     orders_loader=None,
+    on_interrupt=None,
+    thread_lock_factory=None,
+    on_handoff_created=None,
+    on_approval_pending=None,
 ) -> dict[str, Any] | None:
     """处理 AgentBot incoming 消息，并回写 outgoing 消息。"""
     event = payload.get("event")
@@ -96,13 +100,17 @@ async def handle_agent_bot_message(
         return None
 
     if messages_store is not None:
-        messages_store.append(conversation_id, "user", content.strip())
+        message_id = chatwoot_message_id(payload)
+        if message_id and messages_store.get_by_message_id(message_id):
+            return None
+        messages_store.append(conversation_id, "user", content.strip(), message_id=message_id or None)
         history = messages_store.hydrate(conversation_id)
     else:
         history = [HumanMessage(content=content.strip())]
 
     clarification_data = None
     confirmation_summary = None
+    final_message_id = None
 
     if graph is None:
         final_text = (
@@ -117,25 +125,53 @@ async def handle_agent_bot_message(
         if getattr(graph, "checkpointer", None):
             state = await graph.aget_state(config)
             if state.interrupts:
-                resume_payload = resolve_resume_payload(state.interrupts[0].value, content.strip())
-        async for event in event_stream(
-            graph,
-            config,
-            history,
-            resume_payload=resume_payload,
-            extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
-        ):
-            if event.get("type") == "done":
-                final_text = event.get("data", {}).get("final")
-            elif event.get("type") == "clarification_required":
-                clarification_data = event.get("data") or {}
-            elif event.get("type") == "confirmation_required":
-                confirmation_summary = event.get("data", {}).get("summary")
+                interrupt_value = state.interrupts[0].value
+                approval_state = approval_dispatch(interrupt_value)
+                if approval_state == "pending":
+                    if on_approval_pending is not None:
+                        await on_approval_pending(interrupt_value)
+                    return None
+                if approval_state == "expired":
+                    resume_payload = {"result": "expired"}
+                elif isinstance(interrupt_value, dict) and interrupt_value.get("type") == "confirmation_required":
+                    action = (submitted_values or {}).get("confirmation") or (submitted_values or {}).get("action")
+                    if action == "confirmed":
+                        resume_payload = {"action": "confirm"}
+                    elif action == "canceled":
+                        resume_payload = {"action": "cancel"}
+                    else:
+                        resume_payload = resolve_resume_payload(interrupt_value, content.strip())
+                else:
+                    resume_payload = resolve_resume_payload(interrupt_value, content.strip())
+        async def run_graph():
+            nonlocal final_text, clarification_data, confirmation_summary
+            async for event in event_stream(
+                graph,
+                config,
+                history,
+                on_interrupt=on_interrupt,
+                resume_payload=resume_payload,
+                extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
+            ):
+                if event.get("type") == "done":
+                    final_text = event.get("data", {}).get("final")
+                    final_message_id = event.get("data", {}).get("message_id")
+                elif event.get("type") == "clarification_required":
+                    clarification_data = event.get("data") or {}
+                elif event.get("type") == "confirmation_required":
+                    confirmation_summary = event.get("data", {}).get("summary")
+                elif event.get("type") == "handoff_created" and on_handoff_created is not None:
+                    await on_handoff_created(event)
 
-    if final_text is not None:
+        if thread_lock_factory is not None:
+            async with await thread_lock_factory(thread_id):
+                await run_graph()
+        else:
+            await run_graph()
+    if final_text is not None and (status is None or status.get_mode(conversation_id) == "ai"):
         await chatwoot.send_bot_message(conversation_id, final_text)
         if messages_store is not None:
-            messages_store.append(conversation_id, "assistant", final_text)
+            messages_store.append(conversation_id, "assistant", final_text, message_id=final_message_id)
 
     if clarification_data is not None:
         user_id = contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else None)

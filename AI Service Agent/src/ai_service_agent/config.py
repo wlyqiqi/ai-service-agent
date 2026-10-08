@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     chatwoot_webhook_secret: str | None = Field(default=None, validation_alias="CHATWOOT_WEBHOOK_SECRET")
     chatwoot_agent_bot_secret: str | None = Field(default=None, validation_alias="CHATWOOT_AGENT_BOT_SECRET")
     chatwoot_website_token: str | None = Field(default=None, validation_alias="CHATWOOT_WEBSITE_TOKEN")
+    chatwoot_hmac_secret: str | None = Field(default=None, validation_alias="CHATWOOT_HMAC_SECRET")
     # LightRAG-chengyuan（read 档 kb_search 数据源，OQ-1 naive / OQ-3 不加缓存 / OQ-4 不做自动同步）
     lightrag_base_url: str = "http://localhost:9621"
     lightrag_timeout_seconds: float = 15.0

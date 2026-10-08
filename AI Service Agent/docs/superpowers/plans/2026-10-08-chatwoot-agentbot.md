@@ -673,4 +673,8 @@ Tasks 1-5 are sequential (each builds on the previous). Task 6 is the final veri
 **Prerequisites before starting:**
 - User must create a Website Channel Inbox in Chatwoot Dashboard and provide the `websiteToken`
 - User must create an AgentBot in Chatwoot pointing to `http://172.99.46.165:8000/webhooks/agent_bot`
-`n`n### E2E Result (2026-10-08)`n`n- Full regression: 580 passed, 2 skipped.`n- Real-model Widget E2E: address form -> AgentBot `message_updated` -> confirmation select -> mutation success. Final message included `ORD-2026-10119` and `Chatwoot表单地址4001`.
+
+### E2E Result (2026-10-08)
+
+- Full regression: 580 passed, 2 skipped.
+- Real-model Widget E2E: address form -> AgentBot `message_updated` -> confirmation select -> mutation success. Final message included `ORD-2026-10119` and `Chatwoot表单地址4001`.

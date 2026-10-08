@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -1248,9 +1248,11 @@ function showFormError(formElement, message) {
 
   async function openChatwootWidget(auth) {
     try {
-      var response = await fetch('/config');
-      if (!response.ok) return;
-      var config = await response.json();
+      var configResponse = await fetch('/config');
+      if (!configResponse.ok) return;
+      var config = await configResponse.json();
+      var identityResponse = await fetch('/me/chatwoot_identity', { headers: { Authorization: 'Bearer ' + ((auth && auth.token) || '') } });
+      var identity = identityResponse.ok ? await identityResponse.json() : null;
       var websiteToken = config.chatwoot_website_token;
       var widgetBaseUrl = (config.chatwoot_base_url || '').replace(/\/$/, '');
       if (!websiteToken || !widgetBaseUrl) return;
@@ -1274,9 +1276,11 @@ function showFormError(formElement, message) {
       }
       window.chatwootSDK.run({ websiteToken: websiteToken, baseUrl: widgetBaseUrl });
       if (window.$chatwoot) {
-        window.$chatwoot.setUser((auth && auth.user && auth.user.id) || 'chatwoot-user', {
+        var userId = (auth && auth.user && auth.user.id) || 'chatwoot-user';
+        window.$chatwoot.setUser(userId, {
           name: (auth && auth.user && auth.user.name) || '用户',
           email: auth && auth.user && auth.user.id ? auth.user.id + '@chengyuan.local' : undefined,
+          identifier_hash: identity && identity.identifier_hash ? identity.identifier_hash : undefined,
         });
         window.$chatwoot.toggleBubbleVisibility('show');
         window.$chatwoot.toggle('open');

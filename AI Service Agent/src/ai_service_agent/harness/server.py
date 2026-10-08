@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import sqlite3
@@ -124,6 +126,8 @@ def create_app(
     simulate_approval: bool | None = None,
     chatwoot: object | None = None,
     chatwoot_webhook_secret: str | None = None,
+    chatwoot_hmac_secret: str | None = None,
+    chatwoot_agent_bot_secret: str | None = None,
     auth_enabled: bool | None = None,
     jwt_secret: str | None = None,
     profile_db_path: str | None = None,
@@ -158,6 +162,8 @@ def create_app(
             mapping=mapping,
         )
     webhook_secret = chatwoot_webhook_secret or settings_chatwoot.chatwoot_webhook_secret
+    widget_hmac_secret = chatwoot_hmac_secret or settings_chatwoot.chatwoot_hmac_secret
+    agent_bot_secret = chatwoot_agent_bot_secret or settings_chatwoot.chatwoot_agent_bot_secret
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
@@ -186,10 +192,11 @@ def create_app(
             return []
         try:
             conn = sqlite3.connect(profile_path)
+            placeholders = ",".join("?" for _ in ADDRESS_EDITABLE_STATUSES)
             rows = conn.execute(
                 "SELECT order_id, status FROM orders WHERE customer_id = ? "
-                "AND status IN ('paid') ORDER BY ordered_at DESC LIMIT 20",
-                (user_id,),
+                f"AND status IN ({placeholders}) ORDER BY ordered_at DESC LIMIT 20",
+                (user_id, *sorted(ADDRESS_EDITABLE_STATUSES)),
             ).fetchall()
             conn.close()
         except sqlite3.Error:
@@ -291,6 +298,13 @@ def create_app(
             "chatwoot_base_url": settings_chatwoot.chatwoot_base_url,
             "chatwoot_website_token": settings_chatwoot.chatwoot_website_token,
         }
+
+    @app.get("/me/chatwoot_identity")
+    def chatwoot_identity(request: Request):
+        """认证用户的 Widget identity；避免公开 website token 可伪造 user_id。"""
+        user_id = _require_auth_user(request)
+        digest = hmac.new(widget_hmac_secret.encode(), user_id.encode(), hashlib.sha256).hexdigest() if widget_hmac_secret else None
+        return {"identifier": user_id, "identifier_hash": digest}
 
     @app.get("/me/profile")
     def me_profile(request: Request):
@@ -670,8 +684,33 @@ def create_app(
     _web_dir = Path(__file__).resolve().parents[3] / "web"
     @app.post("/webhooks/agent_bot")
     async def agent_bot_webhook(request: Request):
-        data = await request.json()
+        payload = await request.body()
+        signature = request.headers.get("X-Chatwoot-Signature")
+        timestamp = request.headers.get("X-Chatwoot-Timestamp")
+        if not agent_bot_secret or not verify_chatwoot_signature(payload, signature, agent_bot_secret, timestamp):
+            raise HTTPException(status_code=401, detail="invalid signature")
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            return {"ok": True}
         if chatwoot is not None:
+            cw_id = (data.get("conversation") or {}).get("id")
+            rec = mapping.find(int(cw_id)) if cw_id else None
+            conv_id = rec["conversation_id"] if rec else None
+            thread_id = status.get_thread_id(conv_id) if conv_id else None
+            cb = _combined_interrupt_callback(
+                handoff.make_interrupt_callback(conv_id), approvals.make_interrupt_callback(conv_id, thread_id)
+            ) if conv_id and thread_id else None
+
+            async def send_handoff_notice(event: dict) -> None:
+                messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
+                await chatwoot.send_bot_message(conv_id, HANDOFF_NOTICE)
+                await chatwoot.set_conversation_status(conv_id, "open")
+
+            async def send_approval_pending(value: dict) -> None:
+                content = "高风险操作 · 人工审批中：" + (value.get("summary") or "")
+                await chatwoot.send_bot_message(conv_id, content)
+
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver)
                 await handle_agent_bot_message(
@@ -681,11 +720,14 @@ def create_app(
                     status=status,
                     messages_store=messages_store,
                     mapping=mapping,
-                profile_loader=_profile_for_agent_bot,
-                orders_loader=_address_editable_orders_for_agent_bot,
+                    profile_loader=_profile_for_agent_bot,
+                    orders_loader=_address_editable_orders_for_agent_bot,
+                    on_interrupt=cb,
+                    thread_lock_factory=_thread_lock,
+                    on_handoff_created=send_handoff_notice,
+                    on_approval_pending=send_approval_pending,
                 )
         return {"ok": True}
-
     if _web_dir.exists():
         # 同源托管用户页面（user-page-spec §10）：baseUrl='' 相对路径 + file:// 强制 mock，
         # 真实模式需 Runtime 同源提供页面；API 路由已在挂载前注册，优先级不变。

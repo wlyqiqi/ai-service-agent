@@ -50,6 +50,17 @@ class MessageStore:
         )
         self.conn.execute(MESSAGE_ID_UNIQUE_INDEX)
 
+    def get_by_message_id(self, message_id: str) -> dict | None:
+        if not message_id:
+            return None
+        row = self.conn.execute(
+            "SELECT id, conversation_id, role, content, message_id, created_at FROM conversation_message WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "conversation_id": row[1], "role": row[2], "content": row[3], "message_id": row[4], "created_at": row[5]}
+
     def append_if_absent(self, message_id: str, conversation_id: str, role: str, content: str) -> int:
         if not message_id:
             raise ValueError("message_id is required")

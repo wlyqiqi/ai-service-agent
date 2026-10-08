@@ -165,6 +165,22 @@ async def test_send_interactive_message_posts_form_contract(tmp_path):
     assert mapping.is_runtime_message(101) is True
 
 
+@pytest.mark.asyncio
+async def test_set_conversation_status_patches_mapped_conversation(tmp_path):
+    def handler(request):
+        assert request.method == "PATCH"
+        assert request.url.path.endswith("/conversations/555")
+        assert json.loads(request.content) == {"status": "open"}
+        return Response(200, json={"id": 555, "status": "open"})
+
+    cw, mapping, calls = _client_with(handler, tmp_path)
+    mapping.put("c1", 555)
+
+    await cw.set_conversation_status("c1", "open")
+
+    assert len(calls) == 1
+
+
 def test_agent_message_contract():
     from ai_service_agent.harness.chatwoot import is_agent_message
 

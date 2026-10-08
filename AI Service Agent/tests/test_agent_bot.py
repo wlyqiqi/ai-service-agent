@@ -1,7 +1,10 @@
 import pytest
 from unittest.mock import AsyncMock
 
+import sqlite3
+
 from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.harness.messages import MessageStore
 
 
 @pytest.mark.asyncio
@@ -187,6 +190,31 @@ async def test_message_updated_outgoing_form_array_runs_one_turn():
     assert result is not None
     assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
     chatwoot.send_bot_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_deduplicates_chatwoot_message_id(tmp_path):
+    payload = {
+        "event": "message_created",
+        "id": "900",
+        "content": "你好",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 48},
+        "contact": {"id": 4, "name": "repeat-user"},
+    }
+    chatwoot = AsyncMock()
+    store = MessageStore(sqlite3.connect(tmp_path / "messages.db"))
+
+    first = await handle_agent_bot_message(payload, chatwoot, messages_store=store)
+    second = await handle_agent_bot_message(payload, chatwoot, messages_store=store)
+
+    assert first is not None
+    assert second is None
+    chatwoot.send_bot_message.assert_awaited_once()
+    rows = store.list(first["conversation_id"])
+    assert [row["role"] for row in rows] == ["user", "assistant"]
+    assert rows[0]["message_id"] == "chatwoot-900"
 
 
 @pytest.mark.asyncio

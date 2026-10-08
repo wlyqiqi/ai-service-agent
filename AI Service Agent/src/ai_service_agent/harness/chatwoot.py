@@ -201,6 +201,18 @@ class ChatwootClient:
         r.raise_for_status()
         return r.json().get("payload", [])
 
+    async def set_conversation_status(self, conversation_id: str, status: str) -> None:
+        """把已映射 Chatwoot conversation 切到 pending/open（AgentBot/handoff 状态同步）。"""
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return
+        r = await self.client.patch(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}",
+            headers=self._headers(),
+            json={"status": status},
+        )
+        r.raise_for_status()
+
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
         rec = self.mapping.get(conversation_id)
         body = {"content": content, "sender_type": "Contact", "message_type": "incoming"}

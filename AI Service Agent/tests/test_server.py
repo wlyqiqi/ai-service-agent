@@ -18,6 +18,7 @@ def test_sessions_creates_ai_mode(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["mode"] == "ai"
+    assert body["session_id"]
 
 
 def test_frontend_config_exposes_chatwoot_widget_settings(tmp_path):
@@ -25,6 +26,74 @@ def test_frontend_config_exposes_chatwoot_widget_settings(tmp_path):
     body = client.get("/config").json()
     assert "chatwoot_base_url" in body
     assert "chatwoot_website_token" in body
+
+
+def test_chatwoot_identity_requires_auth_and_signs_user_id(tmp_path):
+    import hashlib
+    import hmac
+    import sqlite3
+
+    from ai_service_agent.harness.auth import UserStore
+
+    db = str(tmp_path / "identity.db")
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            auth_enabled=True,
+            jwt_secret="test-secret-with-at-least-32-bytes!!",
+            chatwoot_hmac_secret="widget-hmac",
+        )
+    )
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+
+    assert client.get("/me/chatwoot_identity").status_code == 401
+    response = client.get("/me/chatwoot_identity", headers={"Authorization": f"Bearer {token}"})
+
+    expected = hmac.new(b"widget-hmac", b"u1", hashlib.sha256).hexdigest()
+    assert response.status_code == 200
+    assert response.json() == {"identifier": "u1", "identifier_hash": expected}
+
+
+def test_agent_bot_webhook_requires_valid_signature(tmp_path):
+    import hashlib
+    import hmac
+    import json
+
+    payload = {
+        "event": "message_created",
+        "id": 601,
+        "content": "你好",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 602},
+        "contact": {"id": 1},
+    }
+    raw = json.dumps(payload).encode()
+    timestamp = "1700000000"
+    signature = "sha256=" + hmac.new(
+        b"agent-bot-secret", timestamp.encode() + b"." + raw, hashlib.sha256
+    ).hexdigest()
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_agent_bot_secret="agent-bot-secret"))
+
+    missing = client.post("/webhooks/agent_bot", content=raw)
+    invalid = client.post(
+        "/webhooks/agent_bot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": "sha256=bad", "X-Chatwoot-Timestamp": timestamp},
+    )
+    valid = client.post(
+        "/webhooks/agent_bot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": timestamp},
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+    assert valid.status_code == 200
 
 
 def test_chat_unknown_session_errors(tmp_path):
