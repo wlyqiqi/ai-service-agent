@@ -6,6 +6,7 @@ Chatwoot 只做坐席 UI/输入层；Message Store 保持唯一真相源（hando
 
 import hashlib
 import hmac
+import time
 import logging
 import sqlite3
 
@@ -112,7 +113,14 @@ class ChatwootMappingStore:
         return row is not None
 
 
-def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str, timestamp: str | None) -> bool:
+def verify_chatwoot_signature(
+    payload: bytes,
+    signature: str | None,
+    secret: str,
+    timestamp: str | None,
+    max_age_seconds: int = 300,
+    now: float | None = None,
+) -> bool:
     """Chatwoot v4.x webhook 签名：X-Chatwoot-Signature: sha256=<hex>。
 
     v4.17.1 实测契约（Webhooks::Trigger#request_headers）：HMAC-SHA256(secret, "<ts>.<raw body>")，
@@ -124,7 +132,14 @@ def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str
         return False
     msg = timestamp.encode() + b"." + payload
     expected = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature[len("sha256="):], expected)
+    if hmac.compare_digest(signature[len("sha256="):], expected) is False:
+        return False
+    try:
+        signed_at = float(timestamp)
+    except ValueError:
+        return False
+    current_time = time.time() if now is None else now
+    return abs(current_time - signed_at) <= max_age_seconds
 
 
 

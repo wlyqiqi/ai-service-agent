@@ -11,7 +11,9 @@ from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 
 
-TS = "1700000000"
+import time
+
+TS = str(int(time.time()))
 
 
 def _sig(payload: bytes, secret: str = "sec") -> str:

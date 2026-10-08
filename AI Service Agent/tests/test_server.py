@@ -1,4 +1,5 @@
 import sqlite3
+import time
 
 from fastapi.testclient import TestClient
 
@@ -58,6 +59,23 @@ def test_chatwoot_identity_requires_auth_and_signs_user_id(tmp_path):
     assert response.json() == {"identifier": "u1", "identifier_hash": expected}
 
 
+def test_chatwoot_identity_fails_closed_without_hmac(tmp_path):
+    import sqlite3
+
+    from ai_service_agent.harness.auth import UserStore
+
+    db = str(tmp_path / "identity-no-hmac.db")
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    client = TestClient(
+        create_app(db, model="fake", auth_enabled=True, jwt_secret="test-secret-with-at-least-32-bytes!!")
+    )
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+
+    assert client.get("/me/chatwoot_identity", headers={"Authorization": f"Bearer {token}"}).status_code == 503
+
+
 def test_agent_bot_webhook_requires_valid_signature(tmp_path):
     import hashlib
     import hmac
@@ -73,7 +91,7 @@ def test_agent_bot_webhook_requires_valid_signature(tmp_path):
         "contact": {"id": 1},
     }
     raw = json.dumps(payload).encode()
-    timestamp = "1700000000"
+    timestamp = str(int(time.time()))
     signature = "sha256=" + hmac.new(
         b"agent-bot-secret", timestamp.encode() + b"." + raw, hashlib.sha256
     ).hexdigest()
@@ -94,6 +112,73 @@ def test_agent_bot_webhook_requires_valid_signature(tmp_path):
     assert missing.status_code == 401
     assert invalid.status_code == 401
     assert valid.status_code == 200
+
+
+def test_chatwoot_webhooks_reject_malformed_signed_payloads(tmp_path):
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    secret = "webhook-secret"
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret=secret))
+
+    def post(payload):
+        raw = json.dumps(payload).encode()
+        timestamp = str(int(time.time()))
+        signature = "sha256=" + hmac.new(secret.encode(), timestamp.encode() + b"." + raw, hashlib.sha256).hexdigest()
+        return client.post(
+            "/webhooks/chatwoot", content=raw,
+            headers={"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": timestamp},
+        )
+
+    assert post([1, 2]).status_code == 200
+    assert post({"event": "message_created", "id": 1, "conversation": "bad"}).status_code == 200
+    assert post({"event": "message_created", "id": 1, "conversation": {"id": "bad"}}).status_code == 200
+
+
+def test_resolve_restores_chatwoot_pending(tmp_path):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+
+    cw = SimpleNamespace(
+        list_messages=AsyncMock(return_value=[]),
+        ensure_conversation=AsyncMock(return_value=111),
+        set_conversation_status=AsyncMock(),
+    )
+    client = TestClient(create_app(str(tmp_path / "s.db"), model=KeywordHandoffFakeModel(responses=[]), chatwoot=cw))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        text = "".join(r.iter_text())
+    conn = sqlite3.connect(str(tmp_path / "s.db"))
+    handoff_id = conn.execute(
+        "SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
+    cw.set_conversation_status.assert_awaited_once_with(session_id, "pending")
+
+
+def test_approval_decision_sends_result_to_chatwoot(tmp_path):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+
+    cw = SimpleNamespace(send_bot_message=AsyncMock())
+    db = str(tmp_path / "approval.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[]), chatwoot=cw))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        "".join(r.iter_text())
+
+    conn = sqlite3.connect(db)
+    approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
+    conn.close()
+
+    response = client.post(f"/approvals/{approval_id}/approve")
+    assert response.status_code == 200
+    cw.send_bot_message.assert_awaited_once()
+    assert "通过审核" in cw.send_bot_message.call_args.args[1]
 
 
 def test_chat_unknown_session_errors(tmp_path):
@@ -149,7 +234,7 @@ def test_chatwoot_webhook_agent_message_is_idempotent(tmp_path):
         "conversation": {"id": 111},
     }
     raw = json.dumps(payload).encode()
-    timestamp = "1700000000"
+    timestamp = str(int(time.time()))
     signature = "sha256=" + hmac.new(
         b"sec", timestamp.encode() + b"." + raw, hashlib.sha256
     ).hexdigest()
@@ -190,7 +275,7 @@ def test_chatwoot_webhook_rejects_private_note(tmp_path):
         "conversation": {"id": 111},
     }
     raw = json.dumps(payload).encode()
-    timestamp = "1700000000"
+    timestamp = str(int(time.time()))
     signature = "sha256=" + hmac.new(
         b"sec", timestamp.encode() + b"." + raw, hashlib.sha256
     ).hexdigest()

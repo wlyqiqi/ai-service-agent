@@ -110,6 +110,26 @@ def _combined_interrupt_callback(handoff_cb, approval_cb):
     return on_interrupt
 
 
+def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
+    def make_callbacks(conv_id, thread_id):
+        cb = _combined_interrupt_callback(
+            handoff.make_interrupt_callback(conv_id), approvals.make_interrupt_callback(conv_id, thread_id)
+        )
+
+        async def send_handoff_notice(event: dict) -> None:
+            messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
+            await chatwoot.send_bot_message(conv_id, HANDOFF_NOTICE)
+            await chatwoot.set_conversation_status(conv_id, "open")
+
+        async def send_approval_pending(value: dict) -> None:
+            content = "高风险操作 · 人工审批中：" + (value.get("summary") or "")
+            await chatwoot.send_bot_message(conv_id, content)
+
+        return cb, send_handoff_notice, send_approval_pending
+
+    return make_callbacks
+
+
 async def _approval_pending_events(it: dict):
     """OQ-4 hold：审批挂起提示事件（event-spec §2 approval_required data 形状）。"""
     yield {"type": "approval_required", "data": {
@@ -302,8 +322,10 @@ def create_app(
     @app.get("/me/chatwoot_identity")
     def chatwoot_identity(request: Request):
         """认证用户的 Widget identity；避免公开 website token 可伪造 user_id。"""
+        if not widget_hmac_secret:
+            raise HTTPException(status_code=503, detail="Chatwoot identity signing is unavailable")
         user_id = _require_auth_user(request)
-        digest = hmac.new(widget_hmac_secret.encode(), user_id.encode(), hashlib.sha256).hexdigest() if widget_hmac_secret else None
+        digest = hmac.new(widget_hmac_secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
         return {"identifier": user_id, "identifier_hash": digest}
 
     @app.get("/me/profile")
@@ -559,6 +581,11 @@ def create_app(
             # D9 裁定：只读信息项，仅日志/坐席展示，不影响 resolve 分支（Handoff 与 Approval 完全独立状态机）
             logger.info("resolve handoff %s: conversation %s has %d pending approval(s)", handoff_id, conv_id, len(pending))
         thread_id = status.get_thread_id(conv_id)
+        if chatwoot is not None:
+            try:
+                await chatwoot.set_conversation_status(conv_id, "pending")
+            except Exception:
+                logger.exception("chatwoot restore pending failed: conv=%s", conv_id)
         lock = await _thread_lock(thread_id)
         async with lock:
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
@@ -607,6 +634,8 @@ def create_app(
                 final, final_message_id = await new_assistant_text_and_id(graph, cfg, before_ids)
                 if final is not None:
                     messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
+                    if chatwoot is not None:
+                        await chatwoot.send_bot_message(conv_id, final)
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
@@ -651,26 +680,31 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid signature")
         try:
             data = json.loads(payload)
-        except ValueError:
+        except (UnicodeDecodeError, ValueError):
             return {"ok": True}
-        if data.get("event") != "message_created" or not is_agent_message(data):
-            return {"ok": True}
-
-        cw_id = (data.get("conversation") or {}).get("id")
-        if not cw_id:
+        if not isinstance(data, dict) or data.get("event") != "message_created" or not is_agent_message(data):
             return {"ok": True}
 
-        rec = mapping.find(int(cw_id))
+        conversation = data.get("conversation")
+        if not isinstance(conversation, dict):
+            return {"ok": True}
+        try:
+            cw_id = int(conversation.get("id"))
+        except (TypeError, ValueError):
+            return {"ok": True}
+
+        rec = mapping.find(cw_id)
         if rec is None:
             return {"ok": True}
         conv_id = rec["conversation_id"]
         if status.get_mode(conv_id) != "human":
             return {"ok": True}
 
-        msg_id = data.get("id")
-        if msg_id is None:
+        try:
+            msg_id = int(data.get("id"))
+        except (TypeError, ValueError):
             return {"ok": True}
-        if mapping.is_runtime_message(int(msg_id)):
+        if mapping.is_runtime_message(msg_id):
             return {"ok": True}
 
         messages_store.append_if_absent(
@@ -691,25 +725,18 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid signature")
         try:
             data = json.loads(payload)
-        except ValueError:
+        except (UnicodeDecodeError, ValueError):
             return {"ok": True}
         if chatwoot is not None:
-            cw_id = (data.get("conversation") or {}).get("id")
-            rec = mapping.find(int(cw_id)) if cw_id else None
-            conv_id = rec["conversation_id"] if rec else None
-            thread_id = status.get_thread_id(conv_id) if conv_id else None
-            cb = _combined_interrupt_callback(
-                handoff.make_interrupt_callback(conv_id), approvals.make_interrupt_callback(conv_id, thread_id)
-            ) if conv_id and thread_id else None
-
-            async def send_handoff_notice(event: dict) -> None:
-                messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
-                await chatwoot.send_bot_message(conv_id, HANDOFF_NOTICE)
-                await chatwoot.set_conversation_status(conv_id, "open")
-
-            async def send_approval_pending(value: dict) -> None:
-                content = "高风险操作 · 人工审批中：" + (value.get("summary") or "")
-                await chatwoot.send_bot_message(conv_id, content)
+            if not isinstance(data, dict):
+                return {"ok": True}
+            conversation = data.get("conversation")
+            if not isinstance(conversation, dict):
+                return {"ok": True}
+            try:
+                int(conversation.get("id"))
+            except (TypeError, ValueError):
+                return {"ok": True}
 
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver)
@@ -722,10 +749,9 @@ def create_app(
                     mapping=mapping,
                     profile_loader=_profile_for_agent_bot,
                     orders_loader=_address_editable_orders_for_agent_bot,
-                    on_interrupt=cb,
                     thread_lock_factory=_thread_lock,
-                    on_handoff_created=send_handoff_notice,
-                    on_approval_pending=send_approval_pending,
+                    chatwoot_lock_factory=_thread_lock,
+                    callbacks_factory=_agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store),
                 )
         return {"ok": True}
     if _web_dir.exists():

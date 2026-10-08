@@ -218,6 +218,55 @@ async def test_agent_bot_deduplicates_chatwoot_message_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_agent_bot_serializes_same_chatwoot_conversation(tmp_path):
+    import asyncio
+
+    from ai_service_agent.harness.chatwoot import ChatwootMappingStore
+    from ai_service_agent.harness.session import ConversationStatusStore
+
+    db = str(tmp_path / "race.db")
+    conn = sqlite3.connect(db, check_same_thread=False)
+    status = ConversationStatusStore(conn)
+    mapping = ChatwootMappingStore(conn)
+    messages = MessageStore(conn)
+    chatwoot = AsyncMock()
+    locks = {}
+
+    async def lock_factory(key):
+        return locks.setdefault(key, asyncio.Lock())
+
+    async def make_payload(message_id):
+        return {
+            "event": "message_created",
+            "id": message_id,
+            "content": f"message-{message_id}",
+            "message_type": "incoming",
+            "content_type": "text",
+            "conversation": {"id": 777},
+            "contact": {"id": 8, "identifier": "u1"},
+        }
+
+    results = await asyncio.gather(
+        handle_agent_bot_message(
+            await make_payload("901"), chatwoot, status=status, mapping=mapping,
+            messages_store=messages, chatwoot_lock_factory=lock_factory, thread_lock_factory=lock_factory,
+        ),
+        handle_agent_bot_message(
+            await make_payload("902"), chatwoot, status=status, mapping=mapping,
+            messages_store=messages, chatwoot_lock_factory=lock_factory, thread_lock_factory=lock_factory,
+        ),
+    )
+
+    assert all(result is not None for result in results)
+    assert results[0]["conversation_id"] == results[1]["conversation_id"]
+    session_count = conn.execute(
+        "SELECT COUNT(*) FROM conversation_status WHERE user_id=?", ("u1",)
+    ).fetchone()[0]
+    assert session_count == 1
+    assert len(messages.list(results[0]["conversation_id"])) == 4
+
+
+@pytest.mark.asyncio
 async def test_message_updated_submitted_values_formats_address_turn():
     payload = {
         "event": "message_updated",

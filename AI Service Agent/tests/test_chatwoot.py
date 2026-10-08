@@ -24,29 +24,39 @@ def test_mapping_find_reverse(tmp_path):
 
 import hashlib
 import hmac
+import time
 
 from ai_service_agent.harness.chatwoot import verify_chatwoot_signature
 
 
-def _sig(payload: bytes, secret: str = "sec", ts: str = "1700000000") -> str:
+def _sig(payload: bytes, secret: str = "sec", ts: str = str(int(time.time()))) -> str:
     # Chatwoot v4.x：HMAC(secret, "<ts>.<raw body>")
     return "sha256=" + hmac.new(secret.encode(), ts.encode() + b"." + payload, hashlib.sha256).hexdigest()
 
 
 def test_signature_valid():
     payload = b'{"event":"message_created"}'
-    assert verify_chatwoot_signature(payload, _sig(payload, "sec"), "sec", "1700000000") is True
+    assert verify_chatwoot_signature(payload, _sig(payload, "sec", "1700000000"), "sec", "1700000000", now=1700000000) is True
 
 
 def test_signature_tampered_payload():
     payload = b'{"event":"message_created"}'
-    assert verify_chatwoot_signature(b'{"event":"evil"}', _sig(payload, "sec"), "sec", "1700000000") is False
+    assert verify_chatwoot_signature(b'{"event":"evil"}', _sig(payload, "sec", "1700000000"), "sec", "1700000000", now=1700000000) is False
 
 
 def test_signature_missing_or_bad_format():
     assert verify_chatwoot_signature(b"{}", None, "sec", "1700000000") is False
     assert verify_chatwoot_signature(b"{}", "deadbeef", "sec", "1700000000") is False
     assert verify_chatwoot_signature(b"{}", _sig(b"{}", "sec"), "sec", None) is False  # v4 缺时间戳
+
+
+def test_signature_rejects_stale_timestamp():
+    payload = b'{"event":"message_created"}'
+    timestamp = "1700000000"
+    signature = _sig(payload, "sec", timestamp)
+
+    assert verify_chatwoot_signature(payload, signature, "sec", timestamp, now=1700000000) is True
+    assert verify_chatwoot_signature(payload, signature, "sec", timestamp, now=1700000301) is False
 
 
 import pytest

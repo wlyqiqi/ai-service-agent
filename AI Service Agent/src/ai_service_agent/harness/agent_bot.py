@@ -38,6 +38,8 @@ async def handle_agent_bot_message(
     orders_loader=None,
     on_interrupt=None,
     thread_lock_factory=None,
+    chatwoot_lock_factory=None,
+    callbacks_factory=None,
     on_handoff_created=None,
     on_approval_pending=None,
 ) -> dict[str, Any] | None:
@@ -73,14 +75,92 @@ async def handle_agent_bot_message(
     if not isinstance(content, str) or not content.strip():
         return None
 
-    conversation = payload.get("conversation") or {}
-    cw_conv_id = conversation.get("id")
-    if not cw_conv_id:
+    conversation = payload.get("conversation")
+    if not isinstance(conversation, dict):
+        return None
+    try:
+        cw_conv_id = int(conversation.get("id"))
+    except (TypeError, ValueError):
         return None
 
-    contact = payload.get("contact") or (conversation.get("meta") or {}).get("sender") or {}
+    contact = payload.get("contact") or (conversation.get("meta") or {}).get("sender")
+    if not isinstance(contact, dict):
+        contact = {}
     contact_id = contact.get("id")
-    rec = mapping.find(int(cw_conv_id)) if mapping is not None else None
+
+    if chatwoot_lock_factory is not None:
+        conversation_lock = await chatwoot_lock_factory(f"chatwoot:{cw_conv_id}")
+    else:
+        conversation_lock = None
+
+    if conversation_lock is not None:
+        async with conversation_lock:
+            return await _handle_locked_agent_bot_message(
+                payload=payload,
+                chatwoot=chatwoot,
+                graph=graph,
+                status=status,
+                messages_store=messages_store,
+                mapping=mapping,
+                profile_loader=profile_loader,
+                orders_loader=orders_loader,
+                on_interrupt=on_interrupt,
+                thread_lock_factory=thread_lock_factory,
+                callbacks_factory=callbacks_factory,
+                on_handoff_created=on_handoff_created,
+                on_approval_pending=on_approval_pending,
+                conversation=conversation,
+                cw_conv_id=cw_conv_id,
+                contact=contact,
+                contact_id=contact_id,
+                content=content.strip(),
+                submitted_values=submitted_values,
+            )
+    return await _handle_locked_agent_bot_message(
+        payload=payload,
+        chatwoot=chatwoot,
+        graph=graph,
+        status=status,
+        messages_store=messages_store,
+        mapping=mapping,
+        profile_loader=profile_loader,
+        orders_loader=orders_loader,
+        on_interrupt=on_interrupt,
+        thread_lock_factory=thread_lock_factory,
+        on_handoff_created=on_handoff_created,
+        on_approval_pending=on_approval_pending,
+        conversation=conversation,
+        cw_conv_id=cw_conv_id,
+        contact=contact,
+        contact_id=contact_id,
+        content=content.strip(),
+        submitted_values=submitted_values,
+    )
+
+
+async def _handle_locked_agent_bot_message(
+    *,
+    payload: dict[str, Any],
+    chatwoot: ChatwootClient,
+    graph=None,
+    status=None,
+    messages_store=None,
+    mapping=None,
+    profile_loader=None,
+    orders_loader=None,
+    on_interrupt=None,
+    thread_lock_factory=None,
+    callbacks_factory=None,
+    on_handoff_created=None,
+    on_approval_pending=None,
+    conversation: dict[str, Any],
+    cw_conv_id: int,
+    contact: dict[str, Any],
+    contact_id: Any,
+    content: str,
+    submitted_values: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    rec = mapping.find(cw_conv_id) if mapping is not None else None
     if rec is not None:
         conversation_id = rec["conversation_id"]
         thread_id = status.get_thread_id(conversation_id) if status is not None else conversation_id
@@ -94,19 +174,22 @@ async def handle_agent_bot_message(
             conversation_id = str(uuid.uuid4())
             thread_id = conversation_id
         if mapping is not None:
-            mapping.put(conversation_id, int(cw_conv_id), contact_id)
+            mapping.put(conversation_id, cw_conv_id, contact_id)
 
     if status is not None and status.get_mode(conversation_id) != "ai":
         return None
+
+    if callbacks_factory is not None:
+        on_interrupt, on_handoff_created, on_approval_pending = callbacks_factory(conversation_id, thread_id)
 
     if messages_store is not None:
         message_id = chatwoot_message_id(payload)
         if message_id and messages_store.get_by_message_id(message_id):
             return None
-        messages_store.append(conversation_id, "user", content.strip(), message_id=message_id or None)
+        messages_store.append(conversation_id, "user", content, message_id=message_id or None)
         history = messages_store.hydrate(conversation_id)
     else:
-        history = [HumanMessage(content=content.strip())]
+        history = [HumanMessage(content=content)]
 
     clarification_data = None
     confirmation_summary = None
@@ -114,9 +197,9 @@ async def handle_agent_bot_message(
 
     if graph is None:
         final_text = (
-            f"[AgentBot] 收到表单：{content.strip()}"
+            f"[AgentBot] 收到表单：{content}"
             if submitted_values is not None
-            else f"[AgentBot] Received: {content.strip()}"
+            else f"[AgentBot] Received: {content}"
         )
     else:
         config = {"configurable": {"thread_id": thread_id}}
@@ -140,9 +223,10 @@ async def handle_agent_bot_message(
                     elif action == "canceled":
                         resume_payload = {"action": "cancel"}
                     else:
-                        resume_payload = resolve_resume_payload(interrupt_value, content.strip())
+                        resume_payload = resolve_resume_payload(interrupt_value, content)
                 else:
-                    resume_payload = resolve_resume_payload(interrupt_value, content.strip())
+                    resume_payload = resolve_resume_payload(interrupt_value, content)
+
         async def run_graph():
             nonlocal final_text, clarification_data, confirmation_summary
             async for event in event_stream(
@@ -168,6 +252,7 @@ async def handle_agent_bot_message(
                 await run_graph()
         else:
             await run_graph()
+
     if final_text is not None and (status is None or status.get_mode(conversation_id) == "ai"):
         await chatwoot.send_bot_message(conversation_id, final_text)
         if messages_store is not None:
