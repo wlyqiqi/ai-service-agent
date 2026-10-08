@@ -627,7 +627,16 @@ def create_app(
     async def agent_bot_webhook(request: Request):
         data = await request.json()
         if chatwoot is not None:
-            await handle_agent_bot_message(data, chatwoot)
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                graph = make_ai_graph(_resolve_model(model), saver)
+                await handle_agent_bot_message(
+                    data,
+                    chatwoot,
+                    graph=graph,
+                    status=status,
+                    messages_store=messages_store,
+                    mapping=mapping,
+                )
         return {"ok": True}
 
     if _web_dir.exists():
