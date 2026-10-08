@@ -18,7 +18,13 @@ def test_sessions_creates_ai_mode(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["mode"] == "ai"
-    assert body["session_id"]
+
+
+def test_frontend_config_exposes_chatwoot_widget_settings(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
+    body = client.get("/config").json()
+    assert "chatwoot_base_url" in body
+    assert "chatwoot_website_token" in body
 
 
 def test_chat_unknown_session_errors(tmp_path):

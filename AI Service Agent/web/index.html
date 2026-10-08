@@ -1246,6 +1246,45 @@ function showFormError(formElement, message) {
     window.localStorage.removeItem(AUTH_KEY);
   }
 
+  async function openChatwootWidget(auth) {
+    try {
+      var response = await fetch(base + '/config');
+      if (!response.ok) return;
+      var config = await response.json();
+      var websiteToken = config.chatwoot_website_token;
+      var widgetBaseUrl = (config.chatwoot_base_url || '').replace(/\/$/, '');
+      if (!websiteToken || !widgetBaseUrl) return;
+
+      window.chatwootSettings = {
+        hideMessageBubble: true,
+        position: 'right',
+        locale: 'zh-CN',
+        type: 'standard',
+        darkMode: 'auto',
+      };
+      if (!window.$chatwoot) {
+        await new Promise(function (resolve, reject) {
+          var script = document.createElement('script');
+          script.src = widgetBaseUrl + '/packs/js/sdk.js';
+          script.defer = true;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.body.appendChild(script);
+        });
+      }
+      window.chatwootSDK.run({ websiteToken: websiteToken, baseUrl: widgetBaseUrl });
+      if (window.$chatwoot) {
+        window.$chatwoot.setUser((auth && auth.user && auth.user.id) || 'chatwoot-user', {
+          name: (auth && auth.user && auth.user.name) || '用户',
+        });
+        window.$chatwoot.toggleBubbleVisibility('show');
+        window.$chatwoot.toggle('open');
+      }
+    } catch (e) {
+      console.warn('Chatwoot widget failed to load', e);
+    }
+  }
+
   function showView(name) {
     var login = document.getElementById('view-login');
     var chat = document.getElementById('view-chat');
@@ -1443,6 +1482,7 @@ function showFormError(formElement, message) {
       window.location.hash = '#/chat';
       store.view = resolveView('#/chat', true);
       showView(store.view);
+      openChatwootWidget(store.auth);
     } catch (e) {
       errEl.textContent = '登录失败：' + e.message;
       errEl.hidden = false;
@@ -1652,7 +1692,10 @@ function showFormError(formElement, message) {
   }
 
   applyView();
-  if (store.view === 'chat') bootstrapChat();
+  if (store.view === 'chat') {
+    bootstrapChat();
+    openChatwootWidget(store.auth);
+  }
 })();
 </script>
 </body>

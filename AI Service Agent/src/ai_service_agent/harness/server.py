@@ -284,6 +284,14 @@ def create_app(
         token = create_access_token(user["user_id"], secret, settings.jwt_expires_minutes)
         return {"token": token, "user": {"id": user["user_id"], "name": user["name"]}}
 
+    @app.get("/config")
+    def frontend_config():
+        """用户页 Widget 所需的非敏感运行时配置。"""
+        return {
+            "chatwoot_base_url": settings_chatwoot.chatwoot_base_url,
+            "chatwoot_website_token": settings_chatwoot.chatwoot_website_token,
+        }
+
     @app.get("/me/profile")
     def me_profile(request: Request):
         """Read-only presentation data for frontend form old-info display."""

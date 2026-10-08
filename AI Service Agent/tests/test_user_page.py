@@ -1050,3 +1050,17 @@ def test_api_get_messages_normalizes_items_and_mode(tmp_path):
         tmp_path,
     )
     assert out == {"n": 1, "mode": "human", "content": "在吗"}
+
+
+def test_chatwoot_widget_sdk_is_official_loader(html):
+    assert "packs/js/sdk.js" in html
+    assert "chatwootSDK.run" in html
+    assert "websiteToken" in html
+    assert "baseUrl" in html
+
+
+def test_chatwoot_widget_hides_bubble_and_opens_after_login(html):
+    assert "hideMessageBubble: true" in html
+    assert "openChatwootWidget" in html
+    assert "$chatwoot.setUser" in html
+    assert "$chatwoot.toggle" in html
