@@ -162,6 +162,43 @@ def create_app(
 
     app = FastAPI()
 
+    def _profile_for_agent_bot(user_id: str | None):
+        if not user_id:
+            return None
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(profile_path)
+            row = conn.execute(
+                "SELECT phone, address FROM customers WHERE customer_id = ?", (user_id,)
+            ).fetchone()
+            conn.close()
+        except sqlite3.Error:
+            return None
+        return {"user_id": user_id, "phone": row[0], "address": row[1]} if row else None
+
+    def _address_editable_orders_for_agent_bot(user_id: str | None):
+        if not user_id:
+            return []
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(profile_path)
+            rows = conn.execute(
+                "SELECT order_id, status FROM orders WHERE customer_id = ? "
+                "AND status IN ('paid') ORDER BY ordered_at DESC LIMIT 20",
+                (user_id,),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error:
+            return []
+        return [
+            {"order_id": row[0], "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1])}
+            for row in rows
+        ]
+
     def _auth_user(request: Request):
         if not required_auth:
             return None
@@ -636,6 +673,8 @@ def create_app(
                     status=status,
                     messages_store=messages_store,
                     mapping=mapping,
+                profile_loader=_profile_for_agent_bot,
+                orders_loader=_address_editable_orders_for_agent_bot,
                 )
         return {"ok": True}
 
