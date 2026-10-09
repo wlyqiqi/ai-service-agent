@@ -7,6 +7,7 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.graph.router import (
     _JEV_ROUTE_INTENT_QUESTION,
     _jev_state,
+    build_router_messages,
     make_deepseek_router,
     make_jev_router,
 )
@@ -105,6 +106,32 @@ def _current_user_state(content: str = "帮我取消订单") -> dict:
         "user_id": "u1",
         "context": {},
     }
+
+
+def test_jev_and_deepseek_share_recent_turn_context():
+    state = {
+        "messages": [
+            HumanMessage(content="我要修改地址"),
+            AIMessage(content="请提供订单号和新地址"),
+            HumanMessage(content="ORD-2026-10099"),
+        ]
+    }
+
+    jev_state = _jev_state(state)
+    messages = build_router_messages(state)
+
+    assert jev_state == {
+        "current_user_message": "ORD-2026-10099",
+        "recent_context": [
+            {"role": "human", "content": "我要修改地址"},
+            {"role": "ai", "content": "请提供订单号和新地址"},
+        ],
+    }
+    assert [message.content for message in messages] == [
+        "我要修改地址",
+        "请提供订单号和新地址",
+        "ORD-2026-10099",
+    ]
 
 
 @pytest.mark.asyncio
