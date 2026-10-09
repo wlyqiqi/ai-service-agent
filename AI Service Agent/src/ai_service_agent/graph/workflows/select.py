@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages.utils import count_tokens_approximately, trim_messages
+from langchain_core.tools import BaseTool
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 from langgraph.config import get_stream_writer
@@ -19,6 +21,9 @@ from ai_service_agent.graph.workflows.safety import RISK_ORDER
 from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
+from ai_service_agent.config import get_settings
+from ai_service_agent.graph.context.builders import build_recent_visible_context
+from ai_service_agent.graph.context.policy import make_select_policy
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -92,6 +97,37 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
+def _budgeted_select_messages(
+    state: dict,
+    selected_tools: list,
+    system_message: SystemMessage,
+) -> list:
+    settings = get_settings()
+    policy = make_select_policy(settings)
+    countable_tools = [
+        tool for tool in selected_tools if isinstance(tool, (BaseTool, dict))
+    ]
+    fixed_tokens = count_tokens_approximately(
+        [system_message],
+        tools=countable_tools,
+    )
+    dynamic_budget = max(1, policy.max_total_tokens - fixed_tokens)
+    dynamic_messages = build_recent_visible_context(
+        state.get("messages", []),
+        previous_completed_turns=1,
+    )
+    selected = trim_messages(
+        dynamic_messages,
+        strategy="last",
+        max_tokens=dynamic_budget,
+        token_counter=count_tokens_approximately,
+        start_on="human",
+        end_on=("human", "tool"),
+        allow_partial=False,
+    )
+    return [system_message, *selected]
+
+
 def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], Awaitable[dict]]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
     # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
@@ -157,18 +193,14 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             selected_tools = [t for t in tier_tools if t.name in route_allowed]
         allowed = {t.name for t in selected_tools}
         tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
-        last = ""
-        for m in reversed(state.get("messages", [])):
-            if getattr(m, "type", "") == "human":
-                last = m.content if isinstance(m.content, str) else str(m.content)
-                break
-        messages = [
+        messages = _budgeted_select_messages(
+            state,
+            selected_tools,
             SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
                 tool_list=tool_list,
                 examples=_build_examples(selected_tools, registry),
             )),
-            HumanMessage(content=last),
-        ]
+        )
         if is_fake:
             resp = await bound.ainvoke(messages, config=config)
             try:
@@ -178,10 +210,11 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             except Exception:
                 return _reject(state, "select_parse_failed")
         else:
-            messages = [
+            messages = _budgeted_select_messages(
+                state,
+                selected_tools,
                 SystemMessage(content=SELECT_BINDTOOLS_SYSTEM),
-                HumanMessage(content=last),
-            ]
+            )
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
                 return _reject(state, "select_parse_failed")

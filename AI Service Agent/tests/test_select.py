@@ -61,6 +61,42 @@ def test_select_system_template_carries_schema_field_contract():
     assert "phone" in model.seen_system
 
 
+@pytest.mark.asyncio
+async def test_select_uses_previous_turn_for_clarification():
+    captured = {}
+
+    class CaptureToolModel:
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        async def ainvoke(self, messages, config=None):
+            captured["messages"] = messages
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "update_address", "args": {}, "id": "call-1", "type": "tool_call"}],
+            )
+
+    node = make_select_node(CaptureToolModel(), "mutation", tools=[], registry=ToolRegistry())
+    state = {
+        "messages": [
+            HumanMessage(content="我要修改地址"),
+            AIMessage(content="请提供订单号和新地址"),
+            HumanMessage(content="ORD-2026-10099"),
+        ],
+        "allowed_tools": ["update_address"],
+        "user_id": "u1",
+        "context": {},
+    }
+
+    await node(state)
+    human_texts = [
+        message.content
+        for message in captured["messages"]
+        if getattr(message, "type", "") == "human"
+    ]
+    assert human_texts == ["我要修改地址", "ORD-2026-10099"]
+
+
 def test_select_system_template_forbids_extra_fields():
     model, node = _select_node()
     _select_result(node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}}))
