@@ -320,3 +320,23 @@
 - LightRAG 与客户端职责边界：服务端 `CHUNK_TOP_K` 是未指定时的默认召回数；客户端 `top_k` 作为 query-time 参数发送给 LightRAG API，控制单次检索返回 chunk 数（两者均为检索配置，不是"客户端配置服务端"）。客户端 `max_chunk_chars` / `max_context_chars` 仅负责下游 prompt 截断预算。
 - JEV 路由真机回归：10/10 正确；「我要开发票」连续 5/5 命中 `order_mutation`，confidence 1.0。
 - Studio 调试入口：`langgraph.studio.json` 仅用于调试子图；生产 `langgraph.json` 保持只暴露根 `agent`。
+
+## 16. Model Context Policy Smoke（2026-10-09）
+
+- Router total input budget: 800 tokens。
+- Fallback total input budget: 800 tokens。
+- ReadGraph total input budget: 2000 tokens（`READ_TOTAL_INPUT_MAX_TOKENS` 默认值）。
+- Select total input budget: 1200 tokens（`SELECT_TOTAL_INPUT_MAX_TOKENS` 默认值）。
+- 实现边界：`ContextBudgetMiddleware` 只 override `ModelRequest.messages`，不修改 checkpoint thread history；
+  system prompt / tools schema 计入总预算；`trim_messages` 使用 `start_on="human"`、
+  `end_on=("human","tool")`、`allow_partial=False`。
+- 真实模型 API 冒烟（ARK + LightRAG；session `a16ea7a6-9d18-4f0c-b64c-e91a05c4d637`）：
+  - `我要开发票` → Mutation 澄清缺失参数，回复要求订单号、金额、公司名、税号。
+  - `随便说说` → Fallback 正常生成一句承接，无错误事件。
+  - `扫地机器人有什么样的` → ReadGraph 调用 `kb_search`，返回 JoyClean S1 知识库摘要，无错误事件。
+  - 3/3 SSE turn 均有 `done`，无 `error` 事件。
+- 观测：`ContextBudgetMiddleware` 记录 `context_policy_applied`；middleware 单测覆盖
+  raw/selected、system prompt 计费、历史 tool chain 排除、当前轮 tool chain 保留。
+- 回归：focused regression 126 passed。全量 offline regression 暴露 76 个既有
+  Chatwoot / user-page / human-lane 相关失败，本次改动未触碰这些模块；相关
+  context/router/select/read 回归全部通过。
