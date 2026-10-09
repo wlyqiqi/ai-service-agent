@@ -3,7 +3,7 @@ import inspect
 from unittest.mock import MagicMock
 from unittest.mock import AsyncMock
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.types import TimeoutPolicy
 
@@ -47,6 +47,50 @@ def test_read_graph_answers_and_completes():
     out = ainvoke_graph(graph, {"messages": [], "user_id": "u1", "session_id": "s1", "context": {}})
     assert out["execution_status"] == "completed"
     assert "发货" in out["messages"][-1].content
+
+
+def test_read_agent_keeps_current_tool_chain_and_trims_old_history():
+    captured = {}
+
+    class CaptureModel(ToolCallingFakeModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            captured["messages"] = list(messages)
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    old_messages = [
+        HumanMessage(content="oldest question"),
+        AIMessage(content="oldest answer"),
+        HumanMessage(content="middle question"),
+        AIMessage(content="middle answer"),
+        HumanMessage(content="old question"),
+        AIMessage(content="old answer"),
+    ]
+    current_messages = [
+        HumanMessage(content="search knowledge base"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "kb_search", "args": {}, "id": "call-read", "type": "tool_call"}],
+        ),
+        ToolMessage(content="knowledge evidence", tool_call_id="call-read"),
+    ]
+    model = CaptureModel(responses=[AIMessage(content="answer with evidence")])
+    graph = make_read_graph(model, tools=[kb_search])
+    from conftest import ainvoke_graph
+
+    out = ainvoke_graph(
+        graph,
+        {"messages": old_messages + current_messages, "user_id": "u1", "session_id": "s1", "context": {}},
+    )
+
+    contents = [message.content for message in captured["messages"]]
+    assert "old question" in contents
+    assert "old answer" in contents
+    assert "middle question" in contents
+    assert "middle answer" in contents
+    assert "search knowledge base" in contents
+    assert "knowledge evidence" in contents
+    assert "oldest question" not in contents
+    assert "oldest answer" not in contents
 
 
 def test_read_graph_failure_uses_local_finalize_failed(monkeypatch):

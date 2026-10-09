@@ -90,8 +90,14 @@ def build_read_context(
     if current_index < 0:
         return list(messages)
 
-    prior_visible = build_recent_visible_context(
-        messages[:current_index],
-        previous_completed_turns=previous_completed_turns,
-    )
-    return [*prior_visible, *messages[current_index:]]
+    prior_turns = _completed_visible_turns(messages[:current_index])
+    selected_turns = prior_turns[-previous_completed_turns:]
+    prior_visible = [
+        message
+        for turn in selected_turns
+        for message in _visible_turn_messages(turn)
+    ]
+    return [
+        *prior_visible,
+        *messages[current_index:],
+    ]
