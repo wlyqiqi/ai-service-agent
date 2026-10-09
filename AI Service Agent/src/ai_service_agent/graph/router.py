@@ -6,6 +6,7 @@ from typing import Callable, Literal
 
 import httpx
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
@@ -136,8 +137,21 @@ def _router_model(model):
     return model.bind(response_format={"type": "json_object"})
 
 def _parse_route_intent_content(content) -> dict:
+    """Parse model output into route intent dict with fence stripping fallback."""
     if isinstance(content, str):
-        return json.loads(content)
+        text = content.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            body = "\n".join(lines[1:-1]) if len(lines) > 2 else text
+            text = body.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(text[start:end + 1])
+            raise
     if isinstance(content, dict):
         return content
     return RouteIntentSchema.model_validate(content).model_dump()
@@ -233,18 +247,63 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
     return _route_intent_result(choice, confidence, "jev", False)
 
 def make_deepseek_router(model) -> Callable[[dict], Awaitable[dict]]:
-    """DeepSeek fallback; always outputs route_intent (same schema as JEV)."""
-    agent = create_agent(_router_model(model), tools=[], system_prompt=ROUTE_INTENT_SYSTEM)
+    """DeepSeek fallback; always outputs route_intent (same schema as JEV).
 
-    async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
-        result = await agent.ainvoke({"messages": state["messages"]}, config=config)
-        payload = _parse_route_intent_content(result["messages"][-1].content)
-        parsed = RouteIntentSchema.model_validate(payload)
-        intent = parsed.route_intent
-        confidence = float(parsed.confidence)
-        if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
-            intent = "unknown"
-        return _route_intent_result(intent, confidence, "deepseek", True)
+    Real model: uses with_structured_output (function_calling) for native JSON
+    schema enforcement. Fake model: uses create_agent + manual JSON parsing.
+    Both paths pass only the current message + last 2 turns (aligned with
+    JEV's _jev_state window).
+    """
+    def _router_messages(state: dict) -> list:
+        messages = list(state.get("messages") or [])
+        if not messages:
+            return [HumanMessage(content="")]
+        current = message_text(messages[-1])
+        context = []
+        for msg in reversed(messages[:-1]):
+            role = getattr(msg, "type", None) or (msg.get("type", "human") if isinstance(msg, dict) else "human")
+            role = str(role)
+            if role not in {"human", "ai", "assistant"}:
+                continue
+            text = message_text(msg)
+            if not text:
+                continue
+            context.append(HumanMessage(content=text) if role == "human" else AIMessage(content=text))
+            if len(context) == 2:
+                break
+        context.reverse()
+        return context + [HumanMessage(content=current)]
+
+    if isinstance(model, FakeMessagesListChatModel):
+        agent = create_agent(_router_model(model), tools=[], system_prompt=ROUTE_INTENT_SYSTEM)
+
+        async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
+            try:
+                result = await agent.ainvoke({"messages": _router_messages(state)}, config=config)
+                payload = _parse_route_intent_content(result["messages"][-1].content)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return _route_intent_result("unknown", 0.0, "deepseek", True)
+            parsed = RouteIntentSchema.model_validate(payload)
+            intent = parsed.route_intent
+            confidence = float(parsed.confidence)
+            if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
+                intent = "unknown"
+            return _route_intent_result(intent, confidence, "deepseek", True)
+    else:
+        structured_model = model.with_structured_output(RouteIntentSchema, method="function_calling")
+
+        async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
+            try:
+                parsed = await structured_model.ainvoke(_router_messages(state), config=config)
+            except Exception:
+                return _route_intent_result("unknown", 0.0, "deepseek", True)
+            if parsed is None:
+                return _route_intent_result("unknown", 0.0, "deepseek", True)
+            intent = parsed.route_intent
+            confidence = float(parsed.confidence)
+            if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
+                intent = "unknown"
+            return _route_intent_result(intent, confidence, "deepseek", True)
 
     return deepseek_route
 
