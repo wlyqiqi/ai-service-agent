@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     llm_node_timeout_seconds: float = Field(
         default=12.0, validation_alias="LLM_NODE_TIMEOUT_SECONDS"
     )
+    router_total_input_max_tokens: int = Field(
+        default=800, ge=1, validation_alias="ROUTER_TOTAL_INPUT_MAX_TOKENS"
+    )
+    fallback_total_input_max_tokens: int = Field(
+        default=800, ge=1, validation_alias="FALLBACK_TOTAL_INPUT_MAX_TOKENS"
+    )
+    read_total_input_max_tokens: int = Field(
+        default=2000, ge=1, validation_alias="READ_TOTAL_INPUT_MAX_TOKENS"
+    )
+    select_total_input_max_tokens: int = Field(
+        default=1200, ge=1, validation_alias="SELECT_TOTAL_INPUT_MAX_TOKENS"
+    )
     # P0（2026-09-18）：显式转人工意图检测配置（graph/handoff_rules.py 消费）。
     # 替代旧 handoff_keywords 裸子串匹配（"人工" 会误伤 "人工呼吸/人工智能" 等话题性表达）。
     handoff_phrases: list[str] = ["转人工", "转接人工", "找人工", "找客服", "人工客服", "真人客服"]
