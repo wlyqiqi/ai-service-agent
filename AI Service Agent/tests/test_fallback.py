@@ -39,6 +39,45 @@ def test_fallback_graph_interrupts_on_handoff():
     interrupt_values = [it.value for it in out.get("__interrupt__", [])]
     assert any(v.get("type") == "handoff_request" for v in interrupt_values)
 
+
+def test_fallback_explain_llm_receives_policy_context(monkeypatch):
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    captured = {}
+
+    class CaptureModel(ToolCallingFakeModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            captured["messages"] = list(messages)
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = CaptureModel(responses=[AIMessage(content="兜底回复")])
+
+    from ai_service_agent.graph.workflows.fallback import make_fallback_graph
+
+    graph = make_fallback_graph(model)
+    state = {
+        "messages": [
+            HumanMessage(content="第零轮"),
+            AIMessage(content="第零轮回复"),
+            HumanMessage(content="第一轮"),
+            AIMessage(content="第一轮回复"),
+            HumanMessage(content="第二轮"),
+            AIMessage(content="第二轮回复"),
+            HumanMessage(content="随便说说"),
+        ],
+        "context": {},
+        "user_id": "u1",
+        "session_id": "s1",
+        "handoff": False,
+    }
+    import asyncio
+    asyncio.run(graph.ainvoke(state))
+
+    human_texts = [message.content for message in captured["messages"] if message.type == "human"]
+    assert human_texts[-1] == "随便说说"
+    assert len(human_texts) <= 3
+
+
 def test_fallback_non_handoff_routes_to_explain_llm():
     """fallback explain 由 LLM 生成（FALLBACK_SYSTEM_PROMPT），不再是确定性固定文案。"""
     from conftest import ainvoke_graph
