@@ -351,7 +351,7 @@ class TestFrontendApplyEvent:
         )
         assert result["role"] == "assistant"
 
-    def test_tool_call_and_result_sequence(self, tmp_path):
+    def test_tool_call_and_result_events_are_hidden(self, tmp_path):
         result = _run_js(
             "(async()=>{"
             "var a = UserPage.applyEvent(UserPage.createInitialStore(),"
@@ -363,5 +363,5 @@ class TestFrontendApplyEvent:
             "})()",
             tmp_path,
         )
-        assert result["callCount"] >= 1
-        assert result["resultCount"] >= 1
+        assert result["callCount"] == 0
+        assert result["resultCount"] == 0

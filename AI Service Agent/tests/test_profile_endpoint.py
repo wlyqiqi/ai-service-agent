@@ -92,7 +92,7 @@ def test_me_orders_filters_address_editable_orders(tmp_path):
                 "order_id": "ORD-2026-10119",
                 "status_display": "已付款",
                 "ordered_at": "2026-08-21T21:24:29+08:00",
-                "amount": 6360.2,
+                "amount": 34520.5,
                 "currency": "THB",
             }
         ],

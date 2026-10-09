@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import NodeTimeoutError
@@ -225,8 +227,22 @@ def test_stream_emits_tool_events_from_nested_subgraph(monkeypatch):
 
 # ---- D7（P4 Task 5）：resume 轮 final 提取（pre/post message diff）----
 
-def test_stream_resume_done_final_from_new_message():
+def test_stream_resume_done_final_from_new_message(monkeypatch, tmp_path):
     """mutation confirm resume 轮 done.final 含完成结果（diff 取本轮新增，不回落历史）。"""
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_streaming", Path(__file__).resolve().parents[1] / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mock_db = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(mock_db))
+    from ai_service_agent.tools import orders as orders_mod, write as write_mod
+
+    class _Settings:
+        mock_ecommerce_db_path = str(mock_db)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
     from langgraph.checkpoint.memory import MemorySaver
     from ai_service_agent.testing import router_json_message, select_json_message
 
