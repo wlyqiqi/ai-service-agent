@@ -308,3 +308,35 @@
   「暂未查询到已公布的确定数据」「不便推测或估算」，未编造数值 → 判定 PASS（断言按「未查询到/无法/不清楚」措辞命中）。
 - 观察项：无 FAIL，4/4 PASS。unanswerable 判定依赖 LLM 措辞（"未查询到"），若模型换说法仍可能误判，属措辞差异非功能缺陷。
 - 回归：本次未跑全量 pytest（由 Task 5 全量回归）；`kb_search` / `LightRagClient` 离线用例保持全绿。
+
+## 15. Retrieval Context Budget + LightRAG CHUNK_TOP_K（2026-09-30）
+
+- LightRAG 服务端保持解耦：`.env` 增加 `CHUNK_TOP_K=3`，控制 naive 检索候选 chunk 数；该配置为 query-time 生效，不需要重建索引。
+- 项目客户端继续负责下游 prompt 预算：`top_k=5`、`max_chunk_chars=1200`、`max_context_chars=4000`，保留 `file_path` / source 信息。
+- 真机验证（「你们有可以做果汁的破壁机吗」）：`kb_search` context 从 12,418 chars 降至 3,759 chars；下游 prompt 从 7,520 tokens 降至 2,783 tokens。
+- 直接 LightRAG eval：果汁破壁机 3 chunks / 3,008 chars / 1.86s；除扫地机器人外产品 3 / 2,698 / 1.56s；电饭煲价格 3 / 2,013 / 2.88s；发票政策 3 / 1,891 / 1.44s。
+- Router 同步回归：产品列表、电饭煲价格、发票政策均命中 faq（置信度 0.97–0.99），ReadGraph 真机调用 `kb_search` 正常。
+- 回归：全量 pytest 531 passed / 2 skipped。
+- LightRAG 与客户端职责边界：服务端 `CHUNK_TOP_K` 是未指定时的默认召回数；客户端 `top_k` 作为 query-time 参数发送给 LightRAG API，控制单次检索返回 chunk 数（两者均为检索配置，不是"客户端配置服务端"）。客户端 `max_chunk_chars` / `max_context_chars` 仅负责下游 prompt 截断预算。
+- JEV 路由真机回归：10/10 正确；「我要开发票」连续 5/5 命中 `order_mutation`，confidence 1.0。
+- Studio 调试入口：`langgraph.studio.json` 仅用于调试子图；生产 `langgraph.json` 保持只暴露根 `agent`。
+
+## 16. Model Context Policy Smoke（2026-10-09）
+
+- Router total input budget: 800 tokens。
+- Fallback total input budget: 800 tokens。
+- ReadGraph total input budget: 2000 tokens（`READ_TOTAL_INPUT_MAX_TOKENS` 默认值）。
+- Select total input budget: 1200 tokens（`SELECT_TOTAL_INPUT_MAX_TOKENS` 默认值）。
+- 实现边界：`ContextBudgetMiddleware` 只 override `ModelRequest.messages`，不修改 checkpoint thread history；
+  system prompt / tools schema 计入总预算；`trim_messages` 使用 `start_on="human"`、
+  `end_on=("human","tool")`、`allow_partial=False`。
+- 真实模型 API 冒烟（ARK + LightRAG；session `a16ea7a6-9d18-4f0c-b64c-e91a05c4d637`）：
+  - `我要开发票` → Mutation 澄清缺失参数，回复要求订单号、金额、公司名、税号。
+  - `随便说说` → Fallback 正常生成一句承接，无错误事件。
+  - `扫地机器人有什么样的` → ReadGraph 调用 `kb_search`，返回 JoyClean S1 知识库摘要，无错误事件。
+  - 3/3 SSE turn 均有 `done`，无 `error` 事件。
+- 观测：`ContextBudgetMiddleware` 记录 `context_policy_applied`；middleware 单测覆盖
+  raw/selected、system prompt 计费、历史 tool chain 排除、当前轮 tool chain 保留。
+- 回归：focused regression 126 passed。全量 offline regression 暴露 76 个既有
+  Chatwoot / user-page / human-lane 相关失败，本次改动未触碰这些模块；相关
+  context/router/select/read 回归全部通过。

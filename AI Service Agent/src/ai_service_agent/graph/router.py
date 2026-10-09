@@ -6,16 +6,20 @@ from typing import Callable, Literal
 
 import httpx
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.context.builders import build_recent_visible_context
+from ai_service_agent.graph.messages import message_text
 from ai_service_agent.graph.route_policy import (
     ROUTE_POLICY,
     route_intent_is_confident,
 )
-from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM, ROUTER_SYSTEM
+from ai_service_agent.prompts import ROUTE_INTENT_QUESTION, ROUTE_INTENT_SYSTEM
 
 def _route_intent_result(route_intent: str, confidence: float, backend: str, fallback: bool) -> dict:
     return {
@@ -36,45 +40,11 @@ def jev_fallback_result() -> dict:
     }
 
 
-class RouterSchema(BaseModel):
-    capability: str
-    risk_level: Literal["read", "mutation", "high_risk"]
-    confidence: float
-
 class RouteIntentSchema(BaseModel):
     route_intent: str
     confidence: float
 
-_JEV_ROUTE_INTENT_QUESTION = {
-    "route_intent": {
-        "type": "choice",
-        "instructions": (
-            "判断用户当前 turn 的主要业务意图。"
-            "只根据当前系统真实支持的业务分类；"
-            "不支持的动作必须归为 unsupported_action。"
-        ),
-        "criteria": {
-            "faq": "产品使用、售后政策、商品参数、故障排查等知识问答",
-            "smalltalk": "问候、感谢或非业务闲聊",
-            "order_query": "根据订单号查询某一笔订单",
-            "my_orders": "查询当前用户名下的订单列表",
-            "shipment_query": "查询物流或配送进度",
-            "account_profile_update": (
-                "修改收货地址、联系电话或手机号。"
-                "即使输入包含订单号，也不能因订单号进入 order_mutation。"
-            ),
-            "order_mutation": "修改订单备注、开发票或创建售后工单",
-            "cancel_order_execute": "用户明确要求执行取消订单",
-            "refund_apply_execute": "用户明确要求执行退款申请",
-            "unsupported_action": (
-                "用户意图清晰但当前系统没有对应工具可执行。"
-                "不要把取消预约、清空订单历史、订单所有权转移或人工流程类请求映射到 mutation。"
-                "这些动作归为 unsupported_action，不归 unknown。"
-            ),
-            "unknown": "无法理解用户在说什么、缺少上下文或意图模糊。系统不支持的可理解操作应归为 unsupported_action，不归 unknown。",
-        },
-    }
-}
+_JEV_ROUTE_INTENT_QUESTION = ROUTE_INTENT_QUESTION
 
 def _router_model(model):
     """json_mode 绑定（2026-09-15 阻断项修复）。
@@ -90,39 +60,59 @@ def _router_model(model):
         return model
     return model.bind(response_format={"type": "json_object"})
 
-def _parse_router_content(content) -> dict:
-    """解析 Router 模型输出：只接受 JSON 字符串 / dict。
-
-    ToolStrategy 的 "Returning structured response: ..." 描述性文本不是稳定契约，
-    必须让 json.loads 显式失败（回归钉，见 test_router.py），不得新增解析分支。
-    """
-    if isinstance(content, str):
-        return json.loads(content)
-    if isinstance(content, dict):
-        return content
-    return RouterSchema.model_validate(content).model_dump()
-
 def _parse_route_intent_content(content) -> dict:
+    """Parse model output into route intent dict with fence stripping fallback."""
     if isinstance(content, str):
-        return json.loads(content)
+        text = content.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            body = "\n".join(lines[1:-1]) if len(lines) > 2 else text
+            text = body.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(text[start:end + 1])
+            raise
     if isinstance(content, dict):
         return content
     return RouteIntentSchema.model_validate(content).model_dump()
 
 def _jev_state(state: dict) -> dict:
-    messages = []
-    for message in state.get("messages", [])[-6:]:
-        if isinstance(message, dict):
-            role = message.get("type", message.get("role", "human"))
-            content = message.get("content", "")
-        else:
-            role = getattr(message, "type", "human")
-            content = getattr(message, "content", "")
-        messages.append({
-            "role": str(role),
-            "content": content if isinstance(content, str) else str(content),
-        })
-    return {"messages": messages}
+    router_messages = build_router_messages(state)
+    current_user_message = message_text(router_messages[-1]) if router_messages else ""
+    recent_context = [
+        {
+            "role": "ai" if getattr(message, "type", "human") == "ai" else "human",
+            "content": message_text(message),
+        }
+        for message in router_messages[:-1]
+    ]
+
+    return {
+        "current_user_message": current_user_message,
+        "recent_context": recent_context,
+    }
+
+
+def build_router_messages(state: dict) -> list:
+    messages = list(state.get("messages") or [])
+    if not messages:
+        return [HumanMessage(content="")]
+    return build_recent_visible_context(messages, previous_completed_turns=1)
+
+def _last_message_is_human(state: dict) -> bool:
+    messages = list(state.get("messages") or [])
+    if not messages:
+        return False
+    message = messages[-1]
+    if isinstance(message, dict):
+        role = message.get("type", message.get("role", "human"))
+    else:
+        role = getattr(message, "type", "human")
+    return str(role) == "human"
 
 def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | None:
     response = client.post(
@@ -176,37 +166,45 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
 
     return _route_intent_result(choice, confidence, "jev", False)
 
-def make_deepseek_router(model, *, route_intent_enabled: bool) -> Callable[[dict], Awaitable[dict]]:
-    """DeepSeek fallback node; retry policy is attached by the root graph."""
-    system_prompt = ROUTE_INTENT_SYSTEM if route_intent_enabled else ROUTER_SYSTEM
-    agent = create_agent(_router_model(model), tools=[], system_prompt=system_prompt)
+def make_deepseek_router(model) -> Callable[[dict], Awaitable[dict]]:
+    """DeepSeek fallback; always outputs route_intent (same schema as JEV).
 
-    if not route_intent_enabled:
+    Real model: uses with_structured_output (function_calling) for native JSON
+    schema enforcement. Fake model: uses create_agent + manual JSON parsing.
+    Both paths pass only the current message + last 2 turns (aligned with
+    JEV's _jev_state window).
+    """
+    if isinstance(model, FakeMessagesListChatModel):
+        agent = create_agent(_router_model(model), tools=[], system_prompt=ROUTE_INTENT_SYSTEM)
+
         async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
-            result = await agent.ainvoke({"messages": state["messages"]}, config=config)
-            payload = _parse_router_content(result["messages"][-1].content)
-            parsed = RouterSchema.model_validate(payload)
+            try:
+                result = await agent.ainvoke({"messages": build_router_messages(state)}, config=config)
+                payload = _parse_route_intent_content(result["messages"][-1].content)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return _route_intent_result("unknown", 0.0, "deepseek", True)
+            parsed = RouteIntentSchema.model_validate(payload)
+            intent = parsed.route_intent
             confidence = float(parsed.confidence)
-            threshold = get_settings().router_conf_threshold
-            return {
-                "capability": parsed.capability if confidence >= threshold else "unknown",
-                "risk_level": parsed.risk_level,
-                "confidence": confidence,
-                "execution_status": "routing",
-                "route_control": "policy",
-            }
+            if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
+                intent = "unknown"
+            return _route_intent_result(intent, confidence, "deepseek", True)
+    else:
+        structured_model = model.with_structured_output(RouteIntentSchema, method="function_calling")
 
-        return deepseek_route
-
-    async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
-        result = await agent.ainvoke({"messages": state["messages"]}, config=config)
-        payload = _parse_route_intent_content(result["messages"][-1].content)
-        parsed = RouteIntentSchema.model_validate(payload)
-        intent = parsed.route_intent
-        confidence = float(parsed.confidence)
-        if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
-            intent = "unknown"
-        return _route_intent_result(intent, confidence, "deepseek", True)
+        async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
+            try:
+                messages = [SystemMessage(content=ROUTE_INTENT_SYSTEM), *build_router_messages(state)]
+                parsed = await structured_model.ainvoke(messages, config=config)
+            except Exception:
+                return _route_intent_result("unknown", 0.0, "deepseek", True)
+            if parsed is None:
+                return _route_intent_result("unknown", 0.0, "deepseek", True)
+            intent = parsed.route_intent
+            confidence = float(parsed.confidence)
+            if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
+                intent = "unknown"
+            return _route_intent_result(intent, confidence, "deepseek", True)
 
     return deepseek_route
 
@@ -216,6 +214,10 @@ def make_jev_router() -> Callable[[dict], Awaitable[dict]]:
     settings = get_settings()
 
     async def route(state: dict, config: RunnableConfig | None = None) -> dict:
+        if not _last_message_is_human(state):
+            return _route_intent_result("unknown", 0.0, "none", False)
+        if not _jev_state(state)["current_user_message"]:
+            return _route_intent_result("unknown", 0.0, "none", False)
         try:
             def call_jev():
                 with httpx.Client(timeout=settings.jev_timeout_seconds) as jev_client:

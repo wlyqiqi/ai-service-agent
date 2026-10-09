@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import sqlite3
@@ -23,6 +25,7 @@ from ai_service_agent.harness.approvals import (
     ApprovalService,
 )
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
+from ai_service_agent.harness.agent_bot import handle_agent_bot_message
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
@@ -41,11 +44,21 @@ from ai_service_agent.harness.resume import (
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.harness.streaming import event_stream, new_assistant_text_and_id, snapshot_assistant_ids
 from ai_service_agent.testing import make_fake_model
+from ai_service_agent.tools.orders import ADDRESS_EDITABLE_STATUSES, ORDER_DISPLAY_STATUS
 
 logger = logging.getLogger("ai_service_agent")
 
 _locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """Serve frontend updates immediately in local development."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
 
 class CreateSessionBody(BaseModel):
@@ -97,6 +110,26 @@ def _combined_interrupt_callback(handoff_cb, approval_cb):
     return on_interrupt
 
 
+def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
+    def make_callbacks(conv_id, thread_id):
+        cb = _combined_interrupt_callback(
+            handoff.make_interrupt_callback(conv_id), approvals.make_interrupt_callback(conv_id, thread_id)
+        )
+
+        async def send_handoff_notice(event: dict) -> None:
+            messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
+            await chatwoot.send_bot_message(conv_id, HANDOFF_NOTICE)
+            await chatwoot.set_conversation_status(conv_id, "open")
+
+        async def send_approval_pending(value: dict) -> None:
+            content = "高风险操作 · 人工审批中：" + (value.get("summary") or "")
+            await chatwoot.send_bot_message(conv_id, content)
+
+        return cb, send_handoff_notice, send_approval_pending
+
+    return make_callbacks
+
+
 async def _approval_pending_events(it: dict):
     """OQ-4 hold：审批挂起提示事件（event-spec §2 approval_required data 形状）。"""
     yield {"type": "approval_required", "data": {
@@ -113,8 +146,11 @@ def create_app(
     simulate_approval: bool | None = None,
     chatwoot: object | None = None,
     chatwoot_webhook_secret: str | None = None,
+    chatwoot_hmac_secret: str | None = None,
+    chatwoot_agent_bot_secret: str | None = None,
     auth_enabled: bool | None = None,
     jwt_secret: str | None = None,
+    profile_db_path: str | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -122,6 +158,7 @@ def create_app(
     持久化 / 水合（state.messages 工作视图，handoff-spec.md §5.2）。
     """
     settings = get_settings()
+    resolved_profile_db_path = profile_db_path or settings.mock_ecommerce_db_path
     required_auth = settings.auth_enabled if auth_enabled is None else auth_enabled
     secret = jwt_secret or settings.jwt_secret
     if required_auth and not secret:
@@ -145,14 +182,60 @@ def create_app(
             mapping=mapping,
         )
     webhook_secret = chatwoot_webhook_secret or settings_chatwoot.chatwoot_webhook_secret
+    widget_hmac_secret = chatwoot_hmac_secret or settings_chatwoot.chatwoot_hmac_secret
+    agent_bot_secret = chatwoot_agent_bot_secret or settings_chatwoot.chatwoot_agent_bot_secret
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     app = FastAPI()
+
+    def _profile_for_agent_bot(user_id: str | None):
+        if not user_id:
+            return None
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(profile_path)
+            row = conn.execute(
+                "SELECT phone, address FROM customers WHERE customer_id = ?", (user_id,)
+            ).fetchone()
+            conn.close()
+        except sqlite3.Error:
+            return None
+        return {"user_id": user_id, "phone": row[0], "address": row[1]} if row else None
+
+    def _address_editable_orders_for_agent_bot(user_id: str | None):
+        if not user_id:
+            return []
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(profile_path)
+            placeholders = ",".join("?" for _ in ADDRESS_EDITABLE_STATUSES)
+            rows = conn.execute(
+                "SELECT order_id, status FROM orders WHERE customer_id = ? "
+                f"AND status IN ({placeholders}) ORDER BY ordered_at DESC LIMIT 20",
+                (user_id, *sorted(ADDRESS_EDITABLE_STATUSES)),
+            ).fetchall()
+            conn.close()
+        except sqlite3.Error:
+            return []
+        return [
+            {"order_id": row[0], "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1])}
+            for row in rows
+        ]
 
     def _auth_user(request: Request):
         if not required_auth:
             return None
         return verify_bearer(request.headers, secret)
+
+    def _require_auth_user(request: Request):
+        user_id = _auth_user(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="authentication required")
+        return user_id
 
     def _ensure_conversation_owner(auth_user: str | None, conversation_id: str):
         if auth_user is not None and status.get_user_id(conversation_id) != auth_user:
@@ -220,13 +303,108 @@ def create_app(
         phone = body.phone or body.account
         if not phone:
             raise HTTPException(status_code=422, detail="phone is required")
-        if secret is None:
+        if not secret:
             raise HTTPException(status_code=503, detail="JWT signing is unavailable")
         user = users.authenticate(phone, body.password)
         if user is None:
             raise HTTPException(status_code=401, detail="invalid credentials")
         token = create_access_token(user["user_id"], secret, settings.jwt_expires_minutes)
         return {"token": token, "user": {"id": user["user_id"], "name": user["name"]}}
+
+    @app.get("/config")
+    def frontend_config():
+        """用户页 Widget 所需的非敏感运行时配置。"""
+        return {
+            "chatwoot_base_url": settings_chatwoot.chatwoot_base_url,
+            "chatwoot_website_token": settings_chatwoot.chatwoot_website_token,
+        }
+
+    @app.get("/me/chatwoot_identity")
+    def chatwoot_identity(request: Request):
+        """认证用户的 Widget identity；避免公开 website token 可伪造 user_id。"""
+        if not widget_hmac_secret:
+            raise HTTPException(status_code=503, detail="Chatwoot identity signing is unavailable")
+        user_id = _require_auth_user(request)
+        digest = hmac.new(widget_hmac_secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
+        return {"identifier": user_id, "identifier_hash": digest}
+
+    @app.get("/me/profile")
+    def me_profile(request: Request):
+        """Read-only presentation data for frontend form old-info display."""
+        user_id = _require_auth_user(request)
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            raise HTTPException(status_code=503, detail="profile data source unavailable")
+
+        conn = None
+        try:
+            conn = sqlite3.connect(profile_path)
+            row = conn.execute(
+                "SELECT phone, address FROM customers WHERE customer_id = ?",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=503, detail="profile data source unavailable") from exc
+        finally:
+            if conn is not None:
+                conn.close()
+
+        if row is None:
+            raise HTTPException(status_code=404, detail="profile not found")
+
+        return {"user_id": user_id, "phone": row[0], "address": row[1]}
+
+    @app.get("/me/orders")
+    def me_orders(request: Request, address_editable: bool = False):
+        """Read-only order options for frontend forms."""
+        user_id = _require_auth_user(request)
+        profile_path = Path(resolved_profile_db_path)
+        if not profile_path.exists():
+            raise HTTPException(status_code=503, detail="profile data source unavailable")
+
+        conn = None
+        try:
+            conn = sqlite3.connect(profile_path)
+            exists = conn.execute(
+                "SELECT 1 FROM customers WHERE customer_id = ?",
+                (user_id,),
+            ).fetchone()
+            if exists is None:
+                raise HTTPException(status_code=404, detail="profile not found")
+
+            sql = (
+                "SELECT order_id, status, ordered_at, total_amount, currency "
+                "FROM orders WHERE customer_id = ?"
+            )
+            params: list = [user_id]
+            if address_editable:
+                placeholders = ",".join("?" for _ in ADDRESS_EDITABLE_STATUSES)
+                sql += f" AND status IN ({placeholders})"
+                params.extend(sorted(ADDRESS_EDITABLE_STATUSES))
+            sql += " ORDER BY ordered_at DESC LIMIT 20"
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=503, detail="profile data source unavailable") from exc
+        finally:
+            if conn is not None:
+                conn.close()
+
+        orders = [
+            {
+                "order_id": row[0],
+                "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1]),
+                "ordered_at": row[2],
+                "amount": row[3],
+                "currency": row[4],
+            }
+            for row in rows
+        ]
+        return {
+            "user_id": user_id,
+            "address_editable": address_editable,
+            "orders": orders,
+            "count": len(orders),
+        }
 
     @app.post("/sessions")
     def create_session(body: CreateSessionBody, request: Request):
@@ -403,6 +581,11 @@ def create_app(
             # D9 裁定：只读信息项，仅日志/坐席展示，不影响 resolve 分支（Handoff 与 Approval 完全独立状态机）
             logger.info("resolve handoff %s: conversation %s has %d pending approval(s)", handoff_id, conv_id, len(pending))
         thread_id = status.get_thread_id(conv_id)
+        if chatwoot is not None:
+            try:
+                await chatwoot.set_conversation_status(conv_id, "pending")
+            except Exception:
+                logger.exception("chatwoot restore pending failed: conv=%s", conv_id)
         lock = await _thread_lock(thread_id)
         async with lock:
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
@@ -440,6 +623,8 @@ def create_app(
         lock = await _thread_lock(thread_id)
         async with lock:
             rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
+            # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
+            approvals.mark_decided(approval_id, decided, decided_by="approver")
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver)
                 cfg = {"configurable": {"thread_id": thread_id}}
@@ -449,8 +634,8 @@ def create_app(
                 final, final_message_id = await new_assistant_text_and_id(graph, cfg, before_ids)
                 if final is not None:
                     messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
-            # mark_decided 在锁内（T6 裁定）：锁释放前落库，第二个并发请求的锁内 precheck 才能看到非 pending
-            approvals.mark_decided(approval_id, decided, decided_by="approver")
+                    if chatwoot is not None:
+                        await chatwoot.send_bot_message(conv_id, final)
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
@@ -495,26 +680,31 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid signature")
         try:
             data = json.loads(payload)
-        except ValueError:
+        except (UnicodeDecodeError, ValueError):
             return {"ok": True}
-        if data.get("event") != "message_created" or not is_agent_message(data):
-            return {"ok": True}
-
-        cw_id = (data.get("conversation") or {}).get("id")
-        if not cw_id:
+        if not isinstance(data, dict) or data.get("event") != "message_created" or not is_agent_message(data):
             return {"ok": True}
 
-        rec = mapping.find(int(cw_id))
+        conversation = data.get("conversation")
+        if not isinstance(conversation, dict):
+            return {"ok": True}
+        try:
+            cw_id = int(conversation.get("id"))
+        except (TypeError, ValueError):
+            return {"ok": True}
+
+        rec = mapping.find(cw_id)
         if rec is None:
             return {"ok": True}
         conv_id = rec["conversation_id"]
         if status.get_mode(conv_id) != "human":
             return {"ok": True}
 
-        msg_id = data.get("id")
-        if msg_id is None:
+        try:
+            msg_id = int(data.get("id"))
+        except (TypeError, ValueError):
             return {"ok": True}
-        if mapping.is_runtime_message(int(msg_id)):
+        if mapping.is_runtime_message(msg_id):
             return {"ok": True}
 
         messages_store.append_if_absent(
@@ -526,10 +716,48 @@ def create_app(
         return {"ok": True}
 
     _web_dir = Path(__file__).resolve().parents[3] / "web"
+    @app.post("/webhooks/agent_bot")
+    async def agent_bot_webhook(request: Request):
+        payload = await request.body()
+        signature = request.headers.get("X-Chatwoot-Signature")
+        timestamp = request.headers.get("X-Chatwoot-Timestamp")
+        if not agent_bot_secret or not verify_chatwoot_signature(payload, signature, agent_bot_secret, timestamp):
+            raise HTTPException(status_code=401, detail="invalid signature")
+        try:
+            data = json.loads(payload)
+        except (UnicodeDecodeError, ValueError):
+            return {"ok": True}
+        if chatwoot is not None:
+            if not isinstance(data, dict):
+                return {"ok": True}
+            conversation = data.get("conversation")
+            if not isinstance(conversation, dict):
+                return {"ok": True}
+            try:
+                int(conversation.get("id"))
+            except (TypeError, ValueError):
+                return {"ok": True}
+
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                graph = make_ai_graph(_resolve_model(model), saver)
+                await handle_agent_bot_message(
+                    data,
+                    chatwoot,
+                    graph=graph,
+                    status=status,
+                    messages_store=messages_store,
+                    mapping=mapping,
+                    profile_loader=_profile_for_agent_bot,
+                    orders_loader=_address_editable_orders_for_agent_bot,
+                    thread_lock_factory=_thread_lock,
+                    chatwoot_lock_factory=_thread_lock,
+                    callbacks_factory=_agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store),
+                )
+        return {"ok": True}
     if _web_dir.exists():
         # 同源托管用户页面（user-page-spec §10）：baseUrl='' 相对路径 + file:// 强制 mock，
         # 真实模式需 Runtime 同源提供页面；API 路由已在挂载前注册，优先级不变。
-        app.mount("/", StaticFiles(directory=_web_dir, html=True), name="web")
+        app.mount("/", NoCacheStaticFiles(directory=_web_dir, html=True), name="web")
 
     return app
 
@@ -557,4 +785,3 @@ async def _wrap(events):
     else:
         for e in events:
             yield e
-

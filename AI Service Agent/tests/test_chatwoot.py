@@ -24,29 +24,39 @@ def test_mapping_find_reverse(tmp_path):
 
 import hashlib
 import hmac
+import time
 
 from ai_service_agent.harness.chatwoot import verify_chatwoot_signature
 
 
-def _sig(payload: bytes, secret: str = "sec", ts: str = "1700000000") -> str:
+def _sig(payload: bytes, secret: str = "sec", ts: str = str(int(time.time()))) -> str:
     # Chatwoot v4.x：HMAC(secret, "<ts>.<raw body>")
     return "sha256=" + hmac.new(secret.encode(), ts.encode() + b"." + payload, hashlib.sha256).hexdigest()
 
 
 def test_signature_valid():
     payload = b'{"event":"message_created"}'
-    assert verify_chatwoot_signature(payload, _sig(payload, "sec"), "sec", "1700000000") is True
+    assert verify_chatwoot_signature(payload, _sig(payload, "sec", "1700000000"), "sec", "1700000000", now=1700000000) is True
 
 
 def test_signature_tampered_payload():
     payload = b'{"event":"message_created"}'
-    assert verify_chatwoot_signature(b'{"event":"evil"}', _sig(payload, "sec"), "sec", "1700000000") is False
+    assert verify_chatwoot_signature(b'{"event":"evil"}', _sig(payload, "sec", "1700000000"), "sec", "1700000000", now=1700000000) is False
 
 
 def test_signature_missing_or_bad_format():
     assert verify_chatwoot_signature(b"{}", None, "sec", "1700000000") is False
     assert verify_chatwoot_signature(b"{}", "deadbeef", "sec", "1700000000") is False
     assert verify_chatwoot_signature(b"{}", _sig(b"{}", "sec"), "sec", None) is False  # v4 缺时间戳
+
+
+def test_signature_rejects_stale_timestamp():
+    payload = b'{"event":"message_created"}'
+    timestamp = "1700000000"
+    signature = _sig(payload, "sec", timestamp)
+
+    assert verify_chatwoot_signature(payload, signature, "sec", timestamp, now=1700000000) is True
+    assert verify_chatwoot_signature(payload, signature, "sec", timestamp, now=1700000301) is False
 
 
 import pytest
@@ -127,6 +137,58 @@ async def test_send_as_contact_posts_content_and_skips_without_mapping(tmp_path)
     await cw.send_as_contact("c1", "在吗")
     assert len(calls) == 1
     assert mapping.is_runtime_message(1) is True  # 推送消息 id 记录（webhook 回显去重用）
+
+
+@pytest.mark.asyncio
+async def test_send_bot_message_posts_outgoing_content(tmp_path):
+    def handler(request):
+        assert request.headers["api_access_token"] == "tok"
+        body = json.loads(request.content)
+        assert body["content"] == "Hello from AI"
+        assert body["message_type"] == "outgoing"
+        return Response(200, json={"id": 100})
+
+    cw, mapping, calls = _client_with(handler, tmp_path)
+    await cw.send_bot_message("c-nope", "Hello from AI")
+    assert calls == []
+    mapping.put("c1", 555)
+    await cw.send_bot_message("c1", "Hello from AI")
+    assert len(calls) == 1
+    assert mapping.is_runtime_message(100) is True
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_message_posts_form_contract(tmp_path):
+    attrs = {"items": [{"name": "addr", "type": "text", "label": "Address"}]}
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["content"] == "Fill address"
+        assert body["content_type"] == "form"
+        assert body["content_attributes"] == attrs
+        assert body["message_type"] == "outgoing"
+        return Response(200, json={"id": 101})
+
+    cw, mapping, _ = _client_with(handler, tmp_path)
+    mapping.put("c1", 555)
+    await cw.send_interactive_message("c1", "Fill address", "form", attrs)
+    assert mapping.is_runtime_message(101) is True
+
+
+@pytest.mark.asyncio
+async def test_set_conversation_status_patches_mapped_conversation(tmp_path):
+    def handler(request):
+        assert request.method == "PATCH"
+        assert request.url.path.endswith("/conversations/555")
+        assert json.loads(request.content) == {"status": "open"}
+        return Response(200, json={"id": 555, "status": "open"})
+
+    cw, mapping, calls = _client_with(handler, tmp_path)
+    mapping.put("c1", 555)
+
+    await cw.set_conversation_status("c1", "open")
+
+    assert len(calls) == 1
 
 
 def test_agent_message_contract():
@@ -262,3 +324,4 @@ def test_mapping_runtime_message(tmp_path):
     m.put_runtime_message(88, "c1")
     assert m.is_runtime_message(88) is True
     assert m.is_runtime_message(99) is False
+import json

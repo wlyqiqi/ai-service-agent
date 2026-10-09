@@ -136,12 +136,24 @@ async def event_stream(
             final_message_id = final_message_id or msg_id
         yield {"type": "done", "data": {"final": final, "message_id": final_message_id}}
     except NodeTimeoutError:
-        if not error_emitted and not routing_recovered:
-            yield {
-                "type": "error",
-                "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
-            }
-        yield {"type": "done", "data": {"final": None, "message_id": None}}
+        # LangGraph astream __exit__ re-raises NodeTimeoutError even when the
+        # error handler already routed to fallback and the graph completed.
+        # Attempt to recover the final text from the checkpoint (D7 diff);
+        # only emit error if the graph truly produced no assistant message.
+        recovered_text, recovered_id = None, None
+        try:
+            recovered_text, recovered_id = await new_assistant_text_and_id(graph, config, before_ids)
+        except Exception:
+            pass
+        if recovered_text:
+            yield {"type": "done", "data": {"final": recovered_text, "message_id": recovered_id}}
+        else:
+            if not error_emitted and not routing_recovered:
+                yield {
+                    "type": "error",
+                    "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
+                }
+            yield {"type": "done", "data": {"final": None, "message_id": None}}
     except Exception as exc:
         yield normalize_error(exc)
         yield {"type": "done", "data": {"final": None, "message_id": None}}

@@ -11,6 +11,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.allowed_tools import AllowedToolsMiddleware
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.context import ContextBudgetMiddleware, make_read_policy
 from ai_service_agent.graph.fault_tolerance import (
     RETRY_LLM,
     make_subgraph_error_handler,
@@ -31,14 +32,21 @@ class ReadAgentState(TypedDict):
 def make_read_graph(model, tools: list, tool_hooks=None):
     """ReadGraph：create_agent + 只读工具集（graph-spec.md §6.1），无业务 interrupt。
     传入 state_schema 使 ToolNode 能注入 user_id（InjectedState），属主校验留在工具层。"""
-    middleware = [AllowedToolsMiddleware(), ModelCallLimitMiddleware(run_limit=READ_MODEL_CALL_LIMIT, exit_behavior="end")]
+    middleware = [
+        ContextBudgetMiddleware(make_read_policy(get_settings())),
+        AllowedToolsMiddleware(),
+        ModelCallLimitMiddleware(run_limit=READ_MODEL_CALL_LIMIT, exit_behavior="end"),
+    ]
     if tool_hooks:
         middleware.append(ToolHookMiddleware(tool_hooks))
     agent = create_agent(model, tools=tools, system_prompt=READ_SYSTEM_PROMPT, state_schema=ReadAgentState, middleware=middleware)
     tools_node = ToolNode(tools)
 
-    async def agent_llm(state: dict, config: RunnableConfig) -> dict:
+    async def agent_node(state: dict, config: RunnableConfig) -> dict:
         return await agent.ainvoke(state, config=config)
+
+    def prepare(state: dict) -> dict:
+        return {"user_id": state.get("user_id", "")}
 
     def finalize(state: dict) -> dict:
         return {"execution_status": "completed"}
@@ -49,16 +57,18 @@ def make_read_graph(model, tools: list, tool_hooks=None):
     builder = StateGraph(CustomerServiceState).set_node_defaults(
         error_handler=make_subgraph_error_handler("finalize_failed"),
     )
+    builder.add_node("prepare", prepare)
     builder.add_node(
         "agent_llm",
-        agent_llm,
+        agent_node,
         retry_policy=RETRY_LLM,
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
     builder.add_node("tools", tools_node)
     builder.add_node("finalize", finalize)
     builder.add_node("finalize_failed", finalize_failed)
-    builder.add_edge(START, "agent_llm")
+    builder.add_edge(START, "prepare")
+    builder.add_edge("prepare", "agent_llm")
     builder.add_conditional_edges(
         "agent_llm", tools_condition, {"tools": "tools", "__end__": "finalize"}
     )

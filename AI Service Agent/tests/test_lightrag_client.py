@@ -41,7 +41,10 @@ def test_query_context_malformed_references_dict_degrades():
         return httpx.Response(200, json={"response": "", "references": {"foo": "bar"}})
 
     # references 为 dict（畸形形状）：确定性降级，不抛异常
-    assert _client_with(handler).query_context("x") == {"context": "", "references": []}
+    out = _client_with(handler).query_context("x")
+    assert out["context"] == ""
+    assert out["references"] == []
+    assert out["metadata"]["retrieved_chunks"] == 0
 
 
 def test_query_context_skips_non_dict_entries():
@@ -57,7 +60,6 @@ def test_query_context_skips_non_dict_entries():
     assert out["context"] == "ok chunk"
     assert out["references"] == [
         {"file_path": "a.md", "reference_id": "1"},
-        {"file_path": "b.md", "reference_id": "2"},
     ]
 
 
@@ -65,7 +67,16 @@ def test_query_context_empty_references():
     def handler(request):
         return httpx.Response(200, json={"response": "", "references": []})
 
-    assert _client_with(handler).query_context("x") == {"context": "", "references": []}
+    out = _client_with(handler).query_context("x")
+    assert out["context"] == ""
+    assert out["references"] == []
+    assert out["metadata"] == {
+        "retrieved_chunks": 0,
+        "selected_chunks": 0,
+        "retrieved_chars": 0,
+        "context_chars": 0,
+        "truncated": False,
+    }
 
 
 def test_query_context_unavailable_on_non_json_response():
@@ -79,6 +90,111 @@ def test_query_context_unavailable_on_connect_error():
         raise httpx.ConnectError("boom", request=request)
 
     assert _client_with(handler).query_context("x") == {"error": "kb_unavailable"}
+
+
+def test_query_context_limits_single_long_chunk():
+    long_chunk = "a" * 5000
+
+    def handler(request):
+        return httpx.Response(200, json={"references": [
+            {"reference_id": "1", "file_path": "long.md", "content": long_chunk},
+        ]})
+
+    out = _client_with(handler).query_context("x")
+    assert out["context"] == long_chunk[:1200]
+    assert out["metadata"] == {
+        "retrieved_chunks": 1,
+        "selected_chunks": 1,
+        "retrieved_chars": 5000,
+        "context_chars": 1200,
+        "truncated": True,
+    }
+
+
+def test_query_context_allows_chunk_truncated_to_equal_total_budget():
+    def handler(request):
+        return httpx.Response(200, json={"references": [
+            {"reference_id": "1", "file_path": "a.md", "content": "a" * 120},
+        ]})
+
+    client = LightRagClient(
+        base_url="http://test",
+        max_chunk_chars=100,
+        max_context_chars=100,
+        transport=httpx.MockTransport(handler),
+    )
+
+    out = client.query_context("x")
+
+    assert out["context"] == "a" * 100
+    assert out["metadata"] == {
+        "retrieved_chunks": 1,
+        "selected_chunks": 1,
+        "retrieved_chars": 120,
+        "context_chars": 100,
+        "truncated": True,
+    }
+
+
+def test_query_context_stops_at_total_budget():
+    def handler(request):
+        return httpx.Response(200, json={"references": [
+            {"reference_id": "1", "file_path": "a.md", "content": "a" * 60},
+            {"reference_id": "2", "file_path": "b.md", "content": "b" * 40},
+            {"reference_id": "3", "file_path": "c.md", "content": "c" * 30},
+        ]})
+
+    client = LightRagClient(
+        base_url="http://test",
+        max_chunk_chars=50,
+        max_context_chars=100,
+        transport=httpx.MockTransport(handler),
+    )
+    out = client.query_context("x")
+    assert out["context"] == ("a" * 50) + "\n\n" + ("b" * 40)
+    assert out["metadata"] == {
+        "retrieved_chunks": 3,
+        "selected_chunks": 2,
+        "retrieved_chars": 130,
+        "context_chars": 92,
+        "truncated": True,
+    }
+
+
+def test_query_context_returns_only_selected_references():
+    def handler(request):
+        return httpx.Response(200, json={"references": [
+            {"reference_id": "1", "file_path": "a.md", "content": "a" * 60},
+            {"reference_id": "2", "file_path": "b.md", "content": "b" * 40},
+            {"reference_id": "3", "file_path": "c.md", "content": "c" * 30},
+        ]})
+
+    client = LightRagClient(
+        base_url="http://test",
+        max_chunk_chars=50,
+        max_context_chars=100,
+        transport=httpx.MockTransport(handler),
+    )
+    out = client.query_context("x")
+    assert out["context"] == ("a" * 50) + "\n\n" + ("b" * 40)
+    assert out["references"] == [
+        {"file_path": "a.md", "reference_id": "1"},
+        {"file_path": "b.md", "reference_id": "2"},
+    ]
+
+
+def test_query_context_within_budget_keeps_sources():
+    def handler(request):
+        return httpx.Response(200, json={"references": [
+            {"reference_id": "1", "file_path": "a.md", "content": "a" * 20},
+            {"reference_id": "2", "file_path": "b.md", "content": "b" * 30},
+        ]})
+
+    out = _client_with(handler).query_context("x")
+    assert out["context"] == ("a" * 20) + "\n\n" + ("b" * 30)
+    assert [ref["file_path"] for ref in out["references"]] == ["a.md", "b.md"]
+    assert out["metadata"]["selected_chunks"] == 2
+    assert out["metadata"]["truncated"] is False
 
 
 def test_get_lightrag_client_is_singleton():

@@ -36,10 +36,17 @@ class Settings(BaseSettings):
     llm_node_timeout_seconds: float = Field(
         default=12.0, validation_alias="LLM_NODE_TIMEOUT_SECONDS"
     )
-    # Route Intent Router v2：默认关闭；开启后 Router 只输出 route_intent + confidence。
-    route_intent_enabled: bool = Field(
-        default=False,
-        validation_alias="JEV_ROUTE_INTENT_ENABLED",
+    router_total_input_max_tokens: int = Field(
+        default=800, ge=1, validation_alias="ROUTER_TOTAL_INPUT_MAX_TOKENS"
+    )
+    fallback_total_input_max_tokens: int = Field(
+        default=800, ge=1, validation_alias="FALLBACK_TOTAL_INPUT_MAX_TOKENS"
+    )
+    read_total_input_max_tokens: int = Field(
+        default=2000, ge=1, validation_alias="READ_TOTAL_INPUT_MAX_TOKENS"
+    )
+    select_total_input_max_tokens: int = Field(
+        default=1200, ge=1, validation_alias="SELECT_TOTAL_INPUT_MAX_TOKENS"
     )
     # P0（2026-09-18）：显式转人工意图检测配置（graph/handoff_rules.py 消费）。
     # 替代旧 handoff_keywords 裸子串匹配（"人工" 会误伤 "人工呼吸/人工智能" 等话题性表达）。
@@ -68,6 +75,9 @@ class Settings(BaseSettings):
     chatwoot_inbox_id: int | None = Field(default=None, validation_alias="CHATWOOT_INBOX_ID")
     chatwoot_api_token: str | None = Field(default=None, validation_alias="CHATWOOT_API_TOKEN")
     chatwoot_webhook_secret: str | None = Field(default=None, validation_alias="CHATWOOT_WEBHOOK_SECRET")
+    chatwoot_agent_bot_secret: str | None = Field(default=None, validation_alias="CHATWOOT_AGENT_BOT_SECRET")
+    chatwoot_website_token: str | None = Field(default=None, validation_alias="CHATWOOT_WEBSITE_TOKEN")
+    chatwoot_hmac_secret: str | None = Field(default=None, validation_alias="CHATWOOT_HMAC_SECRET")
     # LightRAG-chengyuan（read 档 kb_search 数据源，OQ-1 naive / OQ-3 不加缓存 / OQ-4 不做自动同步）
     lightrag_base_url: str = "http://localhost:9621"
     lightrag_timeout_seconds: float = 15.0
@@ -75,6 +85,8 @@ class Settings(BaseSettings):
     lightrag_top_k: int = 5
     lightrag_include_references: bool = True
     lightrag_enable_rerank: bool = False
+    lightrag_max_chunk_chars: int = Field(default=1200, ge=1)
+    lightrag_max_context_chars: int = Field(default=4000, ge=1)
     auth_enabled: bool = Field(default=False, validation_alias="AUTH_ENABLED")
     jwt_secret: str | None = Field(default=None, validation_alias="JWT_SECRET")
     jwt_expires_minutes: int = Field(default=60, validation_alias="JWT_EXPIRES_MINUTES")

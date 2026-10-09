@@ -77,6 +77,13 @@ _SHIPMENT_DISPLAY = {
     "delivered": "已签收",
 }
 _ORDER_STATUS_FILTERS = set(_DISPLAY_STATUS) - {"signed"}
+ORDER_DISPLAY_STATUS = _DISPLAY_STATUS
+ADDRESS_EDITABLE_STATUSES = {"paid"}
+
+
+def is_address_editable_status(status: str | None) -> bool:
+    """Address changes are allowed only before fulfillment starts."""
+    return status in ADDRESS_EDITABLE_STATUSES
 
 
 def _db_connect() -> sqlite3.Connection:

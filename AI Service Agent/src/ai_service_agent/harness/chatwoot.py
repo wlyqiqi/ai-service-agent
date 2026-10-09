@@ -6,6 +6,7 @@ Chatwoot 只做坐席 UI/输入层；Message Store 保持唯一真相源（hando
 
 import hashlib
 import hmac
+import time
 import logging
 import sqlite3
 
@@ -112,7 +113,14 @@ class ChatwootMappingStore:
         return row is not None
 
 
-def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str, timestamp: str | None) -> bool:
+def verify_chatwoot_signature(
+    payload: bytes,
+    signature: str | None,
+    secret: str,
+    timestamp: str | None,
+    max_age_seconds: int = 300,
+    now: float | None = None,
+) -> bool:
     """Chatwoot v4.x webhook 签名：X-Chatwoot-Signature: sha256=<hex>。
 
     v4.17.1 实测契约（Webhooks::Trigger#request_headers）：HMAC-SHA256(secret, "<ts>.<raw body>")，
@@ -124,7 +132,14 @@ def verify_chatwoot_signature(payload: bytes, signature: str | None, secret: str
         return False
     msg = timestamp.encode() + b"." + payload
     expected = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature[len("sha256="):], expected)
+    if hmac.compare_digest(signature[len("sha256="):], expected) is False:
+        return False
+    try:
+        signed_at = float(timestamp)
+    except ValueError:
+        return False
+    current_time = time.time() if now is None else now
+    return abs(current_time - signed_at) <= max_age_seconds
 
 
 
@@ -201,14 +216,56 @@ class ChatwootClient:
         r.raise_for_status()
         return r.json().get("payload", [])
 
+    async def set_conversation_status(self, conversation_id: str, status: str) -> None:
+        """把已映射 Chatwoot conversation 切到 pending/open（AgentBot/handoff 状态同步）。"""
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return
+        r = await self.client.patch(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}",
+            headers=self._headers(),
+            json={"status": status},
+        )
+        r.raise_for_status()
+
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
+        rec = self.mapping.get(conversation_id)
+        body = {"content": content, "sender_type": "Contact", "message_type": "incoming"}
+        await self._post_message(conversation_id, body)
+
+    async def send_bot_message(
+        self,
+        conversation_id: str,
+        content: str,
+        content_type: str | None = None,
+        content_attributes: dict | None = None,
+    ) -> None:
+        """以 AgentBot 身份发送 outgoing 消息；无映射时跳过。"""
+        body: dict = {"content": content, "message_type": "outgoing"}
+        if content_type is not None:
+            body["content_type"] = content_type
+        if content_attributes is not None:
+            body["content_attributes"] = content_attributes
+        await self._post_message(conversation_id, body)
+
+    async def send_interactive_message(
+        self,
+        conversation_id: str,
+        content: str,
+        content_type: str,
+        content_attributes: dict,
+    ) -> None:
+        """发送 Chatwoot 原生 form/input_select 等交互消息。"""
+        await self.send_bot_message(conversation_id, content, content_type, content_attributes)
+
+    async def _post_message(self, conversation_id: str, body: dict) -> None:
         rec = self.mapping.get(conversation_id)
         if rec is None:
             return  # 未建立 Chatwoot conversation：跳过，不阻塞 Runtime
         r = await self.client.post(
             f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}/messages",
             headers=self._headers(),
-            json={"content": content, "sender_type": "Contact", "message_type": "incoming"},  # v4.x: content 在顶层
+            json=body,
         )
         r.raise_for_status()
         msg_id = r.json().get("id")

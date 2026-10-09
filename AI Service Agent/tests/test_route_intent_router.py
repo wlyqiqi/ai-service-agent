@@ -1,9 +1,13 @@
 import httpx
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import ToolMessage
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.router import (
     _JEV_ROUTE_INTENT_QUESTION,
+    _jev_state,
+    build_router_messages,
     make_deepseek_router,
     make_jev_router,
 )
@@ -12,7 +16,6 @@ from ai_service_agent.testing import ToolCallingFakeModel, route_intent_json_mes
 
 @pytest.fixture
 def route_intent_settings(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     get_settings.cache_clear()
     yield get_settings()
@@ -54,6 +57,22 @@ class _JevClient:
         return _JevResponse(self.data)
 
 
+class _JevCaptureClient:
+    def __init__(self, data: dict):
+        self.data = data
+        self.payloads = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def post(self, url, *args, **kwargs):
+        self.payloads.append(kwargs["json"])
+        return _JevResponse(self.data)
+
+
 def _jev_route_payload(route_intent: str, confidence: float) -> dict:
     probabilities = {intent: 0.0 for intent in (
         "faq",
@@ -81,13 +100,47 @@ def _jev_route_payload(route_intent: str, confidence: float) -> dict:
     }
 
 
+def _current_user_state(content: str = "帮我取消订单") -> dict:
+    return {
+        "messages": [HumanMessage(content=content)],
+        "user_id": "u1",
+        "context": {},
+    }
+
+
+def test_jev_and_deepseek_share_recent_turn_context():
+    state = {
+        "messages": [
+            HumanMessage(content="我要修改地址"),
+            AIMessage(content="请提供订单号和新地址"),
+            HumanMessage(content="ORD-2026-10099"),
+        ]
+    }
+
+    jev_state = _jev_state(state)
+    messages = build_router_messages(state)
+
+    assert jev_state == {
+        "current_user_message": "ORD-2026-10099",
+        "recent_context": [
+            {"role": "human", "content": "我要修改地址"},
+            {"role": "ai", "content": "请提供订单号和新地址"},
+        ],
+    }
+    assert [message.content for message in messages] == [
+        "我要修改地址",
+        "请提供订单号和新地址",
+        "ORD-2026-10099",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_deepseek_route_intent_path(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("my_orders", 0.94)]
     )
-    node = make_deepseek_router(model, route_intent_enabled=True)
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    node = make_deepseek_router(model)
+    out = await node(_current_user_state())
     assert out["route_intent"] == "my_orders"
     assert out["confidence"] == 0.94
     assert out["routing_backend"] == "deepseek"
@@ -99,8 +152,8 @@ async def test_deepseek_low_confidence_becomes_unknown(route_intent_settings):
     model = ToolCallingFakeModel(
         responses=[route_intent_json_message("cancel_order_execute", 0.79)]
     )
-    node = make_deepseek_router(model, route_intent_enabled=True)
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    node = make_deepseek_router(model)
+    out = await node(_current_user_state())
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
     assert out["routing_backend"] == "deepseek"
@@ -115,11 +168,146 @@ async def test_jev_route_intent_is_primary(jev_route_settings, monkeypatch):
         responses=[route_intent_json_message("refund_apply_execute", 0.99)]
     )
     node = make_jev_router()
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node(_current_user_state())
     assert out["route_intent"] == "cancel_order_execute"
     assert out["confidence"] == 0.94
     assert out["routing_backend"] == "jev"
     assert out["routing_fallback"] is False
+
+
+@pytest.mark.asyncio
+async def test_jev_sends_normalized_current_message(jev_route_settings, monkeypatch):
+    client = _JevCaptureClient(_jev_route_payload("order_mutation", 0.94))
+    monkeypatch.setattr("ai_service_agent.graph.router.httpx.Client", lambda timeout: client)
+    node = make_jev_router()
+    out = await node({
+        "messages": [HumanMessage(content=[{"type": "text", "text": "我要开发票"}])],
+        "user_id": "u1",
+    })
+
+    assert client.payloads[0]["state"]["current_user_message"] == "我要开发票"
+    assert out["route_intent"] == "order_mutation"
+
+
+def test_jev_state_separates_current_message_and_recent_context():
+    state = {
+        "messages": [
+            HumanMessage(content="我想改手机号"),
+            AIMessage(content="请提供新的手机号"),
+            HumanMessage(content="18600001111"),
+            AIMessage(content="已修改"),
+            HumanMessage(content="看看我的订单"),
+            AIMessage(content="请提供订单号"),
+            HumanMessage(content="那帮我取消"),
+        ]
+    }
+    assert _jev_state(state) == {
+        "current_user_message": "那帮我取消",
+        "recent_context": [
+            {"role": "human", "content": "看看我的订单"},
+            {"role": "ai", "content": "请提供订单号"},
+        ],
+    }
+
+
+def test_jev_state_normalizes_content_blocks_and_filters_tool_messages():
+    state = {
+        "messages": [
+            HumanMessage(content="我想开发票"),
+            AIMessage(content=[{"type": "text", "text": "请提供订单号"}]),
+            ToolMessage(content="large kb search result", tool_call_id="call_1"),
+            HumanMessage(content=[
+                {"type": "text", "text": "ORD-1 官网买的"},
+                {"type": "text", "text": "开个人发票"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            ]),
+        ]
+    }
+
+    assert _jev_state(state) == {
+        "current_user_message": "ORD-1 官网买的\n开个人发票",
+        "recent_context": [
+            {"role": "human", "content": "我想开发票"},
+            {"role": "ai", "content": "请提供订单号"},
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_jev_without_current_user_turn_returns_unknown_without_call(
+    jev_route_settings,
+    monkeypatch,
+):
+    created_clients = []
+
+    class _UnexpectedJevClient:
+        def __init__(self, data):
+            created_clients.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def post(self, *args, **kwargs):
+            raise AssertionError("JEV must not be called without a current user turn")
+
+    monkeypatch.setattr(
+        "ai_service_agent.graph.router.httpx.Client",
+        lambda timeout: _UnexpectedJevClient(_jev_route_payload("faq", 1.0)),
+    )
+    node = make_jev_router()
+    state = {
+        "messages": [
+            HumanMessage(content="帮我查订单"),
+            AIMessage(content="订单已查询"),
+        ]
+    }
+
+    out = await node(state)
+
+    assert out == {
+        "route_intent": "unknown",
+        "confidence": 0.0,
+        "execution_status": "routing",
+        "routing_backend": "none",
+        "routing_fallback": False,
+        "route_control": "policy",
+    }
+    assert created_clients == []
+
+
+def test_jev_route_instructions_pin_current_message_priority():
+    question = _JEV_ROUTE_INTENT_QUESTION["route_intent"]
+    instructions = question["instructions"]
+
+    assert "current_user_message 是本轮主判断对象" in instructions
+    assert "recent_context 只用于理解指代、省略或补全上一轮缺失信息" in instructions
+    assert "不能覆盖当前明确新意图" in instructions
+    assert "recent_context 不能作为系统能力边界" in instructions
+    assert "缺少订单号、手机号、金额、抬头或税号等参数不改变意图分类" in instructions
+    assert "即使结合 recent_context 仍无法确定意图" in question["criteria"]["unknown"]
+
+
+def test_jev_faq_criteria_covers_product_catalog_and_price():
+    criteria = _JEV_ROUTE_INTENT_QUESTION["route_intent"]["criteria"]
+
+    assert "产品清单" in criteria["faq"]
+    assert "产品目录" in criteria["faq"]
+    assert "商品价格" in criteria["faq"]
+    assert "报价" in criteria["faq"]
+
+
+def test_jev_order_mutation_criteria_separates_missing_params_and_policy_faq():
+    criteria = _JEV_ROUTE_INTENT_QUESTION["route_intent"]["criteria"]
+
+    assert "开发票" in criteria["order_mutation"]
+    assert "开票" in criteria["order_mutation"]
+    assert "申请发票" in criteria["order_mutation"]
+    assert "缺少订单号、金额、抬头或税号等参数不影响意图分类" in criteria["order_mutation"]
+    assert "如果只是询问发票政策、售后流程或规则，应归 faq" in criteria["order_mutation"]
+    assert "发票政策" in criteria["faq"]
 
 
 @pytest.mark.asyncio
@@ -130,7 +318,7 @@ async def test_jev_low_confidence_returns_unknown_without_deepseek(jev_route_set
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node(_current_user_state())
     assert out["route_intent"] == "unknown"
     assert out["confidence"] == 0.79
     assert out["routing_backend"] == "jev"
@@ -154,7 +342,7 @@ async def test_jev_network_error_falls_back_to_deepseek(jev_route_settings, monk
         responses=[route_intent_json_message("faq", 0.91)]
     )
     node = make_jev_router()
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node(_current_user_state())
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -174,7 +362,7 @@ async def test_jev_invalid_probability_sum_falls_back_to_deepseek(jev_route_sett
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node(_current_user_state())
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -194,7 +382,7 @@ async def test_jev_non_dict_answers_falls_back_to_deepseek(jev_route_settings, m
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node(_current_user_state())
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -229,7 +417,7 @@ async def test_jev_invalid_choice_shape_falls_back_to_deepseek(
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    out = await node({"messages": [], "user_id": "u1", "context": {}})
+    out = await node(_current_user_state())
     assert out == {
         "execution_status": "routing",
         "routing_backend": "jev",
@@ -268,30 +456,12 @@ async def test_jev_client_is_created_and_closed_for_each_call(jev_route_settings
         responses=[route_intent_json_message("cancel_order_execute", 0.95)]
     )
     node = make_jev_router()
-    state = {"messages": [], "user_id": "u1", "context": {}}
+    state = _current_user_state()
     await node(state)
     await node(state)
 
     assert len(created_clients) == 2
     assert all(client.closed for client in created_clients)
-
-
-@pytest.mark.asyncio
-async def test_feature_off_keeps_legacy_router(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "false")
-    get_settings.cache_clear()
-    try:
-        from ai_service_agent.testing import router_json_message
-
-        model = ToolCallingFakeModel(
-            responses=[router_json_message("faq", "read", 0.9)]
-        )
-        node = make_deepseek_router(model, route_intent_enabled=False)
-        out = await node({"messages": [], "user_id": "u1", "context": {}})
-        assert out["capability"] == "faq"
-        assert out["risk_level"] == "read"
-    finally:
-        get_settings.cache_clear()
 
 
 def test_jev_route_choice_pins_profile_update_boundary():
@@ -300,7 +470,7 @@ def test_jev_route_choice_pins_profile_update_boundary():
     assert "联系电话" in criteria["account_profile_update"]
     assert "手机号" in criteria["account_profile_update"]
     assert "即使输入包含订单号" in criteria["account_profile_update"]
-    assert criteria["order_mutation"] == "修改订单备注、开发票或创建售后工单"
+    assert "不包括取消订单或退款申请" in criteria["order_mutation"]
     assert "取消预约" in criteria["unsupported_action"]
     assert "清空订单历史" in criteria["unsupported_action"]
     assert "没有对应工具" in criteria["unsupported_action"]

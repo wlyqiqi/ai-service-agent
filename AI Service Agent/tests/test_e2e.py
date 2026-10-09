@@ -21,9 +21,9 @@ class KeywordHandoffFakeModel(ToolCallingFakeModel):
                 user = m.content or ""
                 break
         if "转人工" in user:
-            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
+            payload = '{"route_intent": "unknown", "confidence": 0.2}'
         else:
-            payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+            payload = '{"route_intent": "faq", "confidence": 0.9}'
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 
@@ -33,8 +33,8 @@ class HistoryEchoFakeModel(ToolCallingFakeModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
         users = [m for m in messages if getattr(m, "type", "") == "human"]
-        if "路由器" in system:
-            payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        if "客服路由意图分类器" in system:
+            payload = '{"route_intent": "faq", "confidence": 0.9}'
         else:
             payload = f"收到{len(users)}条用户消息"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])

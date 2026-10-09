@@ -23,7 +23,9 @@ from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
-TS = "1700000000"
+import time
+
+TS = str(int(time.time()))
 
 
 def _sig(payload: bytes, secret: str = "sec") -> str:
@@ -49,7 +51,7 @@ class HandoffE2EFakeModel(ToolCallingFakeModel):
             return ChatResult(generations=[ChatGeneration(
                 message=AIMessage(content="抱歉，暂时无法直接处理，您可以换个说法或让我为您转接人工客服。")
             )])
-        return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", "read", 0.5))])
+        return ChatResult(generations=[ChatGeneration(message=router_json_message("unknown", 0.5))])
 
 
 class AgentHistoryFakeModel(ToolCallingFakeModel):
@@ -57,9 +59,9 @@ class AgentHistoryFakeModel(ToolCallingFakeModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
-        if "路由器" in system:
+        if "客服路由意图分类器" in system:
             return ChatResult(generations=[ChatGeneration(
-                message=AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}')
+                message=AIMessage(content='{"route_intent":"faq","confidence":0.9}')
             )])
 
         agent_messages = [

@@ -26,7 +26,7 @@
   |                  v
   |        GuardNode ∥ RouterNode（并行，同一份输入，互不依赖）[P3 起]
   |                 |                |
-  |                 +---(pass)-------+---> Policy 映射（capability x risk_level）-> 子图
+  |                 +---(pass)-------+---> Policy Gate（route_intent -> PolicyDecision）-> 子图
   |                 +---(fail)------------> 安全收尾（丢弃 Router 并行结果）
   |                                                     |
   |                                                     v
@@ -64,24 +64,23 @@
 
 ## 4. Router 节点
 
-- Router v1（默认关闭前的兼容路径）：结构化输出 `capability` + `risk_level` + `confidence`。
-- Router v2（`JEV_ROUTE_INTENT_ENABLED=true`）：Jev 只执行一次 `Choice(route_intent)`，输出 `route_intent` + `confidence`。
-- v2 `route_intent` 是稳定业务意图标签，不是 `tool_name`，也不是 `target_graph`。
-- DeepSeek Router fallback 必须输出同一个 v2 契约。
+- Router 统一输出 `route_intent` + `confidence`（单一契约，无 v1/v2 分支）。
+- JEV 可用时作为 primary 路由；JEV 超时、HTTP 错误或非法输出时 fallback 到 DeepSeek（同一个 `ROUTE_INTENT_SYSTEM` prompt）。
+- `route_intent` 是稳定业务意图标签，不是 `tool_name`，也不是 `target_graph`。
 - Jev 超时、HTTP 错误或非法输出时 fallback 到 DeepSeek。
 - Jev 返回合法 Choice 但置信度低于执行档阈值时，直接归为 `unknown`，不得再调用 DeepSeek。
 - `routing_backend` / `routing_fallback` 只用于观测和评估，不参与路由。
 - `route_control` 是唯一的 fallback 控制信号：Jev 失败写入 `deepseek_fallback`，`router_join` 据此执行一次 DeepSeek；DeepSeek 写入 `policy` 后必须进入 Policy Gate，不得再回到自身。
 - 每轮执行；多轮中用户可切换意图。
-- v2 仅写入自身分类字段（`route_intent` / `confidence`），不得修改 `context` 等业务状态。
+- JEV 请求 state 只包含 `current_user_message` 和最多 2 条 `recent_context`（旧 -> 新）。`current_user_message` 必须来自 `messages[-1]` 且 role 为 `human`；否则不调用 JEV，直接写入 `unknown`（`routing_backend=none`）。
+- Router 仅写入自身分类字段（`route_intent` / `confidence`），不得修改 `context` 等业务状态。
 - Router 失败/超时 → 直接走 Fallback。
 
-## 5. Policy 映射（纯确定性）
+## 5. Policy Gate（纯确定性）
 
 - Policy Gate 不调用 LLM，并且是 `target_graph` / `execution_class` / `allowed_tools` / `requires_approval` 的唯一确定性写入方。
-- v1 路径继续使用 `capability x risk_level -> 子图`。
-- v2 路径使用 `route_intent -> PolicyDecision`。
-- v2 `PolicyDecision` 派生：
+- Policy Gate 始终使用 `route_intent -> PolicyDecision`（唯一路径）。
+- `PolicyDecision` 派生：
   - `target_graph`
   - `execution_class`（`read_only` / `standard_write` / `high_risk`）
   - `allowed_tools`
@@ -89,7 +88,7 @@
 - `allowed_tools` 是候选工具边界；子图 LLM 只能在该边界内选择最终工具。
 - 未注册 intent、`unsupported_action`、`unknown` 一律 fallback；例如 `update_phone` 有意不注册为 route intent，账户资料变更使用 `account_profile_update`。
 - 高风险操作继续保留安全预检与人工审批。
-- v2 Policy Gate 允许一个极窄归一化：LLM 输出为 `order_mutation` 且当前 turn 用户文本明确表达修改收货地址、联系电话或手机号时，Policy Gate 将 `route_intent` 修正为 `account_profile_update`。
+- Policy Gate 允许一个极窄归一化：LLM 输出为 `order_mutation` 且当前 turn 用户文本明确表达修改收货地址、联系电话或手机号时，Policy Gate 将 `route_intent` 修正为 `account_profile_update`。
 - 该归一化不得 rescue `unsupported_action` 或 `unknown`，不得调用 LLM，不得扩大 `allowed_tools`。
 
 ## 6. 子图
@@ -155,7 +154,7 @@
 | 节点/子图 | 读 | 写 |
 |---|---|---|
 | GuardNode | `messages`（原始输入）、`user_id` | `guard_status` |
-| Router | `messages`、`user_id` | v2: `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control`；v1（兼容）: `capability`、`risk_level`、`route_control` |
+| Router | `messages`、`user_id` | `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control` |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |

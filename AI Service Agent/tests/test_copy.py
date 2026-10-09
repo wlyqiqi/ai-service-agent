@@ -56,6 +56,16 @@ def test_completion_text_per_tool():
     assert "已办理完成" in completion_text("unknown_tool")
 
 
+def test_completion_text_address_shows_order_and_new_address():
+    text = completion_text(
+        "update_address",
+        {"order_id": "ORD-1", "address": "北京市朝阳区测试路 1 号"},
+    )
+    assert "订单 ORD-1" in text
+    assert "北京市朝阳区测试路 1 号" in text
+    assert "已修改成功" in text
+
+
 def test_operation_cancelled_text():
     text = operation_cancelled_text()
     assert "取消" in text and "未" in text

@@ -95,7 +95,7 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=N
                 "messages": [AIMessage(content=mutation_tool_failed_text(pending["tool"], tool_error))],
                 "execution_status": "failed",
             }
-        return {"messages": [AIMessage(content=completion_text(pending["tool"]))], "execution_status": "completed"}
+        return {"messages": [AIMessage(content=completion_text(pending["tool"], pending["args"]))], "execution_status": "completed"}
 
     def finalize_rejected(state: dict) -> dict:
         return {"messages": [AIMessage(content=operation_cancelled_text())], "execution_status": "completed"}

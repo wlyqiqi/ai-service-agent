@@ -6,9 +6,13 @@ OQ 定案：mode=naive（低延迟）；回复文本内引用（不改 event-spe
 
 from typing import Annotated
 
+import logging
+
 import ai_service_agent.tools.lightrag as _lightrag
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class KbSearchArgs(BaseModel):
@@ -32,6 +36,8 @@ def kb_search(text: Annotated[str, "用户的完整问题原文，保留原始�
     """
 
     result = _lightrag.get_lightrag_client().query_context(text)
+    if metadata := result.get("metadata"):
+        logger.info("kb_search retrieval metadata: %s", metadata)
     if "error" in result:
         return "知识库暂不可用，请稍后再试或联系人工客服。"
     if not result.get("context"):

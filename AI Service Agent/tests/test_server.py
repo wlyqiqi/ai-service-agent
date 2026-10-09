@@ -1,4 +1,5 @@
 import sqlite3
+import time
 
 from fastapi.testclient import TestClient
 
@@ -20,6 +21,165 @@ def test_sessions_creates_ai_mode(tmp_path):
     body = r.json()
     assert body["mode"] == "ai"
     assert body["session_id"]
+
+
+def test_frontend_config_exposes_chatwoot_widget_settings(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
+    body = client.get("/config").json()
+    assert "chatwoot_base_url" in body
+    assert "chatwoot_website_token" in body
+
+
+def test_chatwoot_identity_requires_auth_and_signs_user_id(tmp_path):
+    import hashlib
+    import hmac
+    import sqlite3
+
+    from ai_service_agent.harness.auth import UserStore
+
+    db = str(tmp_path / "identity.db")
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            auth_enabled=True,
+            jwt_secret="test-secret-with-at-least-32-bytes!!",
+            chatwoot_hmac_secret="widget-hmac",
+        )
+    )
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+
+    assert client.get("/me/chatwoot_identity").status_code == 401
+    response = client.get("/me/chatwoot_identity", headers={"Authorization": f"Bearer {token}"})
+
+    expected = hmac.new(b"widget-hmac", b"u1", hashlib.sha256).hexdigest()
+    assert response.status_code == 200
+    assert response.json() == {"identifier": "u1", "identifier_hash": expected}
+
+
+def test_chatwoot_identity_fails_closed_without_hmac(tmp_path):
+    import sqlite3
+
+    from ai_service_agent.harness.auth import UserStore
+
+    db = str(tmp_path / "identity-no-hmac.db")
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    client = TestClient(
+        create_app(db, model="fake", auth_enabled=True, jwt_secret="test-secret-with-at-least-32-bytes!!")
+    )
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+
+    assert client.get("/me/chatwoot_identity", headers={"Authorization": f"Bearer {token}"}).status_code == 503
+
+
+def test_agent_bot_webhook_requires_valid_signature(tmp_path):
+    import hashlib
+    import hmac
+    import json
+
+    payload = {
+        "event": "message_created",
+        "id": 601,
+        "content": "你好",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 602},
+        "contact": {"id": 1},
+    }
+    raw = json.dumps(payload).encode()
+    timestamp = str(int(time.time()))
+    signature = "sha256=" + hmac.new(
+        b"agent-bot-secret", timestamp.encode() + b"." + raw, hashlib.sha256
+    ).hexdigest()
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_agent_bot_secret="agent-bot-secret"))
+
+    missing = client.post("/webhooks/agent_bot", content=raw)
+    invalid = client.post(
+        "/webhooks/agent_bot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": "sha256=bad", "X-Chatwoot-Timestamp": timestamp},
+    )
+    valid = client.post(
+        "/webhooks/agent_bot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": timestamp},
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+    assert valid.status_code == 200
+
+
+def test_chatwoot_webhooks_reject_malformed_signed_payloads(tmp_path):
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    secret = "webhook-secret"
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot_webhook_secret=secret))
+
+    def post(payload):
+        raw = json.dumps(payload).encode()
+        timestamp = str(int(time.time()))
+        signature = "sha256=" + hmac.new(secret.encode(), timestamp.encode() + b"." + raw, hashlib.sha256).hexdigest()
+        return client.post(
+            "/webhooks/chatwoot", content=raw,
+            headers={"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": timestamp},
+        )
+
+    assert post([1, 2]).status_code == 200
+    assert post({"event": "message_created", "id": 1, "conversation": "bad"}).status_code == 200
+    assert post({"event": "message_created", "id": 1, "conversation": {"id": "bad"}}).status_code == 200
+
+
+def test_resolve_restores_chatwoot_pending(tmp_path):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+
+    cw = SimpleNamespace(
+        list_messages=AsyncMock(return_value=[]),
+        ensure_conversation=AsyncMock(return_value=111),
+        set_conversation_status=AsyncMock(),
+    )
+    client = TestClient(create_app(str(tmp_path / "s.db"), model=KeywordHandoffFakeModel(responses=[]), chatwoot=cw))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
+        text = "".join(r.iter_text())
+    conn = sqlite3.connect(str(tmp_path / "s.db"))
+    handoff_id = conn.execute(
+        "SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
+    cw.set_conversation_status.assert_awaited_once_with(session_id, "pending")
+
+
+def test_approval_decision_sends_result_to_chatwoot(tmp_path):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+
+    cw = SimpleNamespace(send_bot_message=AsyncMock())
+    db = str(tmp_path / "approval.db")
+    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[]), chatwoot=cw))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+        "".join(r.iter_text())
+
+    conn = sqlite3.connect(db)
+    approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
+    conn.close()
+
+    response = client.post(f"/approvals/{approval_id}/approve")
+    assert response.status_code == 200
+    cw.send_bot_message.assert_awaited_once()
+    assert "通过审核" in cw.send_bot_message.call_args.args[1]
 
 
 def test_chat_unknown_session_errors(tmp_path):
@@ -75,7 +235,7 @@ def test_chatwoot_webhook_agent_message_is_idempotent(tmp_path):
         "conversation": {"id": 111},
     }
     raw = json.dumps(payload).encode()
-    timestamp = "1700000000"
+    timestamp = str(int(time.time()))
     signature = "sha256=" + hmac.new(
         b"sec", timestamp.encode() + b"." + raw, hashlib.sha256
     ).hexdigest()
@@ -116,7 +276,7 @@ def test_chatwoot_webhook_rejects_private_note(tmp_path):
         "conversation": {"id": 111},
     }
     raw = json.dumps(payload).encode()
-    timestamp = "1700000000"
+    timestamp = str(int(time.time()))
     signature = "sha256=" + hmac.new(
         b"sec", timestamp.encode() + b"." + raw, hashlib.sha256
     ).hexdigest()
@@ -181,9 +341,9 @@ class KeywordHandoffFakeModel(ToolCallingFakeModel):
                 user = m.content or ""
                 break
         if "转人工" in user:
-            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}'
+            payload = '{"route_intent": "unknown", "confidence": 0.2}'
         else:
-            payload = '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+            payload = '{"route_intent": "faq", "confidence": 0.9}'
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
 
 
@@ -195,8 +355,8 @@ class ResolveProactiveFakeModel(ToolCallingFakeModel):
         system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
         user = next((m.content for m in reversed(messages) if getattr(m, "type", "") == "human"), "")
         users = [m for m in messages if getattr(m, "type", "") == "human"]
-        if "路由器" in system:
-            payload = '{"capability": "unknown", "risk_level": "read", "confidence": 0.2}' if "转人工" in user else '{"capability": "faq", "risk_level": "read", "confidence": 0.9}'
+        if "客服路由意图分类器" in system:
+            payload = '{"route_intent": "unknown", "confidence": 0.2}' if "转人工" in user else '{"route_intent": "faq", "confidence": 0.9}'
         else:
             payload = f"echo-{len(users)}"
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=payload))])
@@ -264,7 +424,7 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
     monkeypatch.setattr(orders_mod, "get_settings", lambda: _WriteSettings())
     model = ToolCallingFakeModel(responses=[
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区测试路 99 号"}),
     ])
     db = str(tmp_path / "confirm.db")
@@ -278,13 +438,13 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True and body["action"] == "confirm"
-    assert "收货地址已更新" in body["final"]
+    assert "收货地址已修改成功" in body["final"]
 
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
     assert rows[-1]["role"] == "assistant"
-    assert "收货地址已更新" in rows[-1]["content"]
+    assert "收货地址已修改成功" in rows[-1]["content"]
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):

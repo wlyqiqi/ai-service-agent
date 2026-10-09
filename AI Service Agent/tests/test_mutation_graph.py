@@ -54,7 +54,7 @@ def _use_db(monkeypatch, db_path: Path):
 
 def _mutation_model():
     return ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
 
@@ -134,7 +134,7 @@ def test_mutation_cancel_does_not_execute_tool():
 
 def test_mutation_unknown_tool_rejected_no_interrupt():
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("order_mutation", 0.9),
         select_json_message("order_set_status", {"order_id": "10086"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -146,7 +146,7 @@ def test_mutation_unknown_tool_rejected_no_interrupt():
 
 def test_mutation_precheck_rejects_unauthenticated():
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("order_mutation", 0.9),
             select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "新地址"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -164,7 +164,7 @@ async def _acollect(gen):
 
 def test_mutation_reject_streams_safety_rejected():
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("order_mutation", 0.9),
         select_json_message("order_set_status", {"order_id": "10086"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -179,7 +179,7 @@ def test_mutation_reject_streams_safety_rejected():
 def test_mutation_select_unknown_field_rejected_invalid_args():
     """真实模型漂移样例（{"action": ...}）：未知字段被 select 拒绝为 invalid_args，不产生 interrupt。"""
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"action": "update_shipping_address"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -194,7 +194,7 @@ def test_mutation_0089_delete_orders_unknown_tool():
     """D5 验证（P4 Task 3）：CTRL-0089 删除订单——scripted select 输出不存在工具 ->
     precheck_reason=unknown_tool、无 interrupt（registry 无删除类工具）。"""
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("order_mutation", 0.9),
         select_json_message("delete_order_history", {"order_id": "ORD-10086"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -221,11 +221,11 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
         )
 
     clarify_model = ToolCallingFakeModel(responses=[
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {}),
     ])
     complete_model = ToolCallingFakeModel(responses=[
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     tid = "mt-clarify-1"
@@ -250,12 +250,12 @@ def test_mutation_multi_turn_clarify_then_confirm_executes():
     assert t3["execution_status"] == "completed"
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
-    assert "收货地址已更新" in t3["messages"][-1].content
+    assert "收货地址已修改成功" in t3["messages"][-1].content
 
 
 def _cancel_model(payload: dict):
     return ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", payload),
     ])
 
@@ -342,7 +342,7 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
     _, db_path = seed
     _use_db(monkeypatch, db_path)
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "high_risk", 0.9),
+        router_json_message("refund_apply_execute", 0.9),
         select_json_message("cancel_order", {}),
     ])
     graph = build_graph(model, tools=[], checkpointer=MemorySaver())

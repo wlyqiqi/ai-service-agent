@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.context import ContextBudgetMiddleware, make_fallback_policy
 from ai_service_agent.graph.fault_tolerance import (
     RETRY_LLM,
     make_subgraph_error_handler,
@@ -84,7 +85,12 @@ def make_fallback_graph(model):
     （LLM 生成友好兜底回复，FALLBACK_SYSTEM_PROMPT，人工客服口吻）。
     """
     # LLM 节点（2026-09-18）：无工具 ReAct，仅生成友好兜底文案；token 流经 harness messages 模式。
-    agent = create_agent(model, tools=[], system_prompt=FALLBACK_SYSTEM_PROMPT)
+    agent = create_agent(
+        model,
+        tools=[],
+        system_prompt=FALLBACK_SYSTEM_PROMPT,
+        middleware=[ContextBudgetMiddleware(make_fallback_policy(get_settings()))],
+    )
 
     async def explain_llm(state: dict, config: RunnableConfig) -> dict:
         return await agent.ainvoke(state, config=config)

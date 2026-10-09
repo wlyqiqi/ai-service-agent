@@ -124,6 +124,11 @@ def test_single_file_no_external_network(html):
     assert "http://" not in html and "https://" not in html, "禁止外部网络资源"
 
 
+def test_mount_node_tolerates_childless_elements(html):
+    assert "var children = node.children || [];" in html
+    assert "children.forEach(function (child)" in html
+
+
 def test_has_two_views_and_login_fields(html):
     for marker in (
         'id="view-login"', 'id="view-chat"',
@@ -151,9 +156,226 @@ def test_initial_store_shape(tmp_path):
     assert out["view"] is None
     assert out["auth"] is None
     assert out["conversation"] == {"conversation_id": None, "mode": "ai"}
-    assert out["messages"] == []
     assert out["conn"]["status"] == "idle"
+    assert out["profile"] is None
     assert out["pendingAction"] is None
+
+
+def test_initial_store_includes_order_options_state(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "({orders:s.orders,status:s.ordersStatus})",
+        tmp_path,
+    )
+    assert out["orders"] == []
+    assert out["status"] == "idle"
+
+
+def test_mask_phone_hides_middle_digits(tmp_path):
+    out = _run_js("UserPage.maskPhone('+8492722552')", tmp_path)
+    assert out == "+84****2552"
+
+
+def test_resolve_form_type_maps_p0_missing_fields(tmp_path):
+    out = _run_js(
+        "({phone:UserPage.resolveFormType(['phone']),"
+        "address:UserPage.resolveFormType(['address']),"
+        "address_with_order:UserPage.resolveFormType(['order_id','address']),"
+        "unknown:UserPage.resolveFormType(['order_id'])})",
+        tmp_path,
+    )
+    assert out == {
+        "phone": "update_phone",
+        "address": "update_address",
+        "address_with_order": "update_address",
+        "unknown": None,
+    }
+
+
+def test_build_phone_form_content(tmp_path):
+    out = _run_js(
+        "UserPage.buildFormContent(['phone'], "
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'})",
+        tmp_path,
+    )
+    assert out["form_type"] == "update_phone"
+    assert out["title"] == "修改联系电话"
+    assert out["old_info"] == {"当前手机号": "+84****2552"}
+    assert out["fields"] == [
+        {"name": "phone", "label": "新手机号", "type": "tel", "required": True}
+    ]
+    assert out["submit_label"] == "确认修改"
+
+
+def test_build_address_form_content_requires_order_id_when_missing(tmp_path):
+    out = _run_js(
+        "UserPage.buildFormContent(['order_id','address'], "
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'}, "
+        "[{order_id:'ORD-1',status_display:'已付款'},"
+        "{order_id:'ORD-2',status_display:'已付款'}])",
+        tmp_path,
+    )
+    assert out["form_type"] == "update_address"
+    assert out["old_info"] == {"当前收货地址": "No. 1, Chengyuan VN"}
+    assert [field["name"] for field in out["fields"]] == ["order_id", "address"]
+
+
+def test_build_address_form_content_omits_order_id_when_not_missing(tmp_path):
+    out = _run_js(
+        "UserPage.buildFormContent(['address'], "
+        "{user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'})",
+        tmp_path,
+    )
+    assert [field["name"] for field in out["fields"]] == ["address"]
+
+
+def test_build_form_content_falls_back_to_none(tmp_path):
+    out = _run_js("UserPage.buildFormContent(['order_id'], null)", tmp_path)
+    assert out is None
+
+
+def test_build_address_form_uses_single_order_without_input(tmp_path):
+    out = _run_js(
+        "var form=UserPage.buildFormContent(['order_id','address'],"
+        "{address:'Old address'},[{order_id:'ORD-1',status_display:'已付款'}]);"
+        "({form:form})",
+        tmp_path,
+    )
+    assert out["form"]["order_id"] == "ORD-1"
+    assert out["form"]["old_info"]["目标订单"] == "ORD-1 · 已付款"
+    assert all(field["name"] != "order_id" for field in out["form"]["fields"])
+    assert any(field["name"] == "address" for field in out["form"]["fields"])
+
+
+def test_build_address_form_renders_dropdown_for_multiple_orders(tmp_path):
+    orders = [
+        {"order_id": "ORD-1", "status_display": "已付款"},
+        {"order_id": "ORD-2", "status_display": "已付款"},
+    ]
+    out = _run_js(
+        "var form=UserPage.buildFormContent(['order_id','address'],"
+        "{address:'Old address'}," + json.dumps(orders) + ");"
+        "var field=form.fields.find(function(item){return item.name==='order_id';});"
+        "({field:field})",
+        tmp_path,
+    )
+    assert out["field"]["type"] == "select"
+    assert out["field"]["options"] == [
+        {"value": "ORD-1", "label": "ORD-1 · 已付款"},
+        {"value": "ORD-2", "label": "ORD-2 · 已付款"},
+    ]
+
+
+def test_empty_editable_orders_render_notice_not_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={address:'Old address'};"
+        "s.orders=[];s.ordersStatus='ready';"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',"
+        "data:{missing:['order_id','address']}});"
+        "({kinds:s.messages.map(function(m){return m.kind;}),"
+        "reason:s.messages[0].content.reason})",
+        tmp_path,
+    )
+    assert out["kinds"] == ["notice"]
+    assert out["reason"] == "当前没有可修改收货地址的订单。"
+
+
+def test_failed_order_options_render_retry_notice_not_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={address:'Old address'};"
+        "s.orders=[];s.ordersStatus='error';"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',"
+        "data:{missing:['order_id','address']}});"
+        "({kind:s.messages[0].kind,reason:s.messages[0].content.reason})",
+        tmp_path,
+    )
+    assert out["kind"] == "notice"
+    assert out["reason"] == "订单列表加载失败，请重新打开会话或稍后重试。"
+
+
+def test_apply_clarification_creates_phone_form(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'};"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',data:{missing:['phone']}});"
+        "s.messages[0]",
+        tmp_path,
+    )
+    assert out["kind"] == "form"
+    assert out["content"]["form_type"] == "update_phone"
+    assert out["meta"] == {"status": "pending"}
+
+
+def test_apply_clarification_keeps_text_card_for_unknown_fields(tmp_path):
+    out = _run_js(
+        "UserPage.applyEvent(UserPage.createInitialStore(), "
+        "{type:'clarification_required',data:{missing:['order_id']}})",
+        tmp_path,
+    )
+    assert out["messages"][0]["kind"] == "clarify"
+
+
+def test_validate_phone_form(tmp_path):
+    out = _run_js(
+        "var form={form_type:'update_phone',fields:[{name:'phone',label:'新手机号',required:true}]};"
+        "({empty:UserPage.validateFormValues(form,{phone:''},null),"
+        "invalid:UserPage.validateFormValues(form,{phone:'123'},null),"
+        "same:UserPage.validateFormValues(form,{phone:'+8492722552'},"
+        "{phone:'+8492722552'}),"
+        "ok:UserPage.validateFormValues(form,{phone:'+8413800138000'},"
+        "{phone:'+8492722552'})})",
+        tmp_path,
+    )
+    assert out["empty"] == "请填写新手机号"
+    assert out["invalid"] == "请输入有效的新手机号"
+    assert out["same"] == "新手机号不能与当前手机号相同"
+    assert out["ok"] == ""
+
+
+def test_validate_address_form(tmp_path):
+    out = _run_js(
+        "var form={form_type:'update_address',fields:["
+        "{name:'order_id',label:'订单号',required:true},"
+        "{name:'address',label:'新收货地址',required:true}]};"
+        "({missing_order:UserPage.validateFormValues(form,{order_id:'',address:'New address'},null),"
+        "same:UserPage.validateFormValues(form,{order_id:'ORD-1',address:'No. 1, Chengyuan VN'},"
+        "{address:'No. 1, Chengyuan VN'}),"
+        "ok:UserPage.validateFormValues(form,{order_id:'ORD-1',address:'New address'},"
+        "{address:'No. 1, Chengyuan VN'})})",
+        tmp_path,
+    )
+    assert out["missing_order"] == "请填写订单号"
+    assert out["same"] == "新收货地址不能与当前收货地址相同"
+    assert out["ok"] == ""
+
+
+def test_format_form_submissions(tmp_path):
+    out = _run_js(
+        "({phone:UserPage.formatFormSubmission('update_phone',{phone:'+8413800138000'}),"
+        "address:UserPage.formatFormSubmission('update_address',"
+        "{order_id:'ORD-1',address:'New address'})})",
+        tmp_path,
+    )
+    assert out["phone"] == "[表单提交] 修改联系电话\n新手机号：+8413800138000"
+    assert out["address"] == "[表单提交] 修改收货地址\n订单号：ORD-1\n新地址：New address"
+
+
+def test_build_view_renders_form_card_without_second_entry(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.profile={user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'};"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',data:{missing:['phone']}});"
+        "var v=UserPage.buildView(s);"
+        "({class:v.messages[0].attrs.class,text:JSON.stringify(v.messages[0])})",
+        tmp_path,
+    )
+    assert out["class"] == "card form-card"
+    assert "修改联系电话" in out["text"]
+    assert "+84****2552" in out["text"]
+    assert "新手机号" in out["text"]
+    assert "确认修改" in out["text"]
 
 
 def test_apply_token_appends_streaming_text(tmp_path):
@@ -191,11 +413,27 @@ def test_apply_done_final_appends_text_when_no_token(tmp_path):
     assert out["conn"]["status"] == "idle"
 
 
-def test_apply_done_final_idempotent_with_token(tmp_path):
-    """已有 token 流时 done.final 不重复追加（幂等）。"""
+def test_apply_done_final_skips_text_for_pending_form(tmp_path):
     out = _run_js(
-        "UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
-        "{type:'token',data:{text:'您好'}}), {type:'done',data:{final:'您好'}})",
+        "var s=UserPage.createInitialStore();"
+        "s.profile={user_id:'u0001',phone:'+8492722552',address:'No. 1, Chengyuan VN'};"
+        "s=UserPage.applyEvent(s,{type:'clarification_required',data:{missing:['phone']}});"
+        "s=UserPage.applyEvent(s,{type:'done',data:{final:'请提供手机号'}});"
+        "({kinds:s.messages.map(function(m){return m.kind;}),status:s.messages[0].meta.status})",
+        tmp_path,
+    )
+    assert out["kinds"] == ["form"]
+    assert out["status"] == "pending"
+
+
+def test_apply_done_final_idempotent_with_token(tmp_path):
+    """已有 token 流时，即使 tool 事件插在中间，done.final 也不重复追加。"""
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s=UserPage.applyEvent(s,{type:'token',data:{text:'您好'}});"
+        "s=UserPage.applyEvent(s,{type:'tool_call',data:{name:'kb_search',args:{}}});"
+        "s=UserPage.applyEvent(s,{type:'tool_result',data:{name:'kb_search',ok:true,summary:'ok'}});"
+        "s=UserPage.applyEvent(s,{type:'done',data:{final:'您好'}})",
         tmp_path,
     )
     texts = [m for m in out["messages"] if m["kind"] == "text" and m["role"] == "assistant"]
@@ -203,17 +441,16 @@ def test_apply_done_final_idempotent_with_token(tmp_path):
     assert texts[0]["content"] == "您好"
 
 
-def test_apply_tool_call_then_result(tmp_path):
+def test_apply_tool_events_are_not_user_visible(tmp_path):
+    """工具执行是内部过程事件，用户页面不展示工具调用信息。"""
     out = _run_js(
-        "UserPage.applyEvent(UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
+        "(function(){var s=UserPage.applyEvent(UserPage.applyEvent(UserPage.createInitialStore(), "
         "{type:'tool_call',data:{name:'order_lookup',args:{order_id:'A1001'}}}), "
-        "{type:'tool_result',data:{name:'order_lookup',ok:true,summary:'已发货'}}), "
-        "{type:'done',data:{}})",
+        "{type:'tool_result',data:{name:'order_lookup',ok:true,summary:'已发货'}});"
+        "return s.messages;})()",
         tmp_path,
     )
-    tool = [m for m in out["messages"] if m["kind"] == "tool"][0]
-    assert tool["content"]["name"] == "order_lookup"
-    assert tool["meta"] == {"phase": "result", "ok": True, "summary": "已发货"}
+    assert out == []
 
 
 def test_apply_clarify_and_safety(tmp_path):
@@ -387,9 +624,9 @@ def test_build_view_full_event_stream(tmp_path):
         "({count:v.messages.length,classes:v.messages.map(function(m){return m.attrs['class'];})})",
         tmp_path,
     )
-    assert out["count"] == 6
+    assert out["count"] == 5
     assert out["classes"] == [
-        "msg assistant", "card tool-card", "card", "card", "notice", "error-bar",
+        "msg assistant", "card", "card", "notice", "error-bar",
     ]
 
 
@@ -626,22 +863,69 @@ def test_merge_history_dedupes_and_appends_legacy(tmp_path):
     assert out["contents"] == ["hi", "legacy"]
 
 
-def test_build_view_clarify_quick_fill_buttons(tmp_path):
+def test_merge_history_hides_ui_generated_form_submissions(tmp_path):
     out = _run_js(
-        "var a=UserPage.applyEvent(UserPage.createInitialStore(),"
+        "var r=UserPage.mergeHistory([], ["
+        "{id:'m1',role:'user',text:'[表单提交] 修改联系电话\\n新手机号：+8413800138000'},"
+        "{id:'m2',role:'user',text:'[表单提交] 修改收货地址\\n订单号：ORD-1\\n新地址：New address'},"
+        "{id:'m3',role:'user',text:'我要修改电话号码'}"
+        "]);"
+        "({contents:r.map(function(m){return m.content;})})",
+        tmp_path,
+    )
+    assert out["contents"] == ["我要修改电话号码"]
+
+
+def test_build_view_address_form_buttons(tmp_path):
+    out = _run_js(
+        "var a=UserPage.createInitialStore();"
+        "a.orders=[{order_id:'ORD-1',status_display:'已付款'},"
+        "{order_id:'ORD-2',status_display:'已付款'}];"
+        "a=UserPage.applyEvent(a,"
         "{type:'clarification_required',data:{missing:['order_id','address']}});"
         "var v=UserPage.buildView(a);"
         "var fields=[];"
-        "function scan(n){if(n&&n.tag==='button')fields.push({field:n.attrs['data-field'],action:n.attrs['data-action']});"
+        "function scan(n){if(n&&n.tag==='button')fields.push(n.attrs);"
+        "if(n&&n.tag==='input'||n&&n.tag==='select')fields.push(n.attrs);"
         "if(n&&n.children)(n.children||[]).forEach(scan);}"
         "scan(v.messages[0]);"
-        "fields",
+        "({class:v.messages[0].attrs.class,fields:fields,text:JSON.stringify(v.messages[0])})",
         tmp_path,
     )
-    assert out == [
-        {"field": "order_id", "action": "clarify"},
-        {"field": "address", "action": "clarify"},
-    ]
+    assert out["class"] == "card form-card"
+    assert out["text"].count("data-form-field") == 2
+    assert "选择订单" in out["text"]
+    assert "新收货地址" in out["text"]
+    assert "确认修改" in out["text"]
+    assert any(field.get("data-action") == "form-submit" for field in out["fields"])
+
+
+def test_apply_confirmed_action_hides_tool_events_and_shows_final(tmp_path):
+    out = _run_js(
+        "var s=UserPage.createInitialStore();"
+        "s.conn.status='streaming';"
+        "s=UserPage.applyConfirmedAction(s,{events:["
+        "{type:'tool_call',data:{name:'update_address',args:{}}},"
+        "{type:'tool_result',data:{name:'update_address',ok:true,summary:'ok'}},"
+        "{type:'confirmation_updated',data:{action:'confirmed'}},"
+        "{type:'done',data:{final:'地址已更新'}}],"
+        "final:'地址已更新'});"
+        "({status:s.conn.status,kinds:s.messages.map(function(m){return m.kind;}),"
+        "last:s.messages[s.messages.length-1].content,"
+        "finalCount:s.messages.filter(function(m){return m.content==='地址已更新';}).length})",
+        tmp_path,
+    )
+    assert out == {
+        "status": "idle",
+        "kinds": ["text"],
+        "last": "地址已更新",
+        "finalCount": 1,
+    }
+
+
+def test_form_submit_uses_backend_auto_confirmation(html: str):
+    assert "autoConfirm: true" in html
+    assert "options.autoConfirm && event.type === 'confirmation_required'" in html
 
 
 def test_api_clarify_placeholder_both_layers(tmp_path):
@@ -660,6 +944,33 @@ def test_api_clarify_placeholder_both_layers(tmp_path):
     assert out["mockOk"] is True
     assert out["real"] is True
     assert out["mockFn"] is True
+
+
+def test_api_get_orders_requests_editable_orders(tmp_path):
+    out = _run_js(
+        "var sent=null;"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,opts:opts};"
+        "return {ok:true,status:200,json:async function(){return {orders:[],count:0};}};},"
+        "baseUrl:'http://x'});"
+        "var result=await api.getOrders();"
+        "({url:sent.url,result:result})",
+        tmp_path,
+    )
+    assert out["url"] == "http://x/me/orders?address_editable=true"
+    assert out["result"] == {"orders": [], "count": 0}
+
+
+def test_mock_api_get_orders_returns_options(tmp_path):
+    out = _run_js(
+        "var api=await UserPage.createMockApi();"
+        "var result=await api.getOrders();"
+        "({count:result.count,first:result.orders[0]})",
+        tmp_path,
+    )
+    assert out["count"] == 1
+    assert out["first"]["order_id"] == "ORD-PAID-1"
+    assert out["first"]["status_display"] == "已付款"
+
 
 def test_mock_get_messages_empty_before_handoff(tmp_path):
     """P1: mock getMessages 在未发生转人工前必须为空 + mode=ai（登录/刷新不得预置坐席回复）。"""
@@ -739,3 +1050,17 @@ def test_api_get_messages_normalizes_items_and_mode(tmp_path):
         tmp_path,
     )
     assert out == {"n": 1, "mode": "human", "content": "在吗"}
+
+
+def test_chatwoot_widget_sdk_is_official_loader(html):
+    assert "packs/js/sdk.js" in html
+    assert "chatwootSDK.run" in html
+    assert "websiteToken" in html
+    assert "baseUrl" in html
+
+
+def test_chatwoot_widget_hides_bubble_and_opens_after_login(html):
+    assert "hideMessageBubble: true" in html
+    assert "openChatwootWidget" in html
+    assert "$chatwoot.setUser" in html
+    assert "$chatwoot.toggle" in html

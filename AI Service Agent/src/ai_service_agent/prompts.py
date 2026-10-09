@@ -7,124 +7,104 @@
 Guard v1 为关键词/正则，无 LLM 提示词。
 """
 
-ROUTER_SYSTEM = """你是客服意图路由器。
 
-根据用户当前消息，判断其主要业务能力和操作风险。
-只输出 JSON，不要输出任何其它内容。
+ROUTE_INTENT_INSTRUCTIONS = (
+    "根据 current_user_message 判断当前主要业务意图，并从 criteria 中选择唯一最匹配项。"
+    "current_user_message 是本轮主判断对象。"
+    "recent_context 只用于理解指代、省略或补全上一轮缺失信息；"
+    "不能覆盖当前明确新意图。recent_context 不能作为系统能力边界。"
+    "是否支持某个意图只看 criteria，不要因为历史 AI 回复没有提到某能力就判 unsupported_action。"
+    "缺少订单号、手机号、金额、抬头或税号等参数不改变意图分类；"
+    "只要业务意图明确，选择对应 route_intent，后续流程负责澄清参数。"
+    "如果结合 recent_context 仍无法确定意图，选择 unknown；"
+    "如果意图明确但操作不在 criteria 支持范围内，选择 unsupported_action。"
+    "account_profile_update 优先于 order_mutation；shipment_query 优先于 order_query。"
+    "my_orders 查询订单集合，order_query 查询指定订单。"
+    "取消订单和申请退款必须分别归 cancel_order_execute、refund_apply_execute；"
+    "只询问政策或流程时选 faq。"
+    "不要根据权限、订单状态、工具状态或审批状态判断能否执行，只判断 route_intent。"
+)
 
-输出字段：
+ROUTE_INTENT_CRITERIA = {
+    "faq": (
+        "知识问答或政策咨询，包括产品功能、产品清单、产品目录、商品参数、"
+        "商品价格或报价、使用方法、售后政策、故障排查等。"
+        "如果用户只是询问规则、流程或是否支持，例如发票政策、退款规则、"
+        "取消规则，应归 faq，而不是执行业务操作。"
+    ),
+    "smalltalk": "问候、感谢、告别或与业务无关的闲聊。",
+    "order_query": (
+        "查询某一笔特定订单的信息、状态、详情或非物流属性。"
+        "订单号可以来自 current_user_message 或 recent_context；"
+        "缺少订单号不影响意图分类，系统会后续澄清。"
+        "如果核心目的是物流、配送、发货或签收进度，应归 shipment_query。"
+    ),
+    "my_orders": (
+        "查询当前用户自己的订单列表、历史订单或名下有哪些订单。"
+        "重点是获取订单集合，而不是查询某一笔指定订单。"
+    ),
+    "shipment_query": (
+        "查询订单的物流、配送、运输、发货、签收或预计送达进度。"
+        "即使包含订单号，只要核心目的是物流或配送进度，也归 shipment_query。"
+    ),
+    "account_profile_update": (
+        "修改收货地址、联系电话或手机号。"
+        "即使输入包含订单号，也优先归 account_profile_update，"
+        "不要因为订单号存在而归入 order_mutation。"
+        "用户名、邮箱等其他个人资料修改不属于当前能力。"
+    ),
+    "order_mutation": (
+        "要求实际修改订单或为订单创建业务事项，包括修改订单备注、"
+        "开发票、开票、申请发票或创建售后工单。"
+        "缺少订单号、金额、抬头或税号等参数不影响意图分类，"
+        "系统会在路由后澄清参数。"
+        "如果只是询问发票政策、售后流程或规则，应归 faq。"
+        "不包括取消订单或退款申请。"
+    ),
+    "cancel_order_execute": (
+        "用户明确要求取消或撤销某个订单，并希望执行取消操作。"
+        "缺少订单号不影响意图分类，系统会后续澄清。"
+    ),
+    "refund_apply_execute": (
+        "用户明确要求申请、发起或办理某个订单的退款。"
+        "缺少订单号、金额或原因不影响意图分类，系统会后续澄清。"
+        "如果只是询问退款政策或规则，应归 faq。"
+    ),
+    "unsupported_action": (
+        "用户意图清晰但当前系统没有对应工具可执行。"
+        "例如取消预约、清空订单历史、转移订单所有权，"
+        "或修改用户名、邮箱等当前未支持资料。"
+        "这类请求应归 unsupported_action，不归 unknown。"
+    ),
+    "unknown": (
+        "无法确定用户当前想做什么，即使结合 recent_context 仍无法确定意图。"
+        "例如表达过于模糊、缺少必要上下文，或只有无法解释的短语。"
+        "如果用户意图明确但系统不支持该操作，应归 unsupported_action，"
+        "不要归 unknown。"
+    ),
+}
 
-capability:
-- faq：产品、使用方法、售后政策等知识问答
-- order：订单、物流、售后订单相关
-- account：账户、联系方式、收货信息相关
-- smalltalk：寒暄、感谢、简单闲聊
-- unknown：无法确定属于以上能力
+ROUTE_INTENT_QUESTION = {
+    "route_intent": {
+        "type": "choice",
+        "instructions": ROUTE_INTENT_INSTRUCTIONS,
+        "criteria": ROUTE_INTENT_CRITERIA,
+    }
+}
 
-risk_level:
-- read：只查询或获取信息，不改变任何业务状态
-- mutation：会改变业务数据，但不涉及资金或高风险决策
-- high_risk：涉及退款、赔偿、取消、资金、账户注销等高风险操作
+_ROUTE_INTENT_CRITERIA_TEXT = "\n".join(
+    f"- {name}：{description}" for name, description in ROUTE_INTENT_CRITERIA.items()
+)
 
-confidence:
-- 0 到 1 之间的数字
-- 表示本次分类的把握程度，不代表严格统计概率
+ROUTE_INTENT_SYSTEM = f"""你是客服路由意图分类器。
+
+{_ROUTE_INTENT_CRITERIA_TEXT}
 
 判定规则：
-
-1. 只查询或咨询，不改变业务状态 → read
-   例如：
-   - 查订单
-   - 查物流
-   - 查询售后进度
-   - 查询产品信息
-   - 咨询使用方法
-
-2. 修改业务信息 → mutation
-   例如：
-   - 修改收货地址
-   - 修改手机号
-   - 修改邮箱
-
-3. 涉及退款、赔偿、取消、资金或账户注销 → high_risk
-   即使用户表达得很随意，也必须判定为 high_risk。
-   例如：
-   - “退了吧”
-   - “这个订单不要了”
-   - “给我退100块”
-   - “帮我申请赔偿”
-   - “把账号注销掉”
-
-4. 如果一条消息同时包含多个操作，按照最高风险级别分类：
-   high_risk > mutation > read
-
-5. capability 表示主要涉及的业务领域。
-   如果无法确定，不要猜测，使用 unknown。
-
-6. 如果用户意图明显但具体操作不完整，仍然可以分类；
-   只有无法判断业务领域或风险级别时，才降低 confidence。
-
-7. 不要根据用户的语气、礼貌程度或上下文猜测不存在的操作。
-
-示例：
-
-用户：订单10086申请退款
-输出：
-{"capability":"order","risk_level":"high_risk","confidence":0.95}
-
-用户：退了吧
-输出：
-{"capability":"order","risk_level":"high_risk","confidence":0.95}
-
-用户：把收货地址改成朝阳区
-输出：
-{"capability":"account","risk_level":"mutation","confidence":0.95}
-
-用户：帮我查一下订单
-输出：
-{"capability":"order","risk_level":"read","confidence":0.90}
-
-用户：这个锅可以放洗碗机吗？
-输出：
-{"capability":"faq","risk_level":"read","confidence":0.95}
-
-用户：这个订单不要了，帮我退掉
-输出：
-{"capability":"order","risk_level":"high_risk","confidence":0.98}
-
-用户：你好，在吗？
-输出：
-{"capability":"smalltalk","risk_level":"read","confidence":0.99}
-
-用户：帮我处理一下
-输出：
-{"capability":"unknown","risk_level":"read","confidence":0.20}
-"""
-
-ROUTE_INTENT_SYSTEM = """你是客服路由意图分类器。
-
-根据用户当前消息判断主要业务意图。只输出 JSON，不要输出任何其它内容。
-
-分类标准：
-- faq：产品使用、售后政策、商品参数、故障排查等知识问答
-- smalltalk：问候、感谢或非业务闲聊
-- order_query：根据订单号查询某一笔订单
-- my_orders：查询当前用户名下的订单列表
-- shipment_query：查询物流或配送进度
-- account_profile_update：修改收货地址或联系电话
-- order_mutation：修改订单备注、开发票、创建售后工单
-- cancel_order_execute：用户明确要求执行取消订单
-- refund_apply_execute：用户明确要求执行退款申请
-- unsupported_action：当前系统没有对应工具的动作
-- unknown：无法判断、缺少上下文、模糊或不在支持范围内
-
-规则：
-- “取消订单怎么操作”“退款多久到账”是咨询，不是执行。
-- 当前系统不支持的动作必须归类为 unsupported_action。
-- 只根据当前请求判断，不要猜测未发生的操作。
+{ROUTE_INTENT_INSTRUCTIONS}
 
 输出格式：
-{"route_intent":"unknown","confidence":0.20}
+{{"route_intent":"unknown","confidence":0.20}}
 """
 
 SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。
@@ -174,6 +154,14 @@ SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。
 - 即使用户提出了其它操作，也只能从当前允许的工具中选择。
 - 如果用户请求的操作不属于当前工具集合，不要强行映射到其它工具。
 
+6. 售后工单与退款申请的边界
+- "售后工单"（create_service_ticket）用于报告商品问题或售后请求（如屏幕裂痕、退货但包装丢失、
+  配件缺失等），需要人工跟进处理，不是退钱。
+- "退款申请"（refund_apply）用于明确要求退回货款（如"退款 88 元""退钱"），核心是资金退回。
+- 当用户同时提到"售后"和"退货"时（如"提交售后，想退货但包装丢了"），核心诉求是售后处理，
+  应选 create_service_ticket，不要因为出现"退货"字样就漂移到 refund_apply。
+- 只有当用户明确说出退款金额或"退钱""退款"等资金退回意图时，才选 refund_apply。
+
 示例：
 {examples}
 """
@@ -186,7 +174,7 @@ SELECT_BINDTOOLS_SYSTEM = """你是客服操作选择器。
 1. 从绑定的工具中选择最匹配的一个（通过 tool_call 格式返回）。
 2. 参数必须来自用户消息或对话上下文中已明确提供的信息。
 3. 严禁编造、猜测或补全用户没有提供的信息。
-4. 用户没有提供的必填参数不要虚构；后续由系统负责参数校验和澄清。
+4. 用户没有提供的必填参数不要虚构，也不要用占位符；返回空的 args 或只包含已提供参数的 args，后续由系统负责参数校验和澄清。
 5. 保留用户提供的原始值，不要擅自修改或格式化。
 6. 如果用户请求的操作不属于绑定的工具，选择最接近的工具；系统会校验并拒绝不匹配的请求。
 """

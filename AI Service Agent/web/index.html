@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -220,8 +220,12 @@ html[data-theme="dark"] .msg.assistant::before,html[data-theme="dark"] .card::be
   align-self:flex-start;margin-left:44px;box-shadow:var(--shadow-card);overflow-wrap:break-word}
 .card h4{margin:0 0 8px;font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--accent-text)}
 .card p{margin:4px 0;color:var(--ink-2);line-height:1.6}
-.tool-card h4{color:var(--ink-2)}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.form-card .old-info{margin:0 0 12px;padding:10px;background:var(--surface-2);border-radius:10px}
+.form-card .old-info div{font-size:13px;color:var(--ink-2)}
+.form-card label{display:block;margin:10px 0 5px;font-size:13px;color:var(--ink-2)}
+.form-card input{width:100%;margin-bottom:4px}
+.form-error{display:none;margin-top:8px;color:#ef4444;font-size:13px}
 
 .notice,.error-bar,.handoff-banner{max-width:86%;align-self:stretch;border-radius:var(--r-md);
   padding:11px 14px;font-size:13px;line-height:1.6;overflow-wrap:break-word;
@@ -407,6 +411,9 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       messages: [],
       conn: { status: 'idle', lastError: null },
       pendingAction: null,
+      profile: null,
+      orders: [],
+      ordersStatus: 'idle',
       config: { mock: false, baseUrl: '' },
     };
   }
@@ -427,6 +434,145 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return 'm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   }
 
+  function maskPhone(value) {
+    var text = String(value || '');
+    if (text.length <= 7) return '****';
+    return text.slice(0, 3) + '****' + text.slice(-4);
+  }
+
+  function resolveFormType(missing) {
+    var fields = missing || [];
+    if (fields.indexOf('phone') >= 0) return 'update_phone';
+    if (fields.indexOf('address') >= 0) return 'update_address';
+    return null;
+  }
+
+  function buildFormContent(missing, profile, orders) {
+    var formType = resolveFormType(missing);
+    if (!formType) return null;
+    var safeProfile = profile || {};
+
+    if (formType === 'update_phone') {
+      return {
+        form_type: formType,
+        title: '修改联系电话',
+        old_info: { '当前手机号': maskPhone(safeProfile.phone || '未知') },
+        fields: [
+          { name: 'phone', label: '新手机号', type: 'tel', required: true },
+        ],
+        submit_label: '确认修改',
+      };
+    }
+
+    var orderOptions = orders || [];
+    var requiresOrder = (missing || []).indexOf('order_id') >= 0;
+    if (requiresOrder && orderOptions.length === 0) {
+      return {
+        form_type: formType,
+        empty_reason: '当前没有可修改收货地址的订单。',
+      };
+    }
+    var oldInfo = { '当前收货地址': safeProfile.address || '未知' };
+    var fields = [];
+    if (requiresOrder) {
+      if (orderOptions.length === 1) {
+        var onlyOrder = orderOptions[0];
+        oldInfo['目标订单'] = onlyOrder.order_id + ' · ' + (onlyOrder.status_display || '订单');
+        return {
+          form_type: formType,
+          title: '修改收货地址',
+          old_info: oldInfo,
+          order_id: onlyOrder.order_id,
+          fields: [{ name: 'address', label: '新收货地址', type: 'text', required: true }],
+          submit_label: '确认修改',
+        };
+      }
+      fields.push({
+        name: 'order_id',
+        label: '选择订单',
+        type: 'select',
+        required: true,
+        options: orderOptions.map(function (order) {
+          return {
+            value: order.order_id,
+            label: order.order_id + ' · ' + (order.status_display || '订单'),
+          };
+        }),
+      });
+    }
+    fields.push({ name: 'address', label: '新收货地址', type: 'text', required: true });
+    return {
+      form_type: formType,
+      title: '修改收货地址',
+      old_info: oldInfo,
+      fields: fields,
+      submit_label: '确认修改',
+    };
+  }
+
+  var PHONE_PATTERN = /^\+?[0-9][0-9\- ]{5,19}$/;
+
+  function validateFormValues(form, values, profile) {
+    var safeProfile = profile || {};
+    var fields = form.fields || [];
+    for (var i = 0; i < fields.length; i++) {
+      var field = fields[i];
+      var value = String(values[field.name] || '').trim();
+      if (field.required && !value) return '请填写' + field.label;
+      if (field.name === 'order_id' && value && value.length > 64) {
+        return '订单号长度不能超过 64 个字符';
+      }
+    }
+
+    if (form.form_type === 'update_phone') {
+      var phone = String(values.phone || '').trim();
+      if (!PHONE_PATTERN.test(phone)) return '请输入有效的新手机号';
+      if (safeProfile.phone && phone === safeProfile.phone) {
+        return '新手机号不能与当前手机号相同';
+      }
+    }
+
+    if (form.form_type === 'update_address') {
+      var address = String(values.address || '').trim();
+      if (address.length < 5) return '新收货地址长度不能少于 5 个字符';
+      if (safeProfile.address && address === safeProfile.address) {
+        return '新收货地址不能与当前收货地址相同';
+      }
+    }
+
+    return '';
+  }
+
+  function formatFormSubmission(formType, values) {
+    if (formType === 'update_phone') {
+      return '[表单提交] 修改联系电话\n新手机号：' + String(values.phone || '').trim();
+    }
+    if (formType === 'update_address') {
+      var lines = ['[表单提交] 修改收货地址'];
+      var orderId = String(values.order_id || '').trim();
+      if (orderId) lines.push('订单号：' + orderId);
+      lines.push('新地址：' + String(values.address || '').trim());
+      return lines.join('\n');
+    }
+    return '';
+  }
+
+  function applyConfirmedAction(store, result) {
+    var next = JSON.parse(JSON.stringify(store));
+    var hasFinal = false;
+    (result.events || []).forEach(function (event) {
+      if (event.type === 'tool_call' || event.type === 'tool_result') return;
+      if (event.type === 'done' && event.data && event.data.final) hasFinal = true;
+      next = applyEvent(next, event);
+    });
+    if (result.final && !hasFinal) {
+      next.messages.push({ id: msgId(), role: 'assistant', kind: 'text', content: result.final, meta: {} });
+    }
+    next.conn.status = 'idle';
+    next = applyEvent(next, { type: 'confirmation_updated', data: { action: 'confirmed' } });
+    return next;
+  }
+
   function resetConversation(store) {
     var s = JSON.parse(JSON.stringify(store));
     s.conversation = { conversation_id: null, mode: 'ai' };
@@ -438,17 +584,29 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
 
   function mergeHistory(existing, incoming) {
     var seen = {};
+    var seenContent = {};
     var out = [];
-    existing.forEach(function (m) { if (m.id) seen[m.id] = true; out.push(m); });
+    existing.forEach(function (m) {
+      if (m.id) seen[m.id] = true;
+      var c = m.content || '';
+      if (m.role && c) seenContent[m.role + '|' + c] = true;
+      out.push(m);
+    });
     (incoming || []).forEach(function (m) {
       var id = m.id || msgId();
+      var content = m.text || m.content || '';
+      if (content.indexOf('[表单提交] 修改联系电话') === 0 ||
+          content.indexOf('[表单提交] 修改收货地址') === 0) return;
+      var role = m.role === 'user' ? 'user' : 'assistant';
       if (seen[id]) return;
+      if (role && content && seenContent[role + '|' + content]) return;
       seen[id] = true;
+      if (role && content) seenContent[role + '|' + content] = true;
       out.push({
         id: id,
-        role: m.role === 'user' ? 'user' : 'assistant',
+        role: role,
         kind: 'text',
-        content: m.text || m.content || '',
+        content: content,
         meta: m.meta || {},
       });
     });
@@ -472,22 +630,34 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         }
         break;
       case 'tool_call':
-        s.conn.status = 'streaming';
-        s.messages.push({ id: msgId(), role: 'assistant', kind: 'tool',
-          content: { name: data.name, args: data.args || {} }, meta: { phase: 'call' } });
-        break;
       case 'tool_result':
-        for (var i = s.messages.length - 1; i >= 0; i--) {
-          if (s.messages[i].kind === 'tool' && s.messages[i].meta.phase === 'call') {
-            s.messages[i].meta = { phase: 'result', ok: !!data.ok, summary: data.summary || '' };
-            break;
-          }
+        break;
+      case 'clarification_required': {
+        var form = buildFormContent(data.missing || [], s.profile, s.orders);
+        if (form && form.empty_reason) {
+          s.messages.push({
+            id: msgId(),
+            role: 'assistant',
+            kind: 'notice',
+            content: {
+              rule: 'address_options_unavailable',
+              reason: s.ordersStatus === 'error'
+                ? '订单列表加载失败，请重新打开会话或稍后重试。'
+                : form.empty_reason,
+            },
+            meta: {},
+          });
+        } else if (form) {
+          s.messages.push({
+            id: msgId(), role: 'assistant', kind: 'form',
+            content: form, meta: { status: 'pending' },
+          });
+        } else {
+          s.messages.push({ id: msgId(), role: 'assistant', kind: 'clarify',
+            content: { missing: data.missing || [], reason: data.reason || null }, meta: {} });
         }
         break;
-      case 'clarification_required':
-        s.messages.push({ id: msgId(), role: 'assistant', kind: 'clarify',
-          content: { missing: data.missing || [], reason: data.reason || null }, meta: {} });
-        break;
+      }
       case 'confirmation_required':
         s.pendingAction = { kind: 'confirm', status: 'pending', summary: data.summary || '' };
         s.messages.push({ id: msgId(), role: 'assistant', kind: 'confirm',
@@ -542,6 +712,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         s.conn.status = s.conversation.mode === 'human' ? 'polling' : 'idle';
         if (typeof data.final === 'string' && data.final) {
           var last = s.messages[s.messages.length - 1];
+          if (last && last.kind === 'form' && last.meta.status === 'pending') return s;
           var alreadyShown = last && last.kind === 'text' && last.role === 'assistant' &&
             last.content === data.final;
           if (!alreadyShown) {
@@ -574,13 +745,54 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     switch (m.kind) {
       case 'text':
         return { tag: 'div', attrs: { class: 'msg ' + m.role }, children: [m.content] };
-      case 'tool':
-        return { tag: 'div', attrs: { class: 'card tool-card' }, children: [
-          { tag: 'h4', children: ['工具 · ' + m.content.name] },
-          { tag: 'p', children: [m.meta.phase === 'result'
-            ? (m.meta.ok ? '✓ ' + m.meta.summary : '✗ ' + m.meta.summary)
-            : '执行中…'] },
+      case 'form': {
+        var oldInfo = m.content.old_info || {};
+        var oldKeys = Object.keys(oldInfo);
+        var oldKids = oldKeys.map(function (key) {
+          return { tag: 'div', children: [key + '：' + oldInfo[key]] };
+        });
+        var fieldNodes = (m.content.fields || []).map(function (field) {
+          var attrs = {
+            name: field.name,
+            type: field.type || 'text',
+            'data-form-field': field.name,
+            'aria-label': field.label,
+          };
+          if (field.required) attrs.required = 'required';
+          if (field.type === 'select') {
+            delete attrs.type;
+            return { tag: 'div', children: [
+              { tag: 'label', children: [field.label] },
+              { tag: 'select', attrs: attrs, children: (field.options || []).map(function (option) {
+                return {
+                  tag: 'option',
+                  attrs: { value: option.value },
+                  children: [option.label],
+                };
+              }) },
+            ] };
+          }
+          return { tag: 'div', children: [
+            { tag: 'label', children: [field.label] },
+            { tag: 'input', attrs: attrs },
+          ] };
+        });
+        var buttonAttrs = {
+          class: 'btn primary',
+          'data-action': 'form-submit',
+          'data-form-id': m.id,
+        };
+        if (m.meta.status === 'submitted') buttonAttrs.disabled = 'disabled';
+        return { tag: 'div', attrs: { class: 'card form-card', 'data-form-id': m.id }, children: [
+          { tag: 'h4', children: [m.content.title] },
+          { tag: 'div', attrs: { class: 'old-info' }, children: oldKids },
+          { tag: 'div', children: fieldNodes },
+          { tag: 'div', attrs: { class: 'form-error' }, children: [''] },
+          { tag: 'div', attrs: { class: 'row' }, children: [
+            { tag: 'button', attrs: buttonAttrs, children: [m.content.submit_label] },
+          ] },
         ] };
+      }
       case 'clarify':
         var missing = m.content.missing || [];
         var kids = [
@@ -622,7 +834,13 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         return { tag: 'div', attrs: { class: 'card' }, children: approvalKids };
       }
       case 'notice':
-        return { tag: 'div', attrs: { class: 'notice' }, children: ['安全拦截：' + m.content.reason] };
+        return {
+          tag: 'div',
+          attrs: { class: 'notice' },
+          children: [m.content.rule === 'address_options_unavailable'
+            ? m.content.reason
+            : '安全拦截：' + m.content.reason],
+        };
       case 'handoff':
         return m.meta.state === 'created'
           ? { tag: 'div', attrs: { class: 'handoff-banner' }, children: ['已转人工客服' + (m.content.summary ? '：' + m.content.summary : '')] }
@@ -694,6 +912,18 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return { messages: (data && data.items) || [], mode: data && data.mode };
     }
 
+    async function getProfile() {
+      var r = await fetchImpl(base + '/me/profile', { headers: headers() });
+      if (!r.ok) throw apiError('PROFILE_FAILED', r);
+      return await r.json();
+    }
+
+    async function getOrders() {
+      var r = await fetchImpl(base + '/me/orders?address_editable=true', { headers: headers() });
+      if (!r.ok) throw apiError('ORDERS_FAILED', r);
+      return await r.json();
+    }
+
     async function sendMessage(conversationId, text, onEvent) {
       var r = await fetchImpl(base + '/chat', {
         method: 'POST', headers: headers(),
@@ -711,9 +941,10 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           var block = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
-          block.split('\n').forEach(function (line) {
-            if (line.indexOf('data: ') === 0) onEvent(JSON.parse(line.slice(6)));
-          });
+        for (var lineIndex = 0; lineIndex < block.split('\n').length; lineIndex++) {
+          var line = block.split('\n')[lineIndex];
+          if (line.indexOf('data: ') === 0) await onEvent(JSON.parse(line.slice(6)));
+        }
         }
       }
       return { ok: true };
@@ -756,6 +987,8 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return {
       login: login, createSession: createSession, getMessages: getMessages,
       sendMessage: sendMessage, confirm: confirm, approve: approve, reject: reject, clarify: clarify,
+      getOrders: getOrders,
+      getProfile: getProfile,
     };
   }
 
@@ -773,6 +1006,14 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     var handoffSeen = false;
     var seatDelivered = false;
     var seat = { id: 'seat-1', role: 'assistant', text: '人工客服：您好，您的退款申请已加急处理，预计 24 小时内到账。' };
+    var profile = { user_id: 'demo-user', phone: '+6581234567', address: 'No. 1, Demo Road' };
+    var orders = [{
+      order_id: 'ORD-PAID-1',
+      status_display: '已付款',
+      ordered_at: '2026-10-07T00:00:00+08:00',
+      amount: 99.0,
+      currency: 'CNY',
+    }];
     return {
       async login(account) {
         return { token: 'mock-token', user: { name: account || '演示用户' } };
@@ -788,12 +1029,14 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         }
         return { messages: [], mode: 'ai' }; // 模拟人工已解决
       },
+      async getProfile() { return profile; },
+      async getOrders() { return { orders: orders, count: orders.length }; },
       async sendMessage(conversationId, text, onEvent) {
         // mock 演示流去掉 handoff_resolved：让转人工后的轮询真实跑起来（getMessages 返回 mode=ai 模拟人工解决）
         var events = mockStream().filter(function (e) { return e.type !== 'handoff_resolved'; });
         for (var i = 0; i < events.length; i++) {
           if (events[i].type === 'handoff_created') { handoffSeen = true; seatDelivered = false; }
-          onEvent(events[i]);
+          await onEvent(events[i]);
           if (i < events.length - 1) await mockDelay(delayMs);
         }
         return { ok: true };
@@ -890,6 +1133,12 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       resolveView: resolveView,
       applyEvent: applyEvent,
       EVENT_TYPES: EVENT_TYPES,
+      maskPhone: maskPhone,
+      resolveFormType: resolveFormType,
+      buildFormContent: buildFormContent,
+      validateFormValues: validateFormValues,
+      formatFormSubmission: formatFormSubmission,
+      applyConfirmedAction: applyConfirmedAction,
       buildView: buildView,
       createApi: createApi,
       createMockApi: createMockApi,
@@ -914,9 +1163,26 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       if (key === 'class') el.className = node.attrs[key];
       else el.setAttribute(key, node.attrs[key]);
     }
-    node.children.forEach(function (child) { el.appendChild(mountNode(child)); });
+    var children = node.children || [];
+    children.forEach(function (child) { el.appendChild(mountNode(child)); });
     return el;
   }
+
+function collectFormValues(formElement) {
+  var inputs = formElement.querySelectorAll('[data-form-field]');
+  var values = {};
+  for (var i = 0; i < inputs.length; i++) {
+    values[inputs[i].getAttribute('data-form-field')] = inputs[i].value.trim();
+  }
+  return values;
+}
+
+function showFormError(formElement, message) {
+  var errorElement = formElement.querySelector('.form-error');
+  if (!errorElement) return;
+  errorElement.textContent = message;
+  errorElement.style.display = message ? 'block' : 'none';
+}
 
   var prevMsgCount = 0; // 入场动画判定：仅当消息数量增加时视为新消息
   function applyView() {
@@ -965,7 +1231,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
 
   function loadAuth() {
     try {
-      var raw = window.sessionStorage.getItem(AUTH_KEY);
+      var raw = window.localStorage.getItem(AUTH_KEY);
       return raw ? JSON.parse(raw) : null;
     } catch (e) {
       return null;
@@ -973,11 +1239,55 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
   }
 
   function saveAuth(auth) {
-    window.sessionStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+    window.localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
   }
 
   function clearAuth() {
-    window.sessionStorage.removeItem(AUTH_KEY);
+    window.localStorage.removeItem(AUTH_KEY);
+  }
+
+  async function openChatwootWidget(auth) {
+    try {
+      var configResponse = await fetch('/config');
+      if (!configResponse.ok) return;
+      var config = await configResponse.json();
+      var identityResponse = await fetch('/me/chatwoot_identity', { headers: { Authorization: 'Bearer ' + ((auth && auth.token) || '') } });
+      var identity = identityResponse.ok ? await identityResponse.json() : null;
+      var websiteToken = config.chatwoot_website_token;
+      var widgetBaseUrl = (config.chatwoot_base_url || '').replace(/\/$/, '');
+      if (!websiteToken || !widgetBaseUrl) return;
+
+      window.chatwootSettings = {
+        hideMessageBubble: true,
+        position: 'right',
+        locale: 'zh-CN',
+        type: 'standard',
+        darkMode: 'auto',
+      };
+      if (!window.$chatwoot) {
+        await new Promise(function (resolve, reject) {
+          var script = document.createElement('script');
+          script.src = widgetBaseUrl + '/packs/js/sdk.js';
+          script.defer = true;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.body.appendChild(script);
+        });
+      }
+      window.chatwootSDK.run({ websiteToken: websiteToken, baseUrl: widgetBaseUrl });
+      if (window.$chatwoot) {
+        var userId = (auth && auth.user && auth.user.id) || 'chatwoot-user';
+        window.$chatwoot.setUser(userId, {
+          name: (auth && auth.user && auth.user.name) || '用户',
+          email: auth && auth.user && auth.user.id ? auth.user.id + '@chengyuan.local' : undefined,
+          identifier_hash: identity && identity.identifier_hash ? identity.identifier_hash : undefined,
+        });
+        window.$chatwoot.toggleBubbleVisibility('show');
+        window.$chatwoot.toggle('open');
+      }
+    } catch (e) {
+      console.warn('Chatwoot widget failed to load', e);
+    }
   }
 
   function showView(name) {
@@ -1055,6 +1365,21 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
       return false; // 会话启动失败不阻塞对话视图
     }
+    try {
+      store.profile = await api.getProfile();
+    } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
+      store.profile = null;
+    }
+    try {
+      var orderResult = await api.getOrders();
+      store.orders = orderResult.orders || [];
+      store.ordersStatus = 'ready';
+    } catch (e) {
+      if (isAuthExpiredError(e)) { handleAuthExpired(); return false; }
+      store.orders = [];
+      store.ordersStatus = 'error';
+    }
     var loaded = await loadHistory();
     if (!loaded) return false; // 401 已由 handleAuthExpired 处理
     applyView();
@@ -1062,8 +1387,10 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return true;
   }
 
-  function pushUserMessage(text) {
-    store.messages.push({ id: msgId(), role: 'user', kind: 'text', content: text, meta: {} });
+  function pushUserMessage(text, visible) {
+    if (visible !== false) {
+      store.messages.push({ id: msgId(), role: 'user', kind: 'text', content: text, meta: {} });
+    }
     store.conn.status = 'streaming';
     applyView();
   }
@@ -1092,15 +1419,23 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     }
   }
 
-  function doSend() {
-    var input = document.getElementById('msg-input');
-    var text = input.value.trim();
-    if (!text) return;
-    // P2: 流式/重连期间禁止重复发送（chips 点击也走 doSend）
-    if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
-    input.value = '';
-    pushUserMessage(text);
-    api.sendMessage(store.conversation.conversation_id, text, function (event) {
+  function startUserTurn(text, options) {
+    pushUserMessage(text, !(options && options.visible === false));
+    api.sendMessage(store.conversation.conversation_id, text, async function (event) {
+      if (options && options.autoConfirm && event.type === 'confirmation_required') {
+        store.conn.status = 'streaming';
+        applyView();
+        try {
+          var result = await api.confirm(store.conversation.conversation_id, 'confirmed');
+          var next = applyConfirmedAction(store, result);
+          store = next;
+          applyView();
+        } catch (e) {
+          store = applyEvent(store, { type: 'error', data: { code: 'E_CONFIRM', message: e.message } });
+          applyView();
+        }
+        return;
+      }
       store = applyEvent(store, event);
       applyView();
     }).catch(function (e) {
@@ -1111,6 +1446,16 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     }).then(function () {
       if (store.conversation.mode === 'human' && typeof startPolling === 'function') startPolling();
     });
+  }
+
+  function doSend() {
+    var input = document.getElementById('msg-input');
+    var text = input.value.trim();
+    if (!text) return;
+    // P2: 流式/重连期间禁止重复发送（chips 点击也走 doSend）
+    if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
+    input.value = '';
+    startUserTurn(text);
   }
 
   async function doLogin() {
@@ -1142,6 +1487,7 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       window.location.hash = '#/chat';
       store.view = resolveView('#/chat', true);
       showView(store.view);
+      openChatwootWidget(store.auth);
     } catch (e) {
       errEl.textContent = '登录失败：' + e.message;
       errEl.hidden = false;
@@ -1175,6 +1521,43 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     var btn = ev.target.closest('button[data-action]');
     if (!btn) return;
     var action = btn.getAttribute('data-action');
+    if (action === 'form-submit') {
+      var formElement = btn.closest('.form-card');
+      var formId = btn.getAttribute('data-form-id');
+      if (!formElement || !formId) return;
+      if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
+      var formMessage = null;
+      for (var formIndex = 0; formIndex < store.messages.length; formIndex++) {
+        if (store.messages[formIndex].id === formId) {
+          formMessage = store.messages[formIndex];
+          break;
+        }
+      }
+      if (!formMessage || formMessage.meta.status === 'submitted') return;
+
+      var values = collectFormValues(formElement);
+      if (formMessage.content.order_id) {
+        values.order_id = formMessage.content.order_id;
+      }
+      var validationError = UserPage.validateFormValues(formMessage.content, values, store.profile);
+      if (validationError) {
+        showFormError(formElement, validationError);
+        return;
+      }
+
+      for (var submittedIndex = 0; submittedIndex < store.messages.length; submittedIndex++) {
+        if (store.messages[submittedIndex].id === formId) {
+          store.messages[submittedIndex].meta.status = 'submitted';
+          break;
+        }
+      }
+      showFormError(formElement, '');
+      startUserTurn(UserPage.formatFormSubmission(formMessage.content.form_type, values), {
+        visible: false,
+        autoConfirm: true,
+      });
+      return;
+    }
     if (action === 'clarify') {
       // 澄清快捷补全：点击把字段名带入输入框并聚焦，用户补值后回车发送
       var field = btn.getAttribute('data-field') || '';
@@ -1314,7 +1697,10 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
   }
 
   applyView();
-  if (store.view === 'chat') bootstrapChat();
+  if (store.view === 'chat') {
+    bootstrapChat();
+    openChatwootWidget(store.auth);
+  }
 })();
 </script>
 </body>

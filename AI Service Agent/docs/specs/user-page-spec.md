@@ -54,8 +54,8 @@
 | 事件 | 前端表现 |
 |---|---|
 | `token` | AI 气泡流式文本（打字机效果） |
-| `tool_call` / `tool_result` | 工具执行小卡片（图标 + 名称 + 结果摘要，如“正在查询订单… ✓”），可折叠 |
-| `clarification_required` | 澄清卡片：列出缺失字段（如“请提供订单号”）+ 快捷补全选项 |
+| `tool_call` / `tool_result` | 内部过程事件；用户页面不渲染工具调用信息 |
+| `clarification_required` | 澄清卡片：列出缺失字段（如“请提供订单号”）+ 快捷补全选项。P0 中，前端可将 `missing` 包含 `phone` 或 `address` 的澄清映射为本地单次填写表单；无法唯一映射时仍使用文本澄清。表单旧信息来自只读 `GET /me/profile`，提交后仍通过 `POST /chat` 走后端流程 |
 | `confirmation_required` | 确认卡片：操作影响摘要 + `[确认]` `[取消]`（Mutation） |
 | `confirmation_updated` | 确认卡片状态刷新（已确认 / 已取消） |
 | `approval_required` | 审批卡片：摘要 + “审批中”状态 + 到期时间（HighRisk） |
@@ -71,6 +71,19 @@ UX 规则：
 - 确认 / 审批按钮带 pending 态，防重复点击；`request_id` 幂等由后端保证，不暴露给用户。
 - 人工车道：轮询刷新坐席回复，新消息自动滚动到底。
 - AI 回复的 `mode == ai` 实时校验由后端强制（`handoff-spec.md` §1.4），前端只负责展示，不做兜底逻辑。
+
+## Mutation form display
+
+- Form definitions and field validation are frontend presentation logic.
+- The backend does not send or understand a form schema.
+- `GET /me/profile` is read-only and returns only the authenticated caller's phone and address.
+- `GET /me/orders?address_editable=true` is read-only and returns only the authenticated caller's address-editable orders.
+- Old profile values are display-only and are not submitted as tool arguments.
+- `update_phone` and `update_address` P0 forms collect each new value once.
+- The address form displays a single editable order as read-only context, or a dropdown when multiple editable orders exist.
+- The address form does not offer free-text order ID entry and does not display orders that safety precheck will reject.
+- If no editable orders exist or order options fail to load, the frontend shows a status notice instead of a manual order-ID fallback.
+- Form submission produces a normalized text message and continues through the existing chat flow.
 
 ## 6. 前端状态与数据流
 

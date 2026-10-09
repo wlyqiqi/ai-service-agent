@@ -7,6 +7,7 @@
 """
 
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -44,6 +45,7 @@ class ApprovalService:
     def __init__(self, conn: sqlite3.Connection, simulate_approval: bool = False):
         self.conn = conn
         self.simulate_approval = simulate_approval
+        self.lock = threading.RLock()
         self.conn.execute(APPROVAL_SCHEMA)
         self.conn.commit()
 
@@ -57,35 +59,37 @@ class ApprovalService:
 
     def insert_if_absent(self, approval_id: str, conversation_id: str, thread_id: str, payload: dict) -> dict:
         """幂等落库（重复 interrupt 不重复插入）。"""
-        existing = self.get(approval_id)
-        if existing is not None:
-            return existing
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO approval_record (approval_id, conversation_id, thread_id, type, summary, requester_user_id, created_at, expires_at) "
-                "VALUES (?, ?, ?, 'high_risk', ?, ?, ?, ?)",
-                (approval_id, conversation_id, thread_id,
-                 payload.get("summary", ""), payload.get("requester_user_id", ""),
-                 payload.get("created_at", ""), payload.get("expires_at", "")),
-            )
-        return self.get(approval_id)
+        with self.lock:
+            existing = self.get(approval_id)
+            if existing is not None:
+                return existing
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO approval_record (approval_id, conversation_id, thread_id, type, summary, requester_user_id, created_at, expires_at) "
+                    "VALUES (?, ?, ?, 'high_risk', ?, ?, ?, ?)",
+                    (approval_id, conversation_id, thread_id,
+                     payload.get("summary", ""), payload.get("requester_user_id", ""),
+                     payload.get("created_at", ""), payload.get("expires_at", "")),
+                )
+            return self.get(approval_id)
 
     def get(self, approval_id: str) -> dict | None:
-        row = self.conn.execute(
-            "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-            "FROM approval_record WHERE approval_id = ?",
-            (approval_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        rec = self._row_to_dict(row)
-        if rec["status"] == "pending" and self._is_expired(rec["expires_at"]):
-            self._set_status(approval_id, "expired", decided_by="system")
-            rec = self.get(approval_id)  # 惰性过期（approval-spec §3.1，机械落库）
-        return rec
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
+                "FROM approval_record WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            rec = self._row_to_dict(row)
+            if rec["status"] == "pending" and self._is_expired(rec["expires_at"]):
+                self._set_status(approval_id, "expired", decided_by="system")
+                rec = self.get(approval_id)  # 惰性过期（approval-spec §3.1，机械落库）
+            return rec
 
     def _set_status(self, approval_id: str, status: str, decided_by: str) -> None:
-        with self.conn:
+        with self.lock, self.conn:
             self.conn.execute(
                 "UPDATE approval_record SET status = ?, decision = ?, decided_by = ?, decided_at = datetime('now') "
                 "WHERE approval_id = ? AND status = 'pending'",
@@ -112,26 +116,29 @@ class ApprovalService:
         return rec
 
     def pending_for_conversation(self, conversation_id: str) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-            "FROM approval_record WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at",
-            (conversation_id,),
-        ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
+                "FROM approval_record WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at",
+                (conversation_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     def list_pending(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-            "FROM approval_record WHERE status = 'pending' ORDER BY created_at",
-        ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
+                "FROM approval_record WHERE status = 'pending' ORDER BY created_at",
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     def all(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-            "FROM approval_record ORDER BY created_at",
-        ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
+                "FROM approval_record ORDER BY created_at",
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
 
     @staticmethod
     def _row_to_dict(row) -> dict:

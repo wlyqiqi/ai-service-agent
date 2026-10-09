@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import NodeTimeoutError
@@ -26,7 +28,7 @@ async def _acollect(gen):
 def test_stream_emits_token_and_done():
     model = ToolCallingFakeModel(
         responses=[
-            AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+            AIMessage(content='{"route_intent":"faq","confidence":0.9}'),
             AIMessage(content="FAQ 回答。"),
         ]
     )
@@ -145,7 +147,6 @@ def test_stream_never_duplicates_timeout_error():
 
 
 def test_stream_deduplicates_exhausted_node_timeout(monkeypatch):
-    monkeypatch.setenv("JEV_ROUTE_INTENT_ENABLED", "true")
     monkeypatch.setenv("JEV_ENABLED", "false")
     monkeypatch.setenv("ROUTER_NODE_TIMEOUT_SECONDS", "0.05")
     get_settings.cache_clear()
@@ -174,7 +175,7 @@ def test_stream_deduplicates_exhausted_node_timeout(monkeypatch):
 def test_done_carries_message_id():
     model = ToolCallingFakeModel(
         responses=[
-            AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+            AIMessage(content='{"route_intent":"faq","confidence":0.9}'),
             AIMessage(content="带 id 的回复。"),
         ]
     )
@@ -189,7 +190,7 @@ def test_stream_yields_custom_events_and_guard_reject():
     from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT
 
     model = ToolCallingFakeModel(responses=[
-        AIMessage(content='{"capability": "order", "risk_level": "high_risk", "confidence": 0.9}'),
+        AIMessage(content='{"route_intent": "refund_apply_execute", "confidence": 0.9}'),
     ])
     graph = build_graph(model, tools=[kb_search])
     events = _collect(event_stream(graph, config={"thread_id": "t-guard"},
@@ -213,7 +214,7 @@ def test_stream_emits_tool_events_from_nested_subgraph(monkeypatch):
     # 离线测试禁止依赖外部服务：fake 掉 LightRAG 客户端（与 tests/test_kb_search.py 同模式）
     monkeypatch.setattr(kb_module._lightrag, "get_lightrag_client", lambda: _FakeLightRag())
     model = ToolCallingFakeModel(responses=[
-        AIMessage(content='{"capability":"faq","risk_level":"read","confidence":0.9}'),
+        AIMessage(content='{"route_intent":"faq","confidence":0.9}'),
         AIMessage(content="", tool_calls=[{"name": "kb_search", "args": {"text": "退款"}, "id": "call_1", "type": "tool_call"}]),
         AIMessage(content="查到了。"),
     ])
@@ -226,13 +227,27 @@ def test_stream_emits_tool_events_from_nested_subgraph(monkeypatch):
 
 # ---- D7（P4 Task 5）：resume 轮 final 提取（pre/post message diff）----
 
-def test_stream_resume_done_final_from_new_message():
+def test_stream_resume_done_final_from_new_message(monkeypatch, tmp_path):
     """mutation confirm resume 轮 done.final 含完成结果（diff 取本轮新增，不回落历史）。"""
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_streaming", Path(__file__).resolve().parents[1] / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mock_db = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(mock_db))
+    from ai_service_agent.tools import orders as orders_mod, write as write_mod
+
+    class _Settings:
+        mock_ecommerce_db_path = str(mock_db)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
     from langgraph.checkpoint.memory import MemorySaver
     from ai_service_agent.testing import router_json_message, select_json_message
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("order", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -247,7 +262,7 @@ def test_stream_resume_done_final_from_new_message():
     ))
     done = events[-1]
     assert done["type"] == "done"
-    assert "收货地址已更新" in done["data"]["final"]
+    assert "收货地址已修改成功" in done["data"]["final"]
     assert done["data"]["message_id"]
 
 
@@ -258,7 +273,7 @@ def test_new_assistant_text_and_id_no_replay():
     from ai_service_agent.testing import router_json_message
 
     model = ToolCallingFakeModel(responses=[
-        router_json_message("faq", "read", 0.9),
+        router_json_message("faq", 0.9),
         AIMessage(content="FAQ 回答。"),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
@@ -284,10 +299,10 @@ def test_stream_done_final_null_on_interrupt_turn():
 
     model = ToolCallingFakeModel(responses=[
         # turn1：改地址但参数全空 -> clarify（写入 assistant 文案）
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {}),
         # turn2：补参 -> confirmation interrupt（无新 assistant）
-        router_json_message("account", "mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
