@@ -82,6 +82,14 @@ def completion_text(tool: str, args: dict | None = None) -> str:
     return _COMPLETION_TEXTS.get(tool, f"好的，您的{_label(tool)}已办理完成。")
 
 
+def mutation_tool_failed_text(tool: str, error: str) -> str:
+    operation_reference = hashlib.sha256(error.encode("utf-8")).hexdigest()[:8]
+    return (
+        f"很抱歉，您的{_label(tool)}操作未成功（处理编号：{operation_reference}）。"
+        "请不要担心，您可以稍后重试，或输入「转人工」由人工客服为您跟进。"
+    )
+
+
 def operation_cancelled_text() -> str:
     return "好的，已按您的要求取消本次操作，订单信息未做任何变更。还有其他需要，随时告诉我。"
 

@@ -515,7 +515,7 @@ def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
         owner, order_id = conn.execute(
             """
             SELECT customer_id, order_id FROM orders o
-            WHERE o.status IN ('paid', 'completed')
+            WHERE o.status = 'paid'
               AND (SELECT COUNT(*) FROM orders c
                    WHERE c.customer_id=o.customer_id
                      AND c.status IN ('paid', 'completed')) = 1

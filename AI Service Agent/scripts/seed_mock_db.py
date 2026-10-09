@@ -276,7 +276,7 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
             ))
     conn.executemany("INSERT INTO products VALUES (?,?,?,?,?,?,?,?,?)", products)
 
-    # ---- orders（含规范化夹具 4 单）----
+    # ---- orders（含规范化夹具 5 单）----
     signed_status = {"shipped", "delivered", "completed"}
     orders = [
         ("ORD-1", "u1", "delivered", 2, None, "SGD", 89.85, "官网", "SG"),
@@ -284,6 +284,7 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
         ("ORD-10086", "u1", "delivered", 12, None, "SGD", 147.60, "Lazada", "SG"),
         ("ORD-CANCEL-1", "u1", "cancelled", 20, 3, "SGD", 65.34, "官网", "SG"),
         ("ORD-REFUND-1", "u1", "paid", 3, None, "SGD", 199.00, "官网", "SG"),
+        ("ORD-PAID-1", "u1", "paid", 3, None, "SGD", 99.00, "官网", "SG"),
     ]
     for j, (oid, cust, status, ago, cago, cur, amt, channel, market) in enumerate(orders):
         ordered_at = ANCHOR - timedelta(days=ago)
@@ -309,9 +310,12 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
         "total_amount,currency,channel,market) VALUES (?,?,?,?,?,?,?,?,?,?)", orders,
     )
 
-    # ---- order_items + 金额回填 ----
+    # ---- order_items + 金额回填（canonical 夹具订单跳过回填，保持设定金额）----
+    canonical_ids = {order[0] for order in orders[:6]}
     items = []
     for order in orders:
+        if order[0] in canonical_ids:
+            continue
         market = order[9]
         n_items = rng.choice([1, 1, 1, 2, 3])
         picks = rng.sample(range(len(products)), n_items)
@@ -323,7 +327,7 @@ def _populate(conn: sqlite3.Connection, rng: random.Random) -> dict[str, int]:
             total += unit * qty
             items.append((order[0], pid, qty, unit))
         conn.execute(
-            "UPDATE orders SET total_amount=? WHERE order_id=?", (round(total, 2), order[0])
+            "UPDATE orders SET total_amount=? WHERE order_id=?", (round(total, 2), order[0]),
         )
     conn.executemany("INSERT INTO order_items(order_id,product_id,quantity,unit_price) VALUES (?,?,?,?)", items)
 

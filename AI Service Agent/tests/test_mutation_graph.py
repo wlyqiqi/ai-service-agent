@@ -103,6 +103,26 @@ def test_mutation_tool_exception_uses_local_finalize_failed(seed, monkeypatch):
     assert "已更新完成" not in output["messages"][-1].content
 
 
+def test_mutation_tool_error_result_not_rewritten_as_success(seed, monkeypatch):
+    """P1-3 回归：工具返回 {"error": ...} 时，finalize_ok 不得输出成功话术。"""
+    module, db_path = seed
+    _use_db(monkeypatch, db_path)
+    monkeypatch.setattr(
+        write_mod.update_address,
+        "func",
+        MagicMock(return_value={"error": "not_found", "order_id": "ORD-PAID-1"}),
+    )
+
+    graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
+    _invoke(graph, "改一下收货地址", "mutation-tool-error-1")
+    output = _invoke(graph, "确认", "mutation-tool-error-1", resume={"action": "confirm"})
+
+    assert output["execution_status"] == "failed"
+    last = output["messages"][-1].content
+    assert "已更新完成" not in last and "已办理完成" not in last
+    assert "未成功" in last
+
+
 def test_mutation_cancel_does_not_execute_tool():
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     _invoke(graph, "改一下收货地址", "m3")
