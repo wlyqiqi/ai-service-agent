@@ -49,10 +49,12 @@ def _completed_visible_turns(messages: Sequence[BaseMessage]) -> list[list[BaseM
 
 
 def _visible_turn_messages(turn: Sequence[BaseMessage]) -> list[BaseMessage]:
-    final_ai = next((message for message in reversed(turn) if _is_final_ai(message)), None)
     visible = [HumanMessage(content=visible_text(turn[0]))]
-    if final_ai is not None:
-        visible.append(AIMessage(content=visible_text(final_ai)))
+    visible.extend(
+        AIMessage(content=visible_text(message))
+        for message in turn[1:]
+        if _is_final_ai(message)
+    )
     return visible
 
 

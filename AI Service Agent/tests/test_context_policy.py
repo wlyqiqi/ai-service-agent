@@ -67,3 +67,23 @@ def test_read_context_preserves_current_turn_tool_chain():
     assert actual[2].content == "查询知识库"
     assert actual[3].tool_calls[0]["id"] == "call-read"
     assert actual[4].content == "knowledge base evidence"
+
+
+def test_recent_visible_context_keeps_all_ai_messages_in_a_turn():
+    messages = [
+        HumanMessage(content="我要转人工"),
+        AIMessage(content="已转人工，坐席将尽快回复"),
+        AIMessage(content="坐席已处理地址"),
+        AIMessage(content="坐席已处理退款"),
+        HumanMessage(content="你好"),
+    ]
+
+    actual = build_recent_visible_context(messages, previous_completed_turns=1)
+
+    assert [message.content for message in actual] == [
+        "我要转人工",
+        "已转人工，坐席将尽快回复",
+        "坐席已处理地址",
+        "坐席已处理退款",
+        "你好",
+    ]
