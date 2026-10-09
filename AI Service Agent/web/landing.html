@@ -135,6 +135,9 @@
     @media (max-width:1024px) { .hero-grid,.app-grid { grid-template-columns:1fr; gap:52px; } .products,.principles { grid-template-columns:repeat(2,minmax(0,1fr)); } .values,.support { grid-template-columns:1fr; } .nav-links { display:none; } .catalog-top { align-items:flex-start; flex-direction:column; } .cta-card { align-items:flex-start; flex-direction:column; } }
     @media (max-width:640px) { .container { width:min(var(--container),calc(100% - 32px)); } .hero { padding-top:136px; } section { padding:68px 0; } .hero-actions { width:100%; } .hero-actions .button { width:100%; } .products,.principles { grid-template-columns:1fr; } .hero-panel,.cta-card { padding:24px; } .filters { width:100%; justify-content:space-between; } .filter { padding:9px 12px; } }
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } * { transition:none !important; } }
+    .woot-widget-holder.woot-widget-holder--opened { width:420px !important; height:620px !important; }
+    .woot-widget-holder iframe { width:420px !important; height:620px !important; }
+    @media (max-width:480px) { .woot-widget-holder.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; } .woot-widget-holder iframe { width:100vw !important; height:calc(100vh - 72px) !important; } }
   </style>
 </head>
   <body>
