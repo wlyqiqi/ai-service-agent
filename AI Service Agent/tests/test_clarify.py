@@ -91,6 +91,56 @@ async def test_select_incomplete_sets_clarify_missing():
 
 
 @pytest.mark.asyncio
+async def test_select_invoice_placeholders_clarify_not_invalid_args():
+    """真机漂移：create_invoice 用空串/amount=0 占位时走 D1 澄清，不 safety_rejected(invalid_args)。"""
+    model = ToolCallingFakeModel(responses=[select_json_message(
+        "create_invoice",
+        {"order_id": "", "amount": 0, "company": "", "tax_no": ""},
+    )])
+    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    out = await node({"messages": [HumanMessage(content="我要开发票")], "context": {}})
+    assert out["context"]["clarify_missing"] == ["order_id", "amount", "company", "tax_no"]
+    assert "pending_tool" not in out["context"]
+    assert out["context"].get("precheck_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_select_invoice_non_positive_amount_only_clarifies_amount():
+    """仅金额占位为 0 时，其余字段保留，只澄清 amount。"""
+    model = ToolCallingFakeModel(responses=[select_json_message(
+        "create_invoice",
+        {
+            "order_id": "ORD-PAID-1",
+            "amount": 0,
+            "company": "星辰科技有限公司",
+            "tax_no": "91110108MA01AB12CD",
+        },
+    )])
+    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
+    assert out["context"]["clarify_missing"] == ["amount"]
+    assert "pending_tool" not in out["context"]
+
+
+@pytest.mark.asyncio
+async def test_select_invoice_bad_amount_type_still_invalid_args():
+    """真类型错误仍拒绝，不误判为缺参澄清。"""
+    model = ToolCallingFakeModel(responses=[select_json_message(
+        "create_invoice",
+        {
+            "order_id": "ORD-PAID-1",
+            "amount": "abc",
+            "company": "星辰科技有限公司",
+            "tax_no": "91110108MA01AB12CD",
+        },
+    )])
+    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
+    assert out["context"].get("precheck_reason") == "invalid_args"
+    assert "clarify_missing" not in out["context"]
+
+
+@pytest.mark.asyncio
 async def test_select_complete_resets_clarify_count():
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)

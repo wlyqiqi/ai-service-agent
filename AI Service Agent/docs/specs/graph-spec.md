@@ -103,7 +103,7 @@
 ### 6.2 MutationGraph（workflow）
 
 - 确定性流程：**select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**；完整 → **安全预检**（`safety-spec.md`；含业务规则，D3：`precheck_fetch` 提供订单状态事实 → `context["precheck_data"]`，`safety_check` 确定性裁决）→ `interrupt()` 用户确认（含影响摘要）→ 执行写操作工具 → 结果。
-- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串，或（全可选工具）全部业务字段为空 → 进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / schema 校验错误仍为拒绝（`safety_rejected`），不走 clarify。
+- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串/数值占位（`<=0`，如开票 `amount=0`），或（全可选工具）全部业务字段为空 → select 先归一占位符再判定，进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / 真 schema 类型错误仍为拒绝（`safety_rejected`），不走 clarify。
 - 写图 select 允许集为档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` →
   clarify 节点（普通轮，`clarification_required` + `reason:"tier_mismatch"`，`execution_status=clarifying`）。
 - 用户确认对应 `Command(resume={"action":"confirm"|"cancel"})`（schema 见 §3）。

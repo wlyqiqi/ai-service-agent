@@ -99,6 +99,37 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
+def _normalize_placeholder_args(args: dict, meta) -> dict:
+    """将模型占位符归一为「未提供」，供 D1 缺参澄清（不把空参当 schema 拒绝）。
+
+    - None / 空白字符串 → 删除字段
+    - int/float <= 0 → 删除字段（如 amount=0 的开票占位）
+    真类型错误（如 amount=\"abc\"）保留，仍由 schema 走 invalid_args。
+    """
+    if meta is None or meta.schema is None:
+        return dict(args)
+    fields = set(meta.schema.model_fields) - {"request_id"}
+    normalized: dict = {}
+    for key, value in args.items():
+        if key == "request_id":
+            normalized[key] = value
+            continue
+        if key not in fields:
+            normalized[key] = value
+            continue
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, bool):
+            normalized[key] = value
+            continue
+        if isinstance(value, (int, float)) and value <= 0:
+            continue
+        normalized[key] = value
+    return normalized
+
+
 def _budgeted_select_messages(
     state: dict,
     selected_tools: list,
@@ -294,6 +325,7 @@ def make_select_node(
                 return _tier_clarify(state, tool_name)
             return _reject(state, "unknown_tool")
         if meta.schema is not None:
+            args = _normalize_placeholder_args(args, meta)
             try:
                 args = meta.schema.model_validate(args).model_dump()
             except ValidationError as exc:

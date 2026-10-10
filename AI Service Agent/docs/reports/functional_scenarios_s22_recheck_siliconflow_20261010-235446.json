@@ -1,0 +1,75 @@
+{
+  "summary": {
+    "experiment_name": "functional-deepseek-ai/DeepSeek-V4-Flash-20261010-155459-16beece0",
+    "experiment_url": "https://smith.langchain.com/o/7b7ef818-afd9-42a4-84cc-0f331bfd835f/datasets/7cbce67c-2aca-4931-b470-ed7b4b0f30c6/compare?selectedSessions=ae49ba8d-c497-4158-b465-244ebfc58f89",
+    "cases": 2,
+    "passed": 1,
+    "failed": 1,
+    "dataset": "ai-cs-functional-scenarios-v1",
+    "split": "full"
+  },
+  "results": [
+    {
+      "id": "S22",
+      "suite": "mutation",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "mode": "ai",
+        "events": [
+          "clarification_required",
+          "done"
+        ],
+        "tools": [],
+        "timeline": [
+          [
+            "clarification_required",
+            "done"
+          ]
+        ],
+        "store_preview": [
+          {
+            "role": "user",
+            "content": "我要开发票"
+          },
+          {
+            "role": "assistant",
+            "content": "好的，为了尽快为您办理，请补充：订单号、金额、公司名、税号，直接回复我就可以～"
+          }
+        ],
+        "latency_ms": 5009.0
+      }
+    },
+    {
+      "id": "S33",
+      "suite": "high_risk",
+      "status": "fail",
+      "problems": [
+        "event missing: clarification_required"
+      ],
+      "actual": {
+        "mode": "ai",
+        "events": [
+          "done"
+        ],
+        "tools": [],
+        "timeline": [
+          [
+            "done"
+          ]
+        ],
+        "store_preview": [
+          {
+            "role": "user",
+            "content": "退了吧"
+          },
+          {
+            "role": "assistant",
+            "content": "您好，理解您想退货的心情。不过我还需要跟您确认一下具体的订单信息，比如您购买的是哪款产品、订单号是多少，这样我才能准确地帮您申请退货流程。方便告诉我这些信息吗？"
+          }
+        ],
+        "latency_ms": 8886.4
+      }
+    }
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "summary": {
+    "experiment_name": "functional-deepseek-ai/DeepSeek-V4-Flash-20261010-162736-f7ae6add",
+    "experiment_url": "https://smith.langchain.com/o/7b7ef818-afd9-42a4-84cc-0f331bfd835f/datasets/7cbce67c-2aca-4931-b470-ed7b4b0f30c6/compare?selectedSessions=2ed5074f-e52a-4b02-9858-ecc445c78547",
+    "cases": 4,
+    "passed": 4,
+    "failed": 0,
+    "dataset": "ai-cs-functional-scenarios-v1",
+    "split": "full"
+  },
+  "results": [
+    {
+      "id": "S05",
+      "suite": "read",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "mode": "ai",
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "tools": [
+          "order_lookup"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "store_preview": [
+          {
+            "role": "user",
+            "content": "帮我查订单 ORD-1 的状态"
+          },
+          {
+            "role": "assistant",
+            "content": "\n\n我来帮您查询订单 ORD-1 的状态，请稍等。\n\n您查询的订单 **ORD-1** 当前状态如下：\n\n- 📦 **订单状态**：已送达\n- 💰 **订单金额"
+          }
+        ],
+        "latency_ms": 2905.5
+      }
+    },
+    {
+      "id": "S21",
+      "suite": "mutation",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "mode": "ai",
+        "events": [
+          "clarification_required",
+          "done"
+        ],
+        "tools": [],
+        "timeline": [
+          [
+            "clarification_required",
+            "done"
+          ]
+        ],
+        "store_preview": [
+          {
+            "role": "user",
+            "content": "我要改个地址"
+          },
+          {
+            "role": "assistant",
+            "content": "好的，为了尽快为您办理，请补充：订单号、收货地址，直接回复我就可以～"
+          }
+        ],
+        "latency_ms": 33128.9
+      }
+    },
+    {
+      "id": "S22",
+      "suite": "mutation",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "mode": "ai",
+        "events": [
+          "clarification_required",
+          "done"
+        ],
+        "tools": [],
+        "timeline": [
+          [
+            "clarification_required",
+            "done"
+          ]
+        ],
+        "store_preview": [
+          {
+            "role": "user",
+            "content": "我要开发票"
+          },
+          {
+            "role": "assistant",
+            "content": "好的，为了尽快为您办理，请补充：订单号、金额、公司名、税号，直接回复我就可以～"
+          }
+        ],
+        "latency_ms": 3963.8
+      }
+    },
+    {
+      "id": "S40",
+      "suite": "handoff",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "mode": "human",
+        "events": [
+          "handoff_created",
+          "done"
+        ],
+        "tools": [],
+        "timeline": [
+          [
+            "handoff_created",
+            "done"
+          ]
+        ],
+        "store_preview": [
+          {
+            "role": "user",
+            "content": "转人工"
+          },
+          {
+            "role": "assistant",
+            "content": "好的，已为您转接人工客服，请稍候。人工客服会继续在这个对话里为您服务。"
+          }
+        ],
+        "latency_ms": 13.6
+      }
+    }
+  ]
+}

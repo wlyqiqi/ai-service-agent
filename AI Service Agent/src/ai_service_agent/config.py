@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     model_name: str = Field(default="deepseek-v4-flash", validation_alias="ARK_MODEL")
     model_endpoint: str | None = Field(default=None, validation_alias="ARK_BASE_URL")
     model_api_key: str | None = Field(default=None, validation_alias="ARK_API_KEY")
+    # Router 专用模型（替代不可用的 JEV）；空则与 ARK_MODEL 共用同一模型
+    router_model_name: str | None = Field(default=None, validation_alias="ROUTER_MODEL")
     router_conf_threshold: float = 0.6
     router_node_timeout_seconds: float = Field(
         default=6.0, validation_alias="ROUTER_NODE_TIMEOUT_SECONDS"
@@ -119,11 +121,30 @@ def _sync_langsmith_env(settings: Settings, environ: dict | None = None) -> None
         environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
 
 
-def make_model() -> ChatOpenAI:
-    """生产模型：ARK（OpenAI 兼容，走 config）。"""
+def _openai_compat_model(model_name: str) -> ChatOpenAI:
+    """OpenAI 兼容端点（SiliconFlow / ARK）；关闭 thinking（含 Qwen chat_template_kwargs）。"""
     settings = get_settings()
     return ChatOpenAI(
-        model=settings.model_name,
+        model=model_name,
         api_key=settings.model_api_key,
         base_url=settings.model_endpoint,
+        extra_body={
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     )
+
+
+def make_model() -> ChatOpenAI:
+    """子图 / 生成用生产模型（ARK_MODEL）。"""
+    return _openai_compat_model(get_settings().model_name)
+
+
+def make_router_model() -> ChatOpenAI:
+    """Router 专用模型：ROUTER_MODEL 优先，否则回落 ARK_MODEL。
+
+    用于替代不可用的 JEV 主路由；必须关 thinking 以压低每 turn 延迟。
+    """
+    settings = get_settings()
+    name = (settings.router_model_name or "").strip() or settings.model_name
+    return _openai_compat_model(name)

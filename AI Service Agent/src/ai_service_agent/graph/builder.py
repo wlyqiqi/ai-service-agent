@@ -1,12 +1,13 @@
 import re
 
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from ai_service_agent.config import get_settings
+from ai_service_agent.config import get_settings, make_router_model
 from ai_service_agent.domain.orders import OrderRepository, SQLiteOrderRepository
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.messages import message_text
@@ -102,10 +103,12 @@ def build_graph(
     registry=None,
     tool_hooks=None,
     order_repository: OrderRepository | None = None,
+    router_model=None,
 ):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
+    router_model：Router 专用模型（替代 JEV）；默认按 ROUTER_MODEL / ARK_MODEL 解析。
     """
     repository = order_repository or SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
     reg = registry if registry is not None else make_tool_registry(repository)
@@ -142,6 +145,15 @@ def build_graph(
         and bool(settings.jev_api_key)
         and not settings.fake_model
     )
+    if router_model is None:
+        if (
+            settings.router_model_name
+            and not settings.fake_model
+            and not isinstance(model, FakeMessagesListChatModel)
+        ):
+            router_model = make_router_model()
+        else:
+            router_model = model
     if use_jev:
         builder.add_node(
             "router_jev",
@@ -151,7 +163,7 @@ def build_graph(
         )
     builder.add_node(
         "router_deepseek",
-        make_deepseek_router(model),
+        make_deepseek_router(router_model),
         error_handler=root_error_handler,
         retry_policy=RETRY_DEEPSEEK_ROUTER,
         timeout=make_timeout_policy(settings.router_node_timeout_seconds),
