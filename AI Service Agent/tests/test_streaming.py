@@ -15,6 +15,7 @@ from conftest import ainvoke_graph
 from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM
 from ai_service_agent.testing import route_intent_json_message
+from ai_service_agent.graph import builder as builder_mod
 
 
 def _collect(gen):
@@ -237,12 +238,18 @@ def test_stream_resume_done_final_from_new_message(monkeypatch, tmp_path):
     mock_db = tmp_path / "mock_ecommerce.db"
     module.build_database(str(mock_db))
     from ai_service_agent.tools import orders as orders_mod, write as write_mod
+    real_builder_settings = builder_mod.get_settings()
 
     class _Settings:
         mock_ecommerce_db_path = str(mock_db)
 
-    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
-    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(mock_db)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings(real_builder_settings))
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _Settings(real_builder_settings))
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings(real_builder_settings))
     from langgraph.checkpoint.memory import MemorySaver
     from ai_service_agent.testing import router_json_message, select_json_message
 
@@ -291,7 +298,26 @@ def test_new_assistant_text_and_id_no_replay():
     assert text is None and mid is None
 
 
-def test_stream_done_final_null_on_interrupt_turn():
+def test_stream_done_final_null_on_interrupt_turn(monkeypatch, tmp_path):
+    import importlib.util
+    from pathlib import Path
+    from ai_service_agent.graph import builder as builder_mod
+
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_streaming_interrupt", Path(__file__).resolve().parents[1] / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mock_db = tmp_path / "interrupt-mock.db"
+    module.build_database(str(mock_db))
+    class _Settings:
+        mock_ecommerce_db_path = str(mock_db)
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(mock_db)
+    real_settings = builder_mod.get_settings()
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _Settings(real_settings))
+
     """回归（P5 收尾）：多轮会话中 confirmation interrupt 轮无新 assistant 消息时，
     done.final / message_id 必须为 None——不得回落历史 assistant 文案（否则 Message Store 重复落库）。"""
     from langgraph.checkpoint.memory import MemorySaver

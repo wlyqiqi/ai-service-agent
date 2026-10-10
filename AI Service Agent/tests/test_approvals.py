@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.harness import server as server_module
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.testing import ApprovalFlowFakeModel
 
@@ -37,10 +38,20 @@ def isolated_mock_db(monkeypatch, tmp_path):
     db_path = tmp_path / 'mock_ecommerce.db'
     module.build_database(str(db_path))
     from ai_service_agent.tools import write as _write, orders as _orders
+    from ai_service_agent.graph import builder as _builder
     class _S:
         mock_ecommerce_db_path = str(db_path)
-    monkeypatch.setattr(_write, 'get_settings', lambda: _S())
-    monkeypatch.setattr(_orders, 'get_settings', lambda: _S())
+
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(db_path)
+
+    real_settings = _builder.get_settings()
+    real_server_settings = server_module.get_settings()
+    monkeypatch.setattr(_write, 'get_settings', lambda: _S(real_settings))
+    monkeypatch.setattr(_orders, 'get_settings', lambda: _S(real_settings))
+    monkeypatch.setattr(_builder, 'get_settings', lambda: _S(real_settings))
+    monkeypatch.setattr(server_module, 'get_settings', lambda: _S(real_server_settings))
 
 
 
@@ -144,7 +155,7 @@ def test_approval_endpoint_approve_completes_graph(tmp_path):
     db = str(tmp_path / "e.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         text = "".join(r.iter_text())
     assert '"approval_required"' in text
 
@@ -172,7 +183,7 @@ def test_approval_endpoint_reject_no_tool_and_404(tmp_path):
     db = str(tmp_path / "r.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         "".join(r.iter_text())
     conn = sqlite3.connect(db)
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
@@ -194,7 +205,7 @@ def test_approval_get_and_list_pending(tmp_path):
     db = str(tmp_path / "l.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         "".join(r.iter_text())
     body = client.get("/approvals?status=pending").json()
     assert len(body["items"]) == 1 and body["items"][0]["status"] == "pending"

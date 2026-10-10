@@ -16,10 +16,12 @@ from langchain_core.tools import BaseTool
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 from langgraph.config import get_stream_writer
+from langgraph.runtime import Runtime
 
+from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
 from ai_service_agent.graph.workflows.safety import RISK_ORDER
-from ai_service_agent.tools.orders import find_own_cancellable_paid_orders, find_own_refundable_orders
 from ai_service_agent.tools.registry import ToolRegistry
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.context.builders import build_recent_visible_context
@@ -128,7 +130,34 @@ def _budgeted_select_messages(
     return [system_message, *selected]
 
 
-def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> Callable[[dict], Awaitable[dict]]:
+def _visible_text(state: dict) -> str:
+    parts: list[str] = []
+    for message in state.get("messages", []):
+        if isinstance(message, dict):
+            parts.append(str(message.get("content", "")))
+        else:
+            parts.append(str(getattr(message, "content", "")))
+    return "\n".join(parts)
+
+
+def _order_repository(
+    runtime: Runtime[GraphContext] | None,
+    fallback: OrderRepository | None,
+) -> OrderRepository | None:
+    if runtime is not None and runtime.context is not None:
+        repository = getattr(runtime.context, "order_repository", None)
+        if repository is not None:
+            return repository
+    return fallback
+
+
+def make_select_node(
+    model,
+    tier: str,
+    tools: list,
+    registry: ToolRegistry,
+    order_repository: OrderRepository | None = None,
+) -> Callable[[dict], Awaitable[dict]]:
     # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
     # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
     tier_tools = [
@@ -181,7 +210,11 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             return fields
         return []
 
-    async def select(state: dict, config: RunnableConfig | None = None) -> dict:
+    async def select(
+        state: dict,
+        config: RunnableConfig | None = None,
+        runtime: Runtime[GraphContext] | None = None,
+    ) -> dict:
         current_context = {**state.get("context", {})}
         current_context.pop("cancellation_candidates", None)
         state = {**state, "context": current_context}
@@ -222,38 +255,33 @@ def make_select_node(model, tier: str, tools: list, registry: ToolRegistry) -> C
             tool_name = tool_call["name"]
             args = dict(tool_call.get("args") or {})
 
-        if tool_name == "cancel_order" and not args.get("order_id"):
-            candidates = await asyncio.to_thread(
-                find_own_cancellable_paid_orders, state.get("user_id", "")
-            )
-            if isinstance(candidates, dict):
-                return _reject(state, candidates["error"])
-            if len(candidates) == 1:
-                args["order_id"] = candidates[0]["order_id"]
-            else:
-                ctx = {
-                    **state.get("context", {}),
-                    "clarify_missing": ["order_id"],
-                    "cancellation_candidates": candidates,
-                }
-                return {"context": ctx}
-        if tool_name == "refund_apply" and not args.get("order_id"):
-            candidates = await asyncio.to_thread(
-                find_own_refundable_orders, state.get("user_id", "")
-            )
-            if isinstance(candidates, dict):
-                return _reject(state, candidates["error"])
-            if len(candidates) == 1:
-                args["order_id"] = candidates[0]["order_id"]
-            elif len(candidates) > 1:
-                ctx = {
-                    **state.get("context", {}),
-                    "clarify_missing": ["order_id"],
-                    "cancellation_candidates": candidates,
-                }
-                return {"context": ctx}
-            else:
+        if tier == "high_risk" and tool_name in ("cancel_order", "refund_apply"):
+            if args.get("order_id") and str(args["order_id"]) not in _visible_text(state):
+                # The model may only narrow a user-provided identifier; it may
+                # never invent one or silently choose from a candidate list.
+                args.pop("order_id", None)
+
+        if tool_name in ("cancel_order", "refund_apply") and not args.get("order_id"):
+            repository = _order_repository(runtime, order_repository)
+            candidates: list[dict] = []
+            if repository is not None:
+                try:
+                    candidates = await asyncio.to_thread(
+                        repository.list_actionable_orders,
+                        state.get("user_id", ""),
+                        tool_name,
+                    )
+                except (OrderRepositoryUnavailable, ValueError):
+                    candidates = []
+            if not candidates:
                 return _clarify(state, ["order_id"])
+            return {
+                "context": {
+                    **state.get("context", {}),
+                    "clarify_missing": ["order_id"],
+                    "cancellation_candidates": candidates,
+                }
+            }
         args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:

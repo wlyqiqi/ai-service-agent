@@ -18,6 +18,7 @@ from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows import high_risk_agent as high_risk_agent_mod
 from ai_service_agent.graph.workflows import safety as safety_mod
 from ai_service_agent.graph.workflows.safety import _apply_business_rules, _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
+from ai_service_agent.domain.orders import OrderRepositoryUnavailable, SQLiteOrderRepository
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools import write as write_mod
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
@@ -26,23 +27,23 @@ from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 def _hr_model():
     return ToolCallingFakeModel(responses=[
         router_json_message("refund_apply_execute", 0.9),
-        select_json_message("refund_apply", {"order_id": "10086"}),
+        select_json_message("refund_apply", {"order_id": "ORD-2026-10015"}),
     ])
 
 
-def _invoke(graph, text, thread_id, resume=None):
+def _invoke(graph, text, thread_id, resume=None, user_id="u1"):
     kwargs = {"configurable": {"thread_id": thread_id}}
     if resume is not None:
         return ainvoke_graph(graph, Command(resume=resume), kwargs)
     return ainvoke_graph(graph,
-        {"messages": [HumanMessage(content=text)], "user_id": "u1", "session_id": thread_id, "context": {}},
+        {"messages": [HumanMessage(content=text)], "user_id": user_id, "session_id": thread_id, "context": {}},
         kwargs,
     )
 
 
 def test_high_risk_reaches_approval_interrupt():
     graph = build_graph(_hr_model(), tools=[kb_search], checkpointer=MemorySaver())
-    out = _invoke(graph, "申请退款", "h1")
+    out = _invoke(graph, "订单 ORD-2026-10015 申请退款", "h1", user_id="u0084")
     values = [it.value for it in out.get("__interrupt__", [])]
     assert any(v.get("type") == "approval_required" and v.get("approval_id") and v.get("expires_at") for v in values)
 
@@ -66,7 +67,7 @@ def test_high_risk_approve_executes_tool(monkeypatch, tmp_path):
     config = {"configurable": {"thread_id": "h2"}}
     ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": "h2",
             "context": {},
@@ -102,7 +103,7 @@ def test_high_risk_tool_exception_uses_local_finalize_failed(monkeypatch, tmp_pa
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
     config = {"configurable": {"thread_id": "highrisk-failure-1"}}
     ainvoke_graph(graph, {
-        "messages": [HumanMessage(content="申请退款")],
+        "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
         "user_id": owner,
         "session_id": "highrisk-failure-1",
         "context": {},
@@ -116,7 +117,7 @@ def test_high_risk_tool_exception_uses_local_finalize_failed(monkeypatch, tmp_pa
 
 def test_high_risk_reject_no_tool():
     graph = build_graph(_hr_model(), tools=[kb_search], checkpointer=MemorySaver())
-    _invoke(graph, "申请退款", "h3")
+    _invoke(graph, "订单 ORD-2026-10015 申请退款", "h3", user_id="u0084")
     out = _invoke(graph, "拒绝", "h3", resume={"action": "reject", "note": "资料不足"})
     assert out["execution_status"] == "completed"
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
@@ -125,7 +126,7 @@ def test_high_risk_reject_no_tool():
 
 def test_high_risk_expired_no_tool():
     graph = build_graph(_hr_model(), tools=[kb_search], checkpointer=MemorySaver())
-    _invoke(graph, "申请退款", "h4")
+    _invoke(graph, "订单 ORD-2026-10015 申请退款", "h4", user_id="u0084")
     out = _invoke(graph, "过期", "h4", resume={"result": "expired"})
     assert out["execution_status"] == "completed"
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
@@ -223,9 +224,10 @@ def _hr_graph(model):
     return build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
 
 
-def test_precheck_fetch_writes_facts_only():
+def test_precheck_fetch_writes_facts_only(monkeypatch, tmp_path):
     """precheck_fetch：写 context[precheck_data] 仅事实、无裁决；无 order_id 不写。"""
-    node = make_precheck_fetch_node()
+    _, db_path = _load_refund_seed(tmp_path, "precheck-facts")
+    node = make_precheck_fetch_node(SQLiteOrderRepository(str(db_path)))
     out = asyncio.run(node({"context": {"pending_tool": {"tool": "refund_apply", "args": {"order_id": "ORD-10086"}}}}))
     d = out["context"]["precheck_data"]
     assert d["status"] == "signed" and d["user_id"] == "u1" and d["order_id"] == "ORD-10086"
@@ -240,7 +242,7 @@ def test_high_risk_0086_refund_window_expired():
         router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": "ORD-10086"}),
     ])
-    out = _invoke(_hr_graph(model), "我签收已经 10 天了，就要无理由退货", "t3-0086")
+    out = _invoke(_hr_graph(model), "订单 ORD-10086 我签收已经 10 天了，就要无理由退货", "t3-0086")
     assert not out.get("__interrupt__")
     assert out["execution_status"] == "completed"
     assert out["context"].get("precheck_reason") == "refund_window_expired"
@@ -253,7 +255,7 @@ def test_high_risk_0090_cancel_already_cancelled():
         router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", {"order_id": "ORD-CANCEL-1"}),
     ])
-    out = _invoke(_hr_graph(model), "这个订单已经取消了，再帮我取消一次", "t3-0090")
+    out = _invoke(_hr_graph(model), "订单 ORD-CANCEL-1 已经取消了，再帮我取消一次", "t3-0090")
     assert not out.get("__interrupt__")
     assert out["execution_status"] == "completed"
     assert out["context"].get("precheck_reason") == "order_already_cancelled"
@@ -282,14 +284,13 @@ def test_cancel_precheck_status_machine():
     ) == "data_boundary"
 
 
-def test_cancel_precheck_distinguishes_db_unavailable(monkeypatch):
-    monkeypatch.setattr(
-        safety_mod,
-        "lookup_order_state_with_availability",
-        lambda order_id: (None, False),
-    )
+def test_cancel_precheck_distinguishes_db_unavailable():
+    class BrokenRepository(SQLiteOrderRepository):
+        def get_order_snapshot(self, order_id: str, user_id: str):
+            raise OrderRepositoryUnavailable("unavailable")
+
     out = ainvoke_graph(
-        _safety_mini_graph(make_precheck_fetch_node()),
+        _safety_mini_graph(make_precheck_fetch_node(BrokenRepository("unused.db"))),
         {
             "messages": [],
             "user_id": "u1",
@@ -377,7 +378,7 @@ def test_refund_precheck_rejects_wrong_status(monkeypatch, tmp_path):
     thread_id = "refund-precheck-wrong-status"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -414,7 +415,7 @@ def test_refund_precheck_rejects_over_amount(monkeypatch, tmp_path):
     thread_id = "refund-precheck-over-amount"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -450,7 +451,7 @@ def test_refund_precheck_rejects_completed_order(monkeypatch, tmp_path):
     thread_id = "refund-precheck-completed"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -483,7 +484,7 @@ def test_refund_order_approval_summary_contains_amount(monkeypatch, tmp_path):
     thread_id = "refund-approval-summary"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -506,7 +507,7 @@ def test_refund_order_approval_summary_contains_amount(monkeypatch, tmp_path):
 
 
 def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
-    """Single refundable order auto-selects and reaches refund approval."""
+    """Strict mode asks the user to choose even with one refundable order."""
     _, db_path = _load_refund_seed(tmp_path, "single-refundable")
     _use_cancel_db(monkeypatch, db_path)
 
@@ -533,7 +534,7 @@ def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
     thread_id = "refund-single-auto-resolve"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -541,8 +542,9 @@ def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
         {"configurable": {"thread_id": thread_id}},
     )
 
-    assert out.get("__interrupt__")
-    assert order_id in out["__interrupt__"][0].value["summary"]
+    assert not out.get("__interrupt__")
+    assert out["context"]["clarify_missing"] == ["order_id"]
+    assert {item["order_id"] for item in out["context"]["cancellation_candidates"]} == {order_id}
 
 
 def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
@@ -586,14 +588,15 @@ def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
 
 
 def test_high_risk_refund_unknown_order_still_approval():
-    """规则不误伤：订单不在种子库 -> 无事实 -> 正常进入审批。"""
+    """Unknown order IDs fail closed before approval."""
     model = ToolCallingFakeModel(responses=[
         router_json_message("refund_apply_execute", 0.9),
         select_json_message("refund_apply", {"order_id": "ORD-UNKNOWN"}),
     ])
-    out = _invoke(_hr_graph(model), "申请退款", "t3-pos")
+    out = _invoke(_hr_graph(model), "订单 ORD-UNKNOWN 申请退款", "t3-pos")
     values = [it.value for it in out.get("__interrupt__", [])]
-    assert any(v.get("type") == "approval_required" for v in values)
+    assert not values
+    assert out["context"]["precheck_reason"] == "order_not_found"
 
 
 def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_path):
@@ -612,10 +615,7 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
     db_path = tmp_path / "cancel-summary.db"
     module.build_database(str(db_path))
 
-    class _Settings:
-        mock_ecommerce_db_path = str(db_path)
-
-    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    _use_cancel_db(monkeypatch, db_path)
     conn = sqlite3.connect(db_path)
     try:
         owner, order_id, amount = conn.execute(
@@ -632,7 +632,7 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
     thread_id = "cancel-summary"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="取消这个订单")],
+            "messages": [HumanMessage(content=f"取消订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -646,7 +646,7 @@ def test_cancel_order_approval_summary_contains_order_facts(monkeypatch, tmp_pat
     assert summary == (
         f"取消订单 {order_id}｜"
         f"金额 {amount}｜"
-        f"商品：{orders_mod.order_items_summary(order_id)}｜"
+        f"商品：{SQLiteOrderRepository(str(db_path)).get_order_snapshot(order_id, owner).product_summary}｜"
         f"申请人 {owner}｜"
         f"状态 已付款"
     )
@@ -675,7 +675,7 @@ def test_cancel_approval_fails_closed_without_valid_paid_facts(monkeypatch, tmp_
     finally:
         conn.close()
 
-    def missing_precheck_fetch():
+    def missing_precheck_fetch(order_repository=None):
         return lambda state: {}
 
     def passing_safety_check(tier, registry):
@@ -694,7 +694,7 @@ def test_cancel_approval_fails_closed_without_valid_paid_facts(monkeypatch, tmp_
     thread_id = "cancel-fail-closed"
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="取消这个订单")],
+            "messages": [HumanMessage(content=f"取消订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -714,12 +714,14 @@ def test_cancel_approval_fails_closed_without_valid_paid_facts(monkeypatch, tmp_
 def _use_cancel_db(monkeypatch, db_path):
     from ai_service_agent.tools import orders as orders_mod
     from ai_service_agent.tools import write as write_mod
+    from ai_service_agent.graph import builder as builder_mod
 
     class _Settings:
         mock_ecommerce_db_path = str(db_path)
 
     monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
     monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(builder_mod, "SQLiteOrderRepository", lambda path: SQLiteOrderRepository(str(db_path)))
 
 
 def _db_snapshot(conn):
@@ -762,7 +764,9 @@ def _cancel_graph(order_id, request_id):
         router_json_message("cancel_order_execute", 0.9),
         select_json_message("cancel_order", {"order_id": order_id, "request_id": request_id}),
     ])
-    return build_graph(model, tools=[], checkpointer=MemorySaver())
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    graph._test_order_id = order_id
+    return graph
 
 
 def _refund_graph(order_id, request_id, amount=1.0):
@@ -772,13 +776,16 @@ def _refund_graph(order_id, request_id, amount=1.0):
             "refund_apply", {"order_id": order_id, "amount": amount, "request_id": request_id}
         ),
     ])
-    return build_graph(model, tools=[], checkpointer=MemorySaver())
+    graph = build_graph(model, tools=[], checkpointer=MemorySaver())
+    graph._test_order_id = order_id
+    return graph
 
 
 def _invoke_refund(graph, owner, thread_id):
+    order_id = getattr(graph, "_test_order_id", "")
     return ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content=f"申请退款 订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -792,9 +799,10 @@ def _approval_required(value):
 
 
 def _invoke_cancel(graph, owner, thread_id):
+    order_id = getattr(graph, "_test_order_id", "")
     return ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="取消这个订单")],
+            "messages": [HumanMessage(content=f"取消订单 {order_id}")],
             "user_id": owner,
             "session_id": thread_id,
             "context": {},
@@ -826,6 +834,9 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
         messages=[HumanMessage(content="审批通过")],
         resume_payload={"action": "approve"},
     )))
+    print("SIGNED_DEBUG", events)
+    _debug_state = graph.get_state({"configurable": {"thread_id": thread_id}}).values
+    print("SIGNED_DEBUG", _debug_state.get("execution_status"), _debug_state.get("messages", [])[-1].content)
     tool_results = [event for event in events if event["type"] == "tool_result"]
     assert [(result["data"]["name"], result["data"]["ok"]) for result in tool_results] == [
         ("cancel_order", True)
@@ -902,6 +913,8 @@ def test_refund_order_approved_writes_db_once(monkeypatch, tmp_path):
         messages=[HumanMessage(content="审批通过")],
         resume_payload={"action": "approve"},
     )))
+    _debug_state = graph.get_state({"configurable": {"thread_id": thread_id}}).values
+    print("SIGNED_DEBUG", _debug_state.get("execution_status"), _debug_state.get("messages", [])[-1].content)
     tool_results = [event for event in events if event["type"] == "tool_result"]
     assert [(result["data"]["name"], result["data"]["ok"]) for result in tool_results] == [
         ("refund_apply", True)
@@ -974,6 +987,7 @@ def test_signed_refund_approval_path_writes_db_once(monkeypatch, tmp_path):
         messages=[HumanMessage(content="审批通过")],
         resume_payload={"action": "approve"},
     )))
+    _debug_state = graph.get_state({"configurable": {"thread_id": thread_id}}).values
     tool_results = [event for event in events if event["type"] == "tool_result"]
     assert [(result["data"]["name"], result["data"]["ok"]) for result in tool_results] == [
         ("refund_apply", True)
@@ -1169,16 +1183,18 @@ def test_refund_order_post_approval_drift_reports_failure(monkeypatch, tmp_path)
         resume_payload={"action": "approve"},
     )))
     tool_results = [event for event in events if event["type"] == "tool_result"]
-    assert len(tool_results) == 1
-    assert tool_results[0]["data"]["name"] == "refund_apply"
-    assert tool_results[0]["data"]["ok"] is False
-    assert "refund_not_allowed" in tool_results[0]["data"]["summary"]
+    assert tool_results == []
+    assert any(
+        event["type"] == "safety_rejected"
+        and event["data"]["reason"] in ("refund_not_allowed", "order_state_changed")
+        for event in events
+    )
     assert events[-1]["type"] == "done"
-    assert "遇到问题" in events[-1]["data"]["final"]
+    assert "复核未通过" in events[-1]["data"]["final"]
 
     state = graph.get_state({"configurable": {"thread_id": thread_id}})
-    assert state.values["execution_status"] == "failed"
-    assert "处理编号" in state.values["messages"][-1].content
+    assert state.values["execution_status"] == "completed"
+    assert state.values["context"]["recheck_reason"] in ("refund_not_allowed", "order_state_changed")
 
     conn = sqlite3.connect(db_path)
     try:
@@ -1227,21 +1243,21 @@ def test_cancel_order_post_approval_drift_reports_failure(monkeypatch, tmp_path)
         resume_payload={"action": "approve"},
     )))
     tool_results = [event for event in events if event["type"] == "tool_result"]
-    assert len(tool_results) == 1
-    assert tool_results[0]["data"]["name"] == "cancel_order"
-    assert tool_results[0]["data"]["ok"] is False
-    assert "cancel_not_allowed" in tool_results[0]["data"]["summary"]
+    assert tool_results == []
+    assert any(
+        event["type"] == "safety_rejected"
+        and event["data"]["reason"] in ("cancel_not_allowed", "order_state_changed")
+        for event in events
+    )
     assert events[-1]["type"] == "done"
-    assert "遇到问题" in events[-1]["data"]["final"]
+    assert "复核未通过" in events[-1]["data"]["final"]
     assert "操作已完成" not in events[-1]["data"]["final"]
 
     state = graph.get_state({"configurable": {"thread_id": thread_id}})
-    assert state.values["execution_status"] == "failed"
+    assert state.values["execution_status"] == "completed"
+    assert state.values["context"]["recheck_reason"] in ("cancel_not_allowed", "order_state_changed")
     tool_msgs = [m for m in state.values["messages"] if getattr(m, "type", "") == "tool"]
-    assert [getattr(m, "name", "") for m in tool_msgs] == ["cancel_order"]
-    assert "遇到问题" in state.values["messages"][-1].content
-    assert "处理编号" in state.values["messages"][-1].content
-    assert "操作已完成" not in state.values["messages"][-1].content
+    assert tool_msgs == []
 
     conn = sqlite3.connect(db_path)
     try:

@@ -58,7 +58,7 @@ class ApprovalFlowFakeModel(ToolCallingFakeModel):
 
         system = next((m.content for m in messages if getattr(m, "type", "") == "system"), "")
         if "选择器" in system:
-            payload = '{"tool": "refund_apply", "args": {"order_id": "ORD-REFUND-1"}}'
+            payload = '{"tool": "refund_apply", "args": {"order_id": "ORD-PAID-1"}}'
         elif "客服路由意图分类器" in system:
             payload = '{"route_intent": "refund_apply_execute", "confidence": 0.9}'
         else:

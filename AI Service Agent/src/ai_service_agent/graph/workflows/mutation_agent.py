@@ -44,7 +44,13 @@ from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
 
-def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=None):
+def make_mutation_graph(
+    model,
+    tools: list,
+    registry: ToolRegistry,
+    tool_hooks=None,
+    order_repository=None,
+):
     def prepare_confirm(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
         summary = confirmation_summary(pending["tool"], pending["args"])
@@ -133,12 +139,12 @@ def make_mutation_graph(model, tools: list, registry: ToolRegistry, tool_hooks=N
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
     builder.add_node("clarify", make_clarify_node())
-    builder.add_node("precheck_fetch", make_precheck_fetch_node())
+    builder.add_node("precheck_fetch", make_precheck_fetch_node(order_repository))
     builder.add_node("safety_check", make_safety_check_node("mutation", registry))
     builder.add_node("safety_final", safety_final)
     builder.add_node("prepare_confirm", prepare_confirm)
     builder.add_node("confirm_pause", confirm_pause)
-    builder.add_node("recheck", make_recheck_node("mutation", registry))
+    builder.add_node("recheck", make_recheck_node("mutation", registry, order_repository))
     builder.add_node("execute", execute)
     hook_sync = make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None
     hook_async = make_tool_hook_wrapper(tool_hooks) if tool_hooks else None

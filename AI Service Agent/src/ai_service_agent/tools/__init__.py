@@ -19,6 +19,8 @@ from ai_service_agent.tools.write import (
     cancel_order,
     create_invoice,
     create_service_ticket,
+    make_cancel_order_tool,
+    make_refund_apply_tool,
     refund_apply,
     update_address,
     update_order_note,
@@ -64,3 +66,15 @@ DEFAULT_TOOL_REGISTRY.register(
 DEFAULT_TOOL_REGISTRY.register(
     ToolMeta("refund_apply", "退款申请", "high_risk", schema=RefundApplyArgs, idempotent=True), refund_apply,
 )
+
+
+def make_tool_registry(order_repository=None) -> ToolRegistry:
+    """Create a registry; high-risk commands use the supplied repository when present."""
+    registry = ToolRegistry()
+    for meta, tool_fn in DEFAULT_TOOL_REGISTRY._tools.values():
+        if meta.name == "cancel_order" and order_repository is not None:
+            tool_fn = make_cancel_order_tool(order_repository)
+        elif meta.name == "refund_apply" and order_repository is not None:
+            tool_fn = make_refund_apply_tool(order_repository)
+        registry.register(meta, tool_fn)
+    return registry

@@ -12,12 +12,12 @@ from typing import Awaitable, Callable
 
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
+from langgraph.runtime import Runtime
 
-from ai_service_agent.tools.orders import (
-    is_address_editable_status,
-    lookup_order_state_with_availability,
-)
+from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
+from ai_service_agent.tools.orders import is_address_editable_status
 from ai_service_agent.tools.registry import ToolRegistry
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.workflows.copy import precheck_reject_text
 
 RISK_ORDER = {"read": 0, "mutation": 1, "high_risk": 2}
@@ -93,17 +93,37 @@ def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: st
     return None
 
 
-def make_precheck_fetch_node() -> Callable[[dict], Awaitable[dict]]:
+def _repository(runtime: Runtime[GraphContext] | None, fallback: OrderRepository | None) -> OrderRepository:
+    if runtime is not None and runtime.context is not None:
+        repository = getattr(runtime.context, "order_repository", None)
+        if repository is not None:
+            return repository
+    if fallback is None:
+        raise OrderRepositoryUnavailable("order_repository_not_configured")
+    return fallback
+
+
+def make_precheck_fetch_node(
+    order_repository: OrderRepository | None = None,
+) -> Callable[[dict], Awaitable[dict]]:
     """precheck_fetch（D3，P4）：位于 select 后、safety_check 前。pending_tool.args 含 order_id 时
     查询订单状态 -> 写 context["precheck_data"]（仅事实），不做任何授权或业务裁决；无 order_id / 订单不存在不写。"""
-    async def precheck_fetch(state: dict) -> dict:
+    async def precheck_fetch(
+        state: dict,
+        runtime: Runtime[GraphContext] | None = None,
+    ) -> dict:
         ctx = state.get("context", {})
         pending = ctx.get("pending_tool") or {}
         order_id = (pending.get("args") or {}).get("order_id")
         if not isinstance(order_id, str) or not order_id:
             return {}
-        data, db_available = await asyncio.to_thread(lookup_order_state_with_availability, order_id)
-        if not db_available:
+        try:
+            snapshot = await asyncio.to_thread(
+                _repository(runtime, order_repository).get_order_snapshot,
+                order_id,
+                state.get("user_id", ""),
+            )
+        except OrderRepositoryUnavailable:
             return {
                 "context": {
                     **ctx,
@@ -113,16 +133,14 @@ def make_precheck_fetch_node() -> Callable[[dict], Awaitable[dict]]:
                     },
                 }
             }
-        if data is None:
-            if pending.get("tool") == "cancel_order":
-                return {
-                    "context": {
-                        **ctx,
-                        "precheck_data": {"order_id": order_id, "status": "not_found"},
-                    }
+        if snapshot is None:
+            return {
+                "context": {
+                    **ctx,
+                    "precheck_data": {"order_id": order_id, "status": "not_found"},
                 }
-            return {}
-        return {"context": {**ctx, "precheck_data": dict(data)}}
+            }
+        return {"context": {**ctx, "precheck_data": snapshot.to_precheck_data()}}
     return precheck_fetch
 
 
@@ -172,17 +190,45 @@ def make_safety_check_node(tier: str, registry: ToolRegistry) -> Callable[[dict]
     return safety_check
 
 
-def make_recheck_node(tier: str, registry: ToolRegistry) -> Callable[[dict], dict]:
+def make_recheck_node(
+    tier: str,
+    registry: ToolRegistry,
+    order_repository: OrderRepository | None = None,
+) -> Callable[[dict], dict]:
     """恢复后、执行前最小不变量 recheck（D6/D7）：request_id 存在、工具仍在档、schema 仍有效。
     参数未变 / context 非陈旧：pending_tool 由本 turn select 写入并随 checkpoint 恢复，resume 不改写；
     完整语义校验见 safety-spec 后续增量。"""
-    def recheck(state: dict) -> dict:
+    def recheck(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
         ctx = state.get("context", {})
         ctx = {key: value for key, value in ctx.items() if key != "recheck_reason"}
         pending = ctx.get("pending_tool") or {}
         reason = _check(pending, tier, registry, state.get("user_id", ""))
         if not pending.get("request_id"):
             reason = reason or "missing_request_id"
+        if reason is None and (pending.get("args") or {}).get("order_id"):
+            try:
+                snapshot = _repository(runtime, order_repository).get_order_snapshot(
+                    (pending["args"]).get("order_id", ""),
+                    state.get("user_id", ""),
+                )
+            except OrderRepositoryUnavailable:
+                reason = "data_source_unavailable"
+            else:
+                if snapshot is None:
+                    reason = "order_not_found"
+                else:
+                    fresh_data = snapshot.to_precheck_data()
+                    previous = ctx.get("precheck_data")
+                    if (
+                        isinstance(previous, dict)
+                        and previous.get("version")
+                        and snapshot.version != previous.get("version")
+                    ):
+                        reason = "order_state_changed"
+                    if reason is None:
+                        reason = _apply_business_rules(pending, fresh_data, state.get("user_id", ""))
+                    if reason is None:
+                        ctx = {**ctx, "precheck_data": fresh_data}
         if reason:
             get_stream_writer()({"type": "safety_rejected", "data": {"rule": "recheck", "reason": reason}})
             return {"context": {**ctx, "recheck_reason": reason}, "execution_status": "completed"}

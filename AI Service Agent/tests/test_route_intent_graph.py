@@ -11,6 +11,27 @@ from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools.orders import my_orders, order_lookup, shipment_query
 
 
+@pytest.fixture(autouse=True)
+def isolated_business_db(monkeypatch, tmp_path):
+    import importlib.util
+    from pathlib import Path
+    from ai_service_agent.graph import builder as builder_mod
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("seed_mock_db_route", root / "scripts" / "seed_mock_db.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(db_path))
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(db_path)
+    real_settings = builder_mod.get_settings()
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _Settings(real_settings))
+
+
 @pytest.fixture
 def enabled(monkeypatch):
     monkeypatch.setenv("JEV_ENABLED", "false")
@@ -117,7 +138,7 @@ def test_route_intent_graph_routes_high_risk_mutation_to_approval(enabled):
     model = ToolCallingFakeModel(
         responses=[
             route_intent_json_message("refund_apply_execute", 0.95),
-            select_json_message("refund_apply", {"order_id": "10086"}),
+            select_json_message("refund_apply", {"order_id": "ORD-PAID-1"}),
         ]
     )
     graph = build_graph(
@@ -127,7 +148,7 @@ def test_route_intent_graph_routes_high_risk_mutation_to_approval(enabled):
     )
     out = ainvoke_graph(graph,
         {
-            "messages": [HumanMessage(content="申请退款")],
+            "messages": [HumanMessage(content="给 ORD-PAID-1 申请退款")],
             "user_id": "u1",
             "session_id": "route-high-risk-mutation-1",
             "context": {},

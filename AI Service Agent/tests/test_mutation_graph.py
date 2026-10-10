@@ -21,6 +21,8 @@ from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools import orders as orders_mod
 from ai_service_agent.tools import write as write_mod
+from ai_service_agent.domain.orders import SQLiteOrderRepository
+from ai_service_agent.graph import builder as builder_mod
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +52,7 @@ def _use_db(monkeypatch, db_path: Path):
 
     monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
     monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(builder_mod, "SQLiteOrderRepository", lambda path: SQLiteOrderRepository(str(db_path)))
 
 
 def _mutation_model():
@@ -69,14 +72,16 @@ def _invoke(graph, text, thread_id, resume=None, user_id="u1"):
     )
 
 
-def test_mutation_reaches_confirmation_interrupt():
+def test_mutation_reaches_confirmation_interrupt(seed, monkeypatch):
+    _use_db(monkeypatch, seed[1])
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     out = _invoke(graph, "改一下收货地址", "m1")
     values = [it.value for it in out.get("__interrupt__", [])]
     assert any(v.get("type") == "confirmation_required" for v in values)
 
 
-def test_mutation_confirm_executes_tool():
+def test_mutation_confirm_executes_tool(seed, monkeypatch):
+    _use_db(monkeypatch, seed[1])
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     _invoke(graph, "改一下收货地址", "m2")
     out = _invoke(graph, "确认", "m2", resume={"action": "confirm"})
@@ -123,7 +128,8 @@ def test_mutation_tool_error_result_not_rewritten_as_success(seed, monkeypatch):
     assert "未成功" in last
 
 
-def test_mutation_cancel_does_not_execute_tool():
+def test_mutation_cancel_does_not_execute_tool(seed, monkeypatch):
+    _use_db(monkeypatch, seed[1])
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     _invoke(graph, "改一下收货地址", "m3")
     out = _invoke(graph, "取消", "m3", resume={"action": "cancel"})
@@ -203,7 +209,8 @@ def test_mutation_0089_delete_orders_unknown_tool():
     assert out["execution_status"] == "completed"
     assert out["context"].get("precheck_reason") == "unknown_tool"
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
-def test_mutation_multi_turn_clarify_then_confirm_executes():
+def test_mutation_multi_turn_clarify_then_confirm_executes(seed, monkeypatch):
+    _use_db(monkeypatch, seed[1])
     """跨轮端到端：缺参"我要改个地址"澄清 -> 用户补地址 -> confirmation interrupt -> confirm 执行一次。
 
     对应真机冒烟 Mutation 场景与 mutation 写图链路（select_llm -> clarify -> confirm_pause -> recheck -> execute）。
@@ -260,7 +267,7 @@ def _cancel_model(payload: dict):
     ])
 
 
-def test_cancel_order_without_id_uses_single_paid_order(monkeypatch, seed):
+def test_cancel_order_without_id_clarifies_even_with_single_paid_order(monkeypatch, seed):
     _, db_path = seed
     _use_db(monkeypatch, db_path)
     conn = sqlite3.connect(db_path)
@@ -287,9 +294,9 @@ def test_cancel_order_without_id_uses_single_paid_order(monkeypatch, seed):
         },
         {"configurable": {"thread_id": thread_id}},
     )
-    assert out.get("__interrupt__")
-    interrupt_value = out["__interrupt__"][0].value
-    assert order_id in interrupt_value["summary"]
+    assert not out.get("__interrupt__")
+    assert out["context"]["clarify_missing"] == ["order_id"]
+    assert {item["order_id"] for item in out["context"]["cancellation_candidates"]} == {order_id}
 
 
 def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
@@ -334,8 +341,8 @@ def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
         },
         {"configurable": {"thread_id": thread_id}},
     )
-    assert out["context"]["cancellation_candidates"] == []
-    assert "没有查询到可取消" in out["messages"][-1].content
+    assert out["context"].get("cancellation_candidates", []) == []
+    assert "订单号" in out["messages"][-1].content
 
 
 def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, seed):
@@ -358,8 +365,8 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
         },
         config,
     )
-    assert first["context"]["cancellation_candidates"] == []
-    assert "没有查询到可取消" in first["messages"][-1].content
+    assert first["context"].get("cancellation_candidates", []) == []
+    assert "订单号" in first["messages"][-1].content
 
     select_node = make_select_node(
         ToolCallingFakeModel(responses=[select_json_message("refund_apply", {})]),

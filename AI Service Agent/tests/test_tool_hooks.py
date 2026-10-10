@@ -204,12 +204,19 @@ def hook_seed():
 def _patch_hook_db(monkeypatch, db_path):
     from ai_service_agent.tools import orders as orders_mod
     from ai_service_agent.tools import write as write_mod
+    from ai_service_agent.graph import builder as builder_mod
+    real_builder_settings = builder_mod.get_settings()
 
     class _Settings:
         mock_ecommerce_db_path = str(db_path)
 
-    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
-    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings(real_builder_settings))
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _Settings(real_builder_settings))
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings(real_builder_settings))
 
 
 def test_mutation_graph_runs_tool_hooks(hook_seed, monkeypatch):
@@ -218,12 +225,12 @@ def test_mutation_graph_runs_tool_hooks(hook_seed, monkeypatch):
     recorder = Recorder()
     model = ToolCallingFakeModel(responses=[
         router_json_message("account_profile_update", 0.9),
-        select_json_message("update_address", {"order_id": "ORD-REFUND-1", "address": "Beijing Chaoyang"}),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "Beijing Chaoyang"}),
     ])
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
     config = {"configurable": {"thread_id": "t-hook-m"}}
     ainvoke_graph(graph,
-        {"messages": [HumanMessage(content="Update delivery address")], "user_id": "u1", "session_id": "t-hook-m", "context": {}},
+        {"messages": [HumanMessage(content="订单 ORD-PAID-1 Update delivery address")], "user_id": "u1", "session_id": "t-hook-m", "context": {}},
         config,
     )
     out = ainvoke_graph(graph, Command(resume={"action": "confirm"}), config)
@@ -264,7 +271,7 @@ def test_high_risk_graph_runs_tool_hooks(monkeypatch, tmp_path):
     graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver(), tool_hooks=[recorder])
     config = {"configurable": {"thread_id": "t-hook-hr"}}
     ainvoke_graph(graph,
-        {"messages": [HumanMessage(content="Apply for refund")], "user_id": owner, "session_id": "t-hook-hr", "context": {}},
+        {"messages": [HumanMessage(content=f"Apply for refund {order_id}")], "user_id": owner, "session_id": "t-hook-hr", "context": {}},
         config,
     )
     out = ainvoke_graph(graph, Command(resume={"action": "approve"}), config)

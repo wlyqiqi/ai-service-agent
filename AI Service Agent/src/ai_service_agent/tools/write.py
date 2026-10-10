@@ -372,3 +372,34 @@ def refund_apply(
     return _run_db_mutation(
         "refund_apply", request_id or str(uuid4()), user_id, _produce, _validate_replay
     )
+
+
+def make_cancel_order_tool(order_repository):
+    """Build the high-risk tool against an injected order command gateway."""
+    @tool
+    def cancel_order(
+        order_id: str,
+        reason: str | None = None,
+        request_id: str = "",
+        user_id: Annotated[str, InjectedState("user_id")] = "",
+    ) -> dict:
+        """取消本人订单（high_risk，需人工审批；仅 paid -> cancelled）。"""
+        return order_repository.cancel_order(order_id, user_id, reason, request_id)
+
+    return cancel_order
+
+
+def make_refund_apply_tool(order_repository):
+    """Build the high-risk tool against an injected order command gateway."""
+    @tool
+    def refund_apply(
+        order_id: str,
+        amount: float | None = None,
+        reason: str | None = None,
+        request_id: str = "",
+        user_id: Annotated[str, InjectedState("user_id")] = "",
+    ) -> dict:
+        """退款申请（high_risk；需人工审批；paid/7 日内 signed -> refunding）。"""
+        return order_repository.refund_apply(order_id, user_id, amount, reason, request_id)
+
+    return refund_apply

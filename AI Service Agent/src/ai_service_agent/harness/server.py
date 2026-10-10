@@ -16,6 +16,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.domain.orders import SQLiteOrderRepository
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.harness.approvals import (
@@ -151,6 +152,7 @@ def create_app(
     auth_enabled: bool | None = None,
     jwt_secret: str | None = None,
     profile_db_path: str | None = None,
+    order_repository=None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -159,6 +161,7 @@ def create_app(
     """
     settings = get_settings()
     resolved_profile_db_path = profile_db_path or settings.mock_ecommerce_db_path
+    resolved_order_repository = order_repository or SQLiteOrderRepository(resolved_profile_db_path)
     required_auth = settings.auth_enabled if auth_enabled is None else auth_enabled
     secret = jwt_secret or settings.jwt_secret
     if required_auth and not secret:
@@ -464,7 +467,7 @@ def create_app(
             lock = await _thread_lock(thread_id)
             async with lock:
                 async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                    graph = make_ai_graph(_resolve_model(model), saver)
+                    graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                     cfg = {"configurable": {"thread_id": thread_id}}
                     st = await graph.aget_state(cfg)
                     resume_payload = None
@@ -527,7 +530,7 @@ def create_app(
         lock = await _thread_lock(thread_id)
         async with lock:
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver)
+                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
                 state = await graph.aget_state(cfg)
                 pending = state.interrupts[0].value if state.interrupts else None
@@ -589,7 +592,7 @@ def create_app(
         lock = await _thread_lock(thread_id)
         async with lock:
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver)
+                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
                 st = await graph.aget_state(cfg)
                 if st.interrupts:
@@ -626,7 +629,7 @@ def create_app(
             # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
             approvals.mark_decided(approval_id, decided, decided_by="approver")
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver)
+                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
                 before_ids = await snapshot_assistant_ids(graph, cfg)  # D7：resume 前快照
                 await graph.ainvoke(Command(resume=resume_payload), cfg)
@@ -739,7 +742,7 @@ def create_app(
                 return {"ok": True}
 
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver)
+                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 await handle_agent_bot_message(
                     data,
                     chatwoot,

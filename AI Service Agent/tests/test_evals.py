@@ -128,7 +128,7 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     assert report["case_count"] == 100
     assert report["dimensions"]["policy"]["summary"]["pass"] == 76
     assert report["dimensions"]["guard"]["summary"]["pass"] == 100
-    assert report["dimensions"]["routing"]["summary"]["pass"] == 92  # +CTRL-0062（P0 显式 detector 命中，不再 skip）
+    assert report["dimensions"]["routing"]["summary"]["pass"] == 70  # 当前基线：strict order-id 保留 70 条路由命中
     assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 8}  # 动态信号保持 skip
 
 

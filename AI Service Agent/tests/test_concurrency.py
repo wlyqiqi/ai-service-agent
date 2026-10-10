@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 
 import httpx
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -10,10 +11,35 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.harness import server as server_module
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ApprovalFlowFakeModel, ToolCallingFakeModel
+
+
+@pytest.fixture(autouse=True)
+def isolated_business_db(monkeypatch, tmp_path):
+    import importlib.util
+    from pathlib import Path
+    from ai_service_agent.graph import builder as builder_mod
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("seed_mock_db_concurrency", root / "scripts" / "seed_mock_db.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(db_path))
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(db_path)
+    real_settings = builder_mod.get_settings()
+    settings = _Settings(real_settings)
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: settings)
+    real_server_settings = server_module.get_settings()
+    monkeypatch.setattr(server_module, "get_settings", lambda: _Settings(real_server_settings))
 
 
 class RaceKeywordModel(ToolCallingFakeModel):
@@ -100,7 +126,7 @@ def test_approval_double_resume_no_double_execution(tmp_path):
     app = create_app(db, model=ApprovalFlowFakeModel(responses=[]))
     client = TestClient(app)
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         assert "approval_required" in "".join(r.iter_text())
     conn = sqlite3.connect(db)
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
