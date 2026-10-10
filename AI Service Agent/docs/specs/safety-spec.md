@@ -27,6 +27,8 @@
 | 开票金额上限（2026-09-19） | `amount + 该单已开票累计 <= orders.total_amount`；一单一开，允许部分开票；多订单分别开票 | `ORD-A` 总额 100、已开 30，再开 71 → `invoice_amount_exceeds` |
 | 取消状态机（2026-09-20 起） | `cancel_order` 仅允许本人 `paid` 订单进入审批；未找到、数据源不可用、越权、已取消、非 `paid` 状态在预检拒绝，预检拒绝 token 分别为 `order_not_found`、`data_source_unavailable`、`data_boundary`、`order_already_cancelled`、`cancel_not_allowed`；审批摘要缺少有效 `paid` 预检事实时内部失败关闭 token 为 `cancel_order_facts_unavailable`；工具执行事务内再次校验 | `cancelled -> order_already_cancelled`；`shipped -> cancel_not_allowed` |
 | 敏感操作复核 | 破坏性关键词/高危参数二次确认要求 | 批量删除、大额转账 |
+- **高风险显式标识符（2026-10-10）** | `cancel_order` / `refund_apply` 必须显式携带 `order_id`，模型补齐或自动选择的候选一律不作为授权依据；候选仅用于澄清 | 仅有一笔可取消订单也不自动选择 |
+- **审批后快照复核（2026-10-10）** | approve 恢复后重新读取订单快照并校验存在 / 归属 / 状态 / 版本；任一失败进入 `safety_rejected`，不调用写工具 | 审批期间订单被取消 -> TOCTOU fail-closed |
 
 - **v1 范围（D4 定案，P3）**：先实现「参数 schema 白名单 + 权限（`min_risk_level` 匹配 + `user_id` 登录态）+ 数据边界」。
 - **P4 增量（D2/D3 定案）**：业务规则 v1 落地「必填标识符非空 + 退款时限 + 取消状态机 + 开票金额上限」（事实来自 `precheck_fetch` 写入的 `context["precheck_data"]`，仅事实；裁决仍在 `safety_check` 确定性完成）；「敏感操作复核」与其余频次/额度规则仍留后续。
@@ -40,6 +42,7 @@
 ### 1.4 纪律
 
 - 预检是图内强制节点，工具自身不得绕过；Read 工具不需要预检（只读），但数据边界规则仍由工具实现保证。
+- 订单事实访问只通过 `OrderRepository`；safety / recheck / select 不直接依赖 SQLite 表结构或数据库路径。
 
 ### 1.5 Guard 检测节点（并行于 Router）
 

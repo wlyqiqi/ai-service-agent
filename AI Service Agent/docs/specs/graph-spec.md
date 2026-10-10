@@ -43,6 +43,7 @@
 - 子图检测到需要转人工的信号时，**不自行创建 Handoff Record、不自行切换 `conversation_mode`**，统一抛出 `interrupt({"type": "handoff_request", "reason": ..., "summary": ...})`；外层（Conversation Runtime）负责接收信号 → 创建 Handoff Record → 原子切换 `conversation_mode` → 发出 `handoff_created` 事件。子图不直接调用任何 Handoff API（机制与事件见 `handoff-spec.md` §3 / `event-spec.md`）。
 - 抛出 `handoff_request` 后 `execution_status` 置 `waiting_handoff`（见 `state-spec.md` §1），不得置 `completed` / `failed`。
 - Final Response：子图结果写回 `messages`，由 harness 统一推送事件（见 `event-spec.md`）。
+- **Runtime 依赖注入（2026-10-10）**：顶层 `StateGraph` 使用 `context_schema=GraphContext`。`GraphContext` 提供 `order_repository` / `approval_service` / `user_id`，节点与子图通过 LangGraph `Runtime` 读取，不通过全局 settings 直接取数据库连接。默认仍可由 `build_graph` 构造 `SQLiteOrderRepository`，但生产可注入其他 adapter。
 
 ## 2. Guard 节点（并行检测）
 
@@ -114,11 +115,11 @@
 - **select（参数完备性，同 §6.2 clarify 机制）** → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
   选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
-- `cancel_order` 缺 `order_id` 时由确定性代码解析：本人仅 1 笔 `paid` 订单自动选中；多笔进入 `clarification_required` 并列出最多 10 笔候选；零笔同样发出 `clarification_required` 且 `candidates=[]`，继续 clarifying 流程，不进入审批。select 每次进入结果分支前清除旧候选，只有上述 cancel-order 澄清路径重新写入，避免污染其他工具的澄清。
+- **显式 `order_id`（2026-10-10）**：`cancel_order` / `refund_apply` 必须由当前用户输入或可见上下文显式给出 `order_id`；即使名下只有一笔可操作订单也不自动选中。候选仅用于澄清：多笔列出候选、零笔说明无可操作订单，均继续 `clarification_required`，不进入审批。
 - `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态；由于预检只放行 `paid` 订单，进入审批时的状态预期为 `paid`。
-- efund_apply 缺 order_id 时由确定性代码解析：本人 paid/completed 订单自动选中/澄清（同 cancel_order 模式）；审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
+- `refund_apply` 审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
 - 超时由下一 turn 惰性检查处理为过期。
-- **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
+- **审批承接（D7/D8 + 2026-10-10）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等。approve 恢复后必须重新读取当前订单快照，校验订单仍存在、归属正确、状态仍允许、版本/rowid 未变化；任一失败均进入 `safety_rejected`，避免 TOCTOU。
 
 ### 6.4 Fallback / Concierge
 

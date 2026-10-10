@@ -146,6 +146,16 @@ agent.py                  # 删除或保留为兼容别名
 
 ---
 
+### F.1 当前实现快照（2026-10-10）
+
+- LangGraph 版本：1.2.10；LangGraph API/Studio：0.12.0。
+- 顶层图 / Mutation / HighRisk 均使用 `context_schema=GraphContext` 与 `Runtime` 依赖注入。
+- 订单事实与高风险命令统一走 `OrderRepository`；SQLite 仅保留在 `SQLiteOrderRepository` adapter。
+- 高风险写工具由 repository 工厂构造；审批后 recheck 重新校验订单快照与版本。
+- 40 例真实模型 baseline 为 38 通过 / 2 个复跑通过的非稳定项；全量 pytest 为 624 passed / 2 skipped。
+
+---
+
 ## G. 发现的版本兼容风险
 
 1. **`create_react_agent` 已弃用（高优先级）**：`langgraph.prebuilt.create_react_agent` 运行即警告 `LangGraphDeprecatedSinceV10`，V2.0 移除；迁移目标是 `langchain.agents.create_agent`（签名不同：`system_prompt` 替代 `prompt`、`tools` 可空、新增 `middleware`）。现有 `agent.py` 用旧路径，需尽早统一到一个入口。
