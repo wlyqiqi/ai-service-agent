@@ -26,7 +26,7 @@
 | `handoff_created` | `{handoff_id?, reason, summary?, ticket_id?}` | 转人工接管完成（Conversation Runtime 外层发出，见 handoff-spec.md §3） |
 | `handoff_resolved` | `{handoff_id?, conversation_id?}` | 人工 Resolve 完成、mode 回切 ai（Conversation Runtime 发出） |
 | `done` | `{final, message_id?}` | 本 turn 结束（`message_id` = 最后一条 assistant 消息的 langchain id，供 Message Store 对账持久化，见 `handoff-spec.md` §5.2） |
-| `error` | `{code, message}` | 归一化错误 |
+| `error` | `{code, message, detail?}` | 归一化错误；`message` 为用户可读文案，`detail` 可选（节点异常原文，供观测/eval，前端可忽略） |
 
 统一结构：`{ "type": str, "data": object }`。
 

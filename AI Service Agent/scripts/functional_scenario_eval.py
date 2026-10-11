@@ -102,6 +102,47 @@ def tool_names(events: list[dict]) -> set[str]:
     return names
 
 
+def error_payloads(events: list[dict]) -> list[dict]:
+    """Extract normalized error payloads from SSE events."""
+    out: list[dict] = []
+    for e in events:
+        if e.get("type") != "error":
+            continue
+        data = e.get("data") if isinstance(e.get("data"), dict) else {}
+        out.append({
+            "code": data.get("code") or "unknown",
+            "message": str(data.get("message") or ""),
+            "detail": str(data.get("detail") or ""),
+        })
+    return out
+
+
+def error_summaries(events: list[dict]) -> list[str]:
+    """Human-readable stream error lines for problems[]."""
+    lines: list[str] = []
+    for p in error_payloads(events):
+        base = f"stream error: {p['code']}"
+        if p.get("detail"):
+            lines.append(f"{base}: {p['detail']}")
+        elif p.get("message"):
+            lines.append(f"{base}: {p['message']}")
+        else:
+            lines.append(base)
+    return lines
+
+
+def _problems_with_stream_errors(events: list[dict], problems: list[str]) -> list[str]:
+    """Prepend stream error summaries so root cause is not masked by secondary fails."""
+    summaries = error_summaries(events)
+    if not summaries:
+        return list(problems)
+    merged = list(summaries)
+    for p in problems:
+        if p not in merged:
+            merged.append(p)
+    return merged
+
+
 def snapshot(db_path: str, snap_path: str) -> None:
     src = sqlite3.connect(db_path)
     try:
@@ -239,7 +280,14 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                 None,
             )
             if not approval_id:
-                return _fail(case, sid, all_events, timeline, ["approval_id missing before approve"], started)
+                return _fail(
+                    case,
+                    sid,
+                    all_events,
+                    timeline,
+                    _problems_with_stream_errors(all_events, ["approval_id missing before approve"]),
+                    started,
+                )
             r = client.post(f"{BASE}/approvals/{approval_id}/approve")
             code = r.status_code
             ev = [{"type": "approval_http", "data": r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}}]
@@ -250,7 +298,14 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                 None,
             )
             if not approval_id:
-                return _fail(case, sid, all_events, timeline, ["approval_id missing before reject"], started)
+                return _fail(
+                    case,
+                    sid,
+                    all_events,
+                    timeline,
+                    _problems_with_stream_errors(all_events, ["approval_id missing before reject"]),
+                    started,
+                )
             r = client.post(f"{BASE}/approvals/{approval_id}/reject")
             code = r.status_code
             ev = [{"type": "approval_http", "data": r.json() if r.status_code == 200 else {"raw": r.text}}]
@@ -260,7 +315,14 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                 None,
             )
             if not approval_id:
-                return _fail(case, sid, all_events, timeline, ["approval_id missing before expire"], started)
+                return _fail(
+                    case,
+                    sid,
+                    all_events,
+                    timeline,
+                    _problems_with_stream_errors(all_events, ["approval_id missing before expire"]),
+                    started,
+                )
             force_expire_approval(_DB_PATH, approval_id)
             # Trigger lazy expire + resume by GET then a chat nudge if needed
             r = client.get(f"{BASE}/approvals/{approval_id}")
@@ -370,6 +432,9 @@ def run_case(client: httpx.Client, case: dict) -> dict:
         if n > 1:
             problems.append(f"duplicate refunds written: {n}")
 
+    errors = error_payloads(all_events)
+    problems = _problems_with_stream_errors(all_events, problems)
+
     return {
         "id": case["id"],
         "suite": case.get("suite"),
@@ -381,6 +446,7 @@ def run_case(client: httpx.Client, case: dict) -> dict:
             "events": actual_events,
             "tools": sorted(actual_tools),
             "timeline": timeline,
+            "errors": errors,
             "store_preview": [{"role": m["role"], "content": (m["content"] or "")[:80]} for m in msgs[-6:]],
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
         },
@@ -406,25 +472,42 @@ def _side_effect_ok(expected_tools: set[str], case: dict) -> bool:
 
 
 def _fail(case, sid, events, timeline, problems, started):
+    status_row = open_status(_DB_PATH, sid) if _DB_PATH else {}
+    enriched = _problems_with_stream_errors(events, problems)
     return {
         "id": case["id"],
         "suite": case.get("suite"),
         "status": "fail",
-        "problems": problems,
+        "problems": enriched,
         "session_id": sid,
         "actual": {
+            "mode": status_row.get("mode"),
             "events": watched_events(events),
             "timeline": timeline,
+            "errors": error_payloads(events),
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
         },
     }
 
 
+def preflight_model_auth(settings) -> None:
+    """Fail fast on known endpoint/key mismatches before starting the server."""
+    if not settings.model_api_key or not settings.model_endpoint:
+        raise RuntimeError("ARK_API_KEY / ARK_BASE_URL required")
+    endpoint = (settings.model_endpoint or "").lower()
+    key = settings.model_api_key or ""
+    if "siliconflow" in endpoint and key.startswith("ark-"):
+        raise RuntimeError(
+            "Model auth misconfigured: ARK_BASE_URL is SiliconFlow but ARK_API_KEY "
+            "looks like a Volcengine ARK token (prefix 'ark-'). "
+            "Put a SiliconFlow sk- key in ARK_API_KEY, or point ARK_BASE_URL back to ARK."
+        )
+
+
 def prepare_runtime():
     global _DB_PATH, _PROFILE_DB, _SNAPSHOT_PATH, _PROFILE_SNAPSHOT
     settings = get_settings()
-    if not settings.model_api_key or not settings.model_endpoint:
-        raise RuntimeError("ARK_API_KEY / ARK_BASE_URL required")
+    preflight_model_auth(settings)
 
     temp_dir = tempfile.mkdtemp(prefix="functional-eval-")
     _DB_PATH = str(Path(temp_dir) / "runtime.db")

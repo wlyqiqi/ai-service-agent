@@ -14,6 +14,7 @@ import httpx
 from langsmith import Client
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.evals.p0_evaluators import P0_EVALUATORS
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_NAME = "ai-cs-functional-scenarios-v1"
@@ -28,34 +29,6 @@ def load_runner():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def event_protocol_correct(inputs: dict, outputs: dict, reference_outputs: dict) -> dict:
-    actual = set((outputs.get("actual") or {}).get("events") or [])
-    expected = set(reference_outputs.get("expected_events") or [])
-    forbidden = set(reference_outputs.get("forbidden_events") or [])
-    # done may be absent after approve HTTP resume; soften
-    soft_expected = {e for e in expected if e != "done"}
-    ok = soft_expected.issubset(actual) and not (forbidden & actual)
-    return {"key": "event_protocol_correct", "score": int(ok),
-            "comment": f"expected={sorted(expected)} forbidden={sorted(forbidden)} actual={sorted(actual)}"}
-
-
-def mode_correct(inputs: dict, outputs: dict, reference_outputs: dict) -> dict:
-    expected = reference_outputs.get("expected_mode")
-    if expected is None:
-        return {"key": "mode_correct", "score": 1, "comment": "n/a"}
-    actual = (outputs.get("actual") or {}).get("mode")
-    return {"key": "mode_correct", "score": int(actual == expected),
-            "comment": f"expected={expected} actual={actual}"}
-
-
-def overall_pass(inputs: dict, outputs: dict, reference_outputs: dict) -> dict:
-    return {
-        "key": "overall_pass",
-        "score": int(outputs.get("status") == "pass"),
-        "comment": "; ".join(outputs.get("problems") or []) or "pass",
-    }
 
 
 def main() -> int:
@@ -113,7 +86,7 @@ def main() -> int:
             results = client.evaluate(
                 target,
                 data=examples,
-                evaluators=[event_protocol_correct, mode_correct, overall_pass],
+                evaluators=P0_EVALUATORS,
                 experiment_prefix=prefix,
                 max_concurrency=1,
                 num_repetitions=1,
@@ -122,6 +95,7 @@ def main() -> int:
                     "suite": "functional_scenarios",
                     "split": args.split,
                     "dataset": args.dataset_name,
+                    "p0_evaluators": True,
                 },
             )
 
