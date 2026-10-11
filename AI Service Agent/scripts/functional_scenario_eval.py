@@ -117,10 +117,24 @@ def error_payloads(events: list[dict]) -> list[dict]:
     return out
 
 
-def error_summaries(events: list[dict]) -> list[str]:
-    """Human-readable stream error lines for problems[]."""
+# handoff-spec §1.4 / graph-spec：转人工后丢弃 AI 回复并发 ModeChanged，属设计行为，不记为 runner fail。
+_EXPECTED_STREAM_ERROR_CODES = frozenset({"ModeChanged"})
+
+
+def is_expected_stream_error(payload: dict) -> bool:
+    """True when SSE error is protocol-expected and must not fail the scenario."""
+    return str(payload.get("code") or "") in _EXPECTED_STREAM_ERROR_CODES
+
+
+def error_summaries(events: list[dict], *, include_expected: bool = False) -> list[str]:
+    """Human-readable stream error lines for problems[].
+
+    By default skips expected codes (e.g. ModeChanged on handoff turns).
+    """
     lines: list[str] = []
     for p in error_payloads(events):
+        if not include_expected and is_expected_stream_error(p):
+            continue
         base = f"stream error: {p['code']}"
         if p.get("detail"):
             lines.append(f"{base}: {p['detail']}")
@@ -132,7 +146,7 @@ def error_summaries(events: list[dict]) -> list[str]:
 
 
 def _problems_with_stream_errors(events: list[dict], problems: list[str]) -> list[str]:
-    """Prepend stream error summaries so root cause is not masked by secondary fails."""
+    """Prepend unexpected stream error summaries so root cause is not masked by secondary fails."""
     summaries = error_summaries(events)
     if not summaries:
         return list(problems)

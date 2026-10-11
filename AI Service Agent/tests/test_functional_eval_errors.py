@@ -34,6 +34,37 @@ def test_error_summaries_prefer_detail():
     assert payloads[0]["detail"].startswith("Error code: 401")
 
 
+def test_mode_changed_not_counted_as_problem():
+    """S39/handoff: ModeChanged after handoff_created is design behavior, not a fail."""
+    mod = _load_runner()
+    events = [
+        {"type": "handoff_created", "data": {"handoff_id": "h1"}},
+        {
+            "type": "error",
+            "data": {"code": "ModeChanged", "message": "AI 回复已丢弃（会话已转人工）"},
+        },
+        {"type": "done", "data": {"final": ""}},
+    ]
+    assert mod.error_summaries(events) == []
+    assert mod._problems_with_stream_errors(events, []) == []
+    # Still visible in actual.errors for observability.
+    assert any(p["code"] == "ModeChanged" for p in mod.error_payloads(events))
+    assert mod.error_summaries(events, include_expected=True) == [
+        "stream error: ModeChanged: AI 回复已丢弃（会话已转人工）"
+    ]
+
+
+def test_unexpected_errors_still_enrich_problems():
+    mod = _load_runner()
+    events = [{
+        "type": "error",
+        "data": {"code": "runtime_error", "message": "boom", "detail": "NodeTimeoutError"},
+    }]
+    problems = mod._problems_with_stream_errors(events, ["mode expected=human actual=ai"])
+    assert problems[0] == "stream error: runtime_error: NodeTimeoutError"
+    assert "mode expected=human actual=ai" in problems
+
+
 def test_preflight_rejects_ark_key_on_siliconflow():
     mod = _load_runner()
     settings = SimpleNamespace(
