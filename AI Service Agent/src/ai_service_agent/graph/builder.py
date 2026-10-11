@@ -105,26 +105,31 @@ def build_graph(
     tool_hooks=None,
     order_repository: OrderRepository | None = None,
     router_model=None,
+    select_model=None,
+    fallback_model=None,
 ):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
-    router_model：Router 专用模型（替代 JEV）；默认按 ROUTER_MODEL / ARK_MODEL 解析。
+    model：ReadGraph 模型（向后兼容测试单一 Fake）。
+    router_model / select_model / fallback_model：缺省回落为 model（Fake 单测零改动）。
     """
     repository = order_repository or SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
     reg = registry if registry is not None else make_tool_registry(repository)
+    select = select_model if select_model is not None else model
+    fallback = fallback_model if fallback_model is not None else model
     guard = make_guard_node()
     read_graph = make_read_graph(model, tools, tool_hooks=tool_hooks)
-    fallback = make_fallback_graph(model)
+    fallback_graph = make_fallback_graph(fallback)
     mutation_graph = make_mutation_graph(
-        model,
+        select,
         reg.for_risk_level("mutation"),
         reg,
         tool_hooks=tool_hooks,
         order_repository=repository,
     )
     high_risk_graph = make_high_risk_graph(
-        model,
+        select,
         reg.for_risk_level("high_risk"),
         reg,
         tool_hooks=tool_hooks,
@@ -176,7 +181,7 @@ def build_graph(
     builder.add_node("read_graph", read_graph)
     builder.add_node("mutation_graph", mutation_graph)
     builder.add_node("high_risk_graph", high_risk_graph)
-    builder.add_node("fallback", fallback)
+    builder.add_node("fallback", fallback_graph)
     builder.add_node("final", finalize)
     builder.add_edge(START, "guard")
     if use_jev:

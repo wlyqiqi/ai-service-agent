@@ -38,6 +38,25 @@ class Settings(BaseSettings):
     llm_node_timeout_seconds: float = Field(
         default=12.0, validation_alias="LLM_NODE_TIMEOUT_SECONDS"
     )
+    # Model HTTP timeout（须小于对应节点 TimeoutPolicy）
+    router_model_timeout_seconds: float = Field(
+        default=5.0, ge=0.1, validation_alias="ROUTER_MODEL_TIMEOUT_SECONDS"
+    )
+    llm_model_timeout_seconds: float = Field(
+        default=10.0, ge=0.1, validation_alias="LLM_MODEL_TIMEOUT_SECONDS"
+    )
+    # 分档 temperature / max output tokens（非 hook；设在 ChatOpenAI 实例上）
+    router_temperature: float = Field(default=0.0, ge=0.0, validation_alias="ROUTER_TEMPERATURE")
+    select_temperature: float = Field(default=0.0, ge=0.0, validation_alias="SELECT_TEMPERATURE")
+    read_temperature: float = Field(default=0.3, ge=0.0, validation_alias="READ_TEMPERATURE")
+    fallback_temperature: float = Field(
+        default=0.3, ge=0.0, validation_alias="FALLBACK_TEMPERATURE"
+    )
+    router_max_tokens: int = Field(default=256, ge=1, validation_alias="ROUTER_MAX_TOKENS")
+    select_max_tokens: int = Field(default=512, ge=1, validation_alias="SELECT_MAX_TOKENS")
+    read_max_tokens: int = Field(default=1024, ge=1, validation_alias="READ_MAX_TOKENS")
+    fallback_max_tokens: int = Field(default=512, ge=1, validation_alias="FALLBACK_MAX_TOKENS")
+    # Context 输入预算（trim_messages / ContextBudgetMiddleware）
     router_total_input_max_tokens: int = Field(
         default=800, ge=1, validation_alias="ROUTER_TOTAL_INPUT_MAX_TOKENS"
     )
@@ -125,13 +144,31 @@ def _sync_langsmith_env(settings: Settings, environ: dict | None = None) -> None
         environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
 
 
-def _openai_compat_model(model_name: str) -> ChatOpenAI:
-    """OpenAI 兼容端点（SiliconFlow / ARK）；关闭 thinking（含 Qwen chat_template_kwargs）。"""
+def _assert_model_timeout_under_node(model_timeout: float, node_timeout: float, label: str) -> None:
+    if model_timeout >= node_timeout:
+        raise ValueError(
+            f"{label}: model HTTP timeout ({model_timeout}s) must be < "
+            f"node TimeoutPolicy ({node_timeout}s)"
+        )
+
+
+def _openai_compat_model(
+    model_name: str,
+    *,
+    temperature: float,
+    timeout: float,
+    max_tokens: int,
+) -> ChatOpenAI:
+    """OpenAI 兼容端点（SiliconFlow / ARK）；关闭 thinking；SDK 不叠乘图级 Retry。"""
     settings = get_settings()
     return ChatOpenAI(
         model=model_name,
         api_key=settings.model_api_key,
         base_url=settings.model_endpoint,
+        temperature=temperature,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        max_retries=0,
         extra_body={
             "enable_thinking": False,
             "chat_template_kwargs": {"enable_thinking": False},
@@ -139,16 +176,71 @@ def _openai_compat_model(model_name: str) -> ChatOpenAI:
     )
 
 
+def make_read_model() -> ChatOpenAI:
+    """ReadGraph 生产模型（ARK_MODEL）。"""
+    settings = get_settings()
+    _assert_model_timeout_under_node(
+        settings.llm_model_timeout_seconds,
+        settings.llm_node_timeout_seconds,
+        "read",
+    )
+    return _openai_compat_model(
+        settings.model_name,
+        temperature=settings.read_temperature,
+        timeout=settings.llm_model_timeout_seconds,
+        max_tokens=settings.read_max_tokens,
+    )
+
+
 def make_model() -> ChatOpenAI:
-    """子图 / 生成用生产模型（ARK_MODEL）。"""
-    return _openai_compat_model(get_settings().model_name)
+    """兼容别名 → make_read_model()。"""
+    return make_read_model()
 
 
 def make_router_model() -> ChatOpenAI:
-    """Router 专用模型：ROUTER_MODEL 优先，否则回落 ARK_MODEL。
-
-    用于替代不可用的 JEV 主路由；必须关 thinking 以压低每 turn 延迟。
-    """
+    """Router 专用模型：ROUTER_MODEL 优先，否则回落 ARK_MODEL。"""
     settings = get_settings()
+    _assert_model_timeout_under_node(
+        settings.router_model_timeout_seconds,
+        settings.router_node_timeout_seconds,
+        "router",
+    )
     name = (settings.router_model_name or "").strip() or settings.model_name
-    return _openai_compat_model(name)
+    return _openai_compat_model(
+        name,
+        temperature=settings.router_temperature,
+        timeout=settings.router_model_timeout_seconds,
+        max_tokens=settings.router_max_tokens,
+    )
+
+
+def make_select_model() -> ChatOpenAI:
+    """Mutation / HighRisk select_llm 专用模型。"""
+    settings = get_settings()
+    _assert_model_timeout_under_node(
+        settings.llm_model_timeout_seconds,
+        settings.llm_node_timeout_seconds,
+        "select",
+    )
+    return _openai_compat_model(
+        settings.model_name,
+        temperature=settings.select_temperature,
+        timeout=settings.llm_model_timeout_seconds,
+        max_tokens=settings.select_max_tokens,
+    )
+
+
+def make_fallback_model() -> ChatOpenAI:
+    """Fallback explain_llm 专用模型。"""
+    settings = get_settings()
+    _assert_model_timeout_under_node(
+        settings.llm_model_timeout_seconds,
+        settings.llm_node_timeout_seconds,
+        "fallback",
+    )
+    return _openai_compat_model(
+        settings.model_name,
+        temperature=settings.fallback_temperature,
+        timeout=settings.llm_model_timeout_seconds,
+        max_tokens=settings.fallback_max_tokens,
+    )

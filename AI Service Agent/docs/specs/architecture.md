@@ -92,6 +92,13 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 
 异步 LLM 边界节点（Router、Select、ReadGraph、Fallback）使用 `TimeoutPolicy(run_timeout=...)`，且按节点单独配置，不使用 `set_node_defaults(timeout=...)`（后者可能影响隐式同步节点并导致编译失败）。`NodeTimeoutError` 是瞬态错误，由对应 `RetryPolicy` 控制。超时范围是：**Select 覆盖完整 Select 尝试，包括节点内的只读候选 DB 查询；ReadGraph 覆盖完整 ReAct 尝试，包括该尝试内嵌套执行的只读工具工作**。Mutation / HighRisk 写工具执行不得纳入节点超时，直到副作用补偿机制明确。
 
+### Model 节点控制（工厂参数，非 before_model hook）
+
+- **双层超时**：`ChatOpenAI(timeout=...)`（HTTP）必须 **小于** 对应节点 `TimeoutPolicy`（Router：model 5s &lt; node 6s；Select/Read/Fallback：model 10s &lt; node 12s）。SDK `max_retries=0`，避免与图级 `RETRY_LLM` 叠乘。
+- **输出 token**：分档 `max_tokens`——Router 256 / Select 512 / Read 1024 / Fallback 512（设在模型实例上）。
+- **输入 token**：Context harness（`*_TOTAL_INPUT_MAX_TOKENS` + `trim_messages` / `ContextBudgetMiddleware`）控制送入模型的上下文；与输出 `max_tokens` 分责。
+- **temperature**：Router/Select=0；Read/Fallback=0.3。`enable_thinking=False` 全档关闭。
+
 ## 6. 可观测性（横切）
 
 - LangSmith tracing（`LANGSMITH_*` 环境变量，补入 `.env.example`）。
