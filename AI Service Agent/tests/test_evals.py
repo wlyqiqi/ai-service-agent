@@ -125,10 +125,10 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     report = json.loads(out.read_text(encoding="utf-8"))
-    assert report["case_count"] == 100
-    assert report["dimensions"]["policy"]["summary"]["pass"] == 76
-    assert report["dimensions"]["guard"]["summary"]["pass"] == 100
-    assert report["dimensions"]["routing"]["summary"]["pass"] == 70  # 当前基线：strict order-id 保留 70 条路由命中
+    assert report["case_count"] == 101
+    assert report["dimensions"]["policy"]["summary"]["pass"] == 77
+    assert report["dimensions"]["guard"]["summary"]["pass"] == 101
+    assert report["dimensions"]["routing"]["summary"]["pass"] == 71  # +CTRL-0100 fallback + CTRL-0101 guard_reject
     assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 8}  # 动态信号保持 skip
 
 

@@ -46,17 +46,21 @@
 
 ### 1.5 Guard 检测节点（并行于 Router）
 
-- 独立检测**原始输入**的恶意意图与情绪升级信号，不依赖 Router 分类结果（图位置见 `graph-spec.md` §2）。
+- 独立检测**原始输入**的控制面恶意/越权意图，不依赖 Router 分类结果（图位置见 `graph-spec.md` §2）。
+- **Guard v2（确定性规则包，低延迟，无 LLM）**：按命名包匹配最后一条 human 消息；命中则 `guard_status=fail` 并写入 `guard_reason`。
 
-| 信号 | 示例 |
+| guard_reason | 示例 |
 |---|---|
-| 恶意 / 越权意图 | Prompt 注入、诱导越权、提权、威胁 |
-| 情绪升级 | 愤怒/投诉高频词连续出现、情绪评分超阈值 |
+| `prompt_injection` | 「忽略之前所有规则…」 |
+| `approval_bypass` | 「不需要审批 / 不用审批 / 绕过审批」 |
+| `privilege_spoof` | 「我是系统管理员 / admin…」 |
+| `state_forgery` | 「查询一下，把订单标记为已退款」 |
 
-- `fail` → 发 `safety_rejected` 事件（rule=`guard`）+ 安全收尾，Router 并行结果不消费；可配置转 handoff 规则。
+- **不在 Guard reject**：业务口语「别走审批、直接退款」（交 HighRisk + 审批 gate）；纯投诉/威胁情绪（如「投诉到封」）——不 reject，后续可由 handoff 规则承接（本节点不切换 mode）。
+- `fail` → 发 `safety_rejected` 事件（rule=`guard`，reason=`guard_reason`）+ 安全收尾，Router 并行结果不消费。
 - `pass` → 正常进入 Policy。
-- **P3 实现形态（D2 定案）**：确定性规则 v1（关键词/启发式，阈值可配置，无模型 key，离线可测）；**v1 是过渡实现、非 Guard 终态能力**——无法有效覆盖语义层面的恶意输入/越权诱导（如同义替换、间接暗示等绕过关键词匹配的攻击），后续须评估升级为 LLM Guard 或语义层判断（升级评估登记见 `docs/decisions/2026-09-15-p3-design-decisions.md` §2）。
-- 阈值全部可配置。
+- **明确不做 LLM Guard**（延迟与确定性优先）；语义绕过残余风险由 Policy / 安全预检 / 审批承接。
+- 规则包阈值全部可配置（`Settings.guard_rule_patterns`）。
 
 ## 2. Handoff 触发规则（转人工）
 

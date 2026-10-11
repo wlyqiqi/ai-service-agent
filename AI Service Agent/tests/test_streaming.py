@@ -200,6 +200,12 @@ def test_stream_yields_custom_events_and_guard_reject():
     assert "safety_rejected" in types
     sr = next(e for e in events if e["type"] == "safety_rejected")
     assert sr["data"]["rule"] == "guard"
+    assert sr["data"]["reason"] in {
+        "privilege_spoof",
+        "approval_bypass",
+        "prompt_injection",
+        "guard_rule_hit",
+    }
     assert types[-1] == "done"
     assert events[-1]["data"]["final"] == GUARD_REJECT_TEXT
 

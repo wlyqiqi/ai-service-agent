@@ -48,10 +48,10 @@
 ## 2. Guard 节点（并行检测）
 
 - 与 Router **并行**执行，输入为同一份原始用户输入（`messages` + `user_id`），**不依赖 Router 的分类结果**，谁先完成不影响正确性。
-- 只输出 `guard_status`（pass / fail），不参与 capability/risk_level 分类，不执行 tools，不修改业务状态。
+- 只输出 `guard_status`（pass / fail）与可选 `guard_reason`（fail 时的规则包名），不参与 capability/risk_level 分类，不执行 tools，不修改业务状态。
 - `fail` → 走安全收尾（见 `safety-spec.md` §1.5），Router 并行结果**不被消费**：实现上若调用可取消则取消，否则以"不消费其输出"兜底。
 - 检测信号与阈值定义见 `safety-spec.md` §1.5。
-- **P3 实现形态（D2 定案）**：确定性规则 v1（关键词/启发式，阈值可配置，无模型 key，离线可测）；**v1 是过渡实现、非 Guard 终态能力**——无法有效覆盖语义层面的恶意输入/越权诱导（如同义替换、间接暗示等绕过关键词匹配的攻击），后续须评估升级为 LLM Guard 或语义层判断（升级评估登记见 `docs/decisions/2026-09-15-p3-design-decisions.md` §2）。
+- **实现形态（Guard v2）**：确定性命名规则包（阈值可配置，无模型 key，离线可测，低延迟）。**本阶段明确不做 LLM Guard**；语义绕过的残余风险由 Policy / `safety_check` / 审批与 handoff 上限承接。
 
 ## 3. Resume 调度（实测修正：入口层调度 + 图内续接）
 
@@ -154,7 +154,7 @@
 
 | 节点/子图 | 读 | 写 |
 |---|---|---|
-| GuardNode | `messages`（原始输入）、`user_id` | `guard_status` |
+| GuardNode | `messages`（原始输入）、`user_id` | `guard_status`、`guard_reason` |
 | Router | `messages`、`user_id` | `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control` |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context` | `messages` |

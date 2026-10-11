@@ -22,6 +22,7 @@ class CustomerServiceState(TypedDict):
     route_control: Literal["policy", "deepseek_fallback"] | None
                                   # 路由控制字段：唯一允许决定一次 DeepSeek fallback 的信号
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（每轮覆盖，见 graph-spec.md §2）
+    guard_reason: str | None       # Guard fail 时的规则包名（prompt_injection / approval_bypass / …）；pass 为 None
     context: dict                  # 业务上下文：订单、账户、工单等
     pending_approval: ApprovalRequest | None
     handoff: bool                  # 转人工信号标记（check_handoff 置位，见 graph-spec.md §6.5）

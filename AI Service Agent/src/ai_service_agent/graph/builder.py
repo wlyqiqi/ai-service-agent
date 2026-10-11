@@ -82,7 +82,8 @@ def _policy_gate(state: dict) -> dict:
 
 
 def _safety_final(state: dict) -> dict:
-    get_stream_writer()({"type": "safety_rejected", "data": {"rule": "guard", "reason": "guard_keyword_hit"}})
+    reason = state.get("guard_reason") or "guard_rule_hit"
+    get_stream_writer()({"type": "safety_rejected", "data": {"rule": "guard", "reason": reason}})
     return {"messages": [AIMessage(content=GUARD_REJECT_TEXT)], "execution_status": "completed"}
 
 

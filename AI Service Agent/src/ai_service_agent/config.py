@@ -57,11 +57,14 @@ class Settings(BaseSettings):
         "培训", "审核", "成本", "智能", "呼吸", "操作", "考试",
         "招聘", "岗位", "工作", "工资", "流程", "制度", "标准",
     ]
-    # P3（D2/D4/OQ-1）：Guard v1 过渡规则（关键词/正则，非终态）；确认/取消关键词；审批有效期
-    guard_patterns: list[str] = [
-        r"忽略.*规则", r"绕过审批", r"不需要审批", r"不用审批", r"直接执行",
-        r"系统管理员", r"admin", r"查询.*标记为已退款", r"投诉到封",
-    ]
+    # Guard v2：命名规则包（确定性、无 LLM）。情绪威胁不在此 reject。
+    # 键为 guard_reason；值为该包正则列表。勿恢复裸词「直接执行」「投诉到封」。
+    guard_rule_patterns: dict[str, list[str]] = {
+        "prompt_injection": [r"忽略.*规则"],
+        "approval_bypass": [r"绕过审批", r"不需要审批", r"不用审批"],
+        "privilege_spoof": [r"系统管理员", r"admin"],
+        "state_forgery": [r"查询.*标记为已退款"],
+    }
     confirm_keywords: list[str] = ["确认", "同意", "好的", "可以", "是", "没错"]
     cancel_keywords: list[str] = ["取消", "算了", "不用了", "不要", "否"]
     approval_expires_minutes: int = 30

@@ -13,7 +13,8 @@ def test_state_requires_session_id():
 def test_state_p3_fields():
     s: CustomerServiceState = {
         "messages": [], "user_id": "u1", "session_id": "s1",
-        "guard_status": None, "pending_approval": None,
+        "guard_status": None, "guard_reason": None, "pending_approval": None,
     }
     assert s["guard_status"] is None
+    assert s["guard_reason"] is None
     assert s["pending_approval"] is None
