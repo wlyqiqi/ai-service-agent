@@ -43,14 +43,15 @@
 - 子图检测到需要转人工的信号时，**不自行创建 Handoff Record、不自行切换 `conversation_mode`**，统一抛出 `interrupt({"type": "handoff_request", "reason": ..., "summary": ...})`；外层（Conversation Runtime）负责接收信号 → 创建 Handoff Record → 原子切换 `conversation_mode` → 发出 `handoff_created` 事件。子图不直接调用任何 Handoff API（机制与事件见 `handoff-spec.md` §3 / `event-spec.md`）。
 - 抛出 `handoff_request` 后 `execution_status` 置 `waiting_handoff`（见 `state-spec.md` §1），不得置 `completed` / `failed`。
 - Final Response：子图结果写回 `messages`，由 harness 统一推送事件（见 `event-spec.md`）。
+- **Runtime 依赖注入（2026-10-10）**：顶层 `StateGraph` 使用 `context_schema=GraphContext`。`GraphContext` 提供 `order_repository` / `approval_service` / `user_id`，节点与子图通过 LangGraph `Runtime` 读取，不通过全局 settings 直接取数据库连接。默认仍可由 `build_graph` 构造 `SQLiteOrderRepository`，但生产可注入其他 adapter。
 
 ## 2. Guard 节点（并行检测）
 
 - 与 Router **并行**执行，输入为同一份原始用户输入（`messages` + `user_id`），**不依赖 Router 的分类结果**，谁先完成不影响正确性。
-- 只输出 `guard_status`（pass / fail），不参与 capability/risk_level 分类，不执行 tools，不修改业务状态。
+- 只输出 `guard_status`（pass / fail）与可选 `guard_reason`（fail 时的规则包名），不参与 capability/risk_level 分类，不执行 tools，不修改业务状态。
 - `fail` → 走安全收尾（见 `safety-spec.md` §1.5），Router 并行结果**不被消费**：实现上若调用可取消则取消，否则以"不消费其输出"兜底。
 - 检测信号与阈值定义见 `safety-spec.md` §1.5。
-- **P3 实现形态（D2 定案）**：确定性规则 v1（关键词/启发式，阈值可配置，无模型 key，离线可测）；**v1 是过渡实现、非 Guard 终态能力**——无法有效覆盖语义层面的恶意输入/越权诱导（如同义替换、间接暗示等绕过关键词匹配的攻击），后续须评估升级为 LLM Guard 或语义层判断（升级评估登记见 `docs/decisions/2026-09-15-p3-design-decisions.md` §2）。
+- **实现形态（Guard v2）**：确定性命名规则包（阈值可配置，无模型 key，离线可测，低延迟）。**本阶段明确不做 LLM Guard**；语义绕过的残余风险由 Policy / `safety_check` / 审批与 handoff 上限承接。
 
 ## 3. Resume 调度（实测修正：入口层调度 + 图内续接）
 
@@ -102,7 +103,7 @@
 ### 6.2 MutationGraph（workflow）
 
 - 确定性流程：**select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**；完整 → **安全预检**（`safety-spec.md`；含业务规则，D3：`precheck_fetch` 提供订单状态事实 → `context["precheck_data"]`，`safety_check` 确定性裁决）→ `interrupt()` 用户确认（含影响摘要）→ 执行写操作工具 → 结果。
-- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串，或（全可选工具）全部业务字段为空 → 进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / schema 校验错误仍为拒绝（`safety_rejected`），不走 clarify。
+- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串/数值占位（`<=0`，如开票 `amount=0`），或（全可选工具）全部业务字段为空 → select 先归一占位符再判定，进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / 真 schema 类型错误仍为拒绝（`safety_rejected`），不走 clarify。
 - 写图 select 允许集为档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` →
   clarify 节点（普通轮，`clarification_required` + `reason:"tier_mismatch"`，`execution_status=clarifying`）。
 - 用户确认对应 `Command(resume={"action":"confirm"|"cancel"})`（schema 见 §3）。
@@ -114,11 +115,11 @@
 - **select（参数完备性，同 §6.2 clarify 机制）** → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
   选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
-- `cancel_order` 缺 `order_id` 时由确定性代码解析：本人仅 1 笔 `paid` 订单自动选中；多笔进入 `clarification_required` 并列出最多 10 笔候选；零笔同样发出 `clarification_required` 且 `candidates=[]`，继续 clarifying 流程，不进入审批。select 每次进入结果分支前清除旧候选，只有上述 cancel-order 澄清路径重新写入，避免污染其他工具的澄清。
+- **显式 `order_id`（2026-10-10）**：`cancel_order` / `refund_apply` 必须由当前用户输入或可见上下文显式给出 `order_id`；即使名下只有一笔可操作订单也不自动选中。候选仅用于澄清：多笔列出候选、零笔说明无可操作订单，均继续 `clarification_required`，不进入审批。
 - `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态；由于预检只放行 `paid` 订单，进入审批时的状态预期为 `paid`。
-- efund_apply 缺 order_id 时由确定性代码解析：本人 paid/completed 订单自动选中/澄清（同 cancel_order 模式）；审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
+- `refund_apply` 审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
 - 超时由下一 turn 惰性检查处理为过期。
-- **审批承接（D7/D8 定案）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等；恢复后、执行前做最小不变量 recheck（`request_id` 存在、参数未变、`context` 非陈旧）。
+- **审批承接（D7/D8 + 2026-10-10）**：由 Approval Service（SQLite 轻量存储 + 前置校验端点，见 `approval-spec.md` §3）承接；同一 `approval_id` 重复 decision 天然幂等。approve 恢复后必须重新读取当前订单快照，校验订单仍存在、归属正确、状态仍允许、版本/rowid 未变化；任一失败均进入 `safety_rejected`，避免 TOCTOU。
 
 ### 6.4 Fallback / Concierge
 
@@ -129,7 +130,7 @@
 
 - **物理隔离**：`explain_llm` 必须以 `create_agent(model, tools=[], system_prompt=FALLBACK_SYSTEM_PROMPT)` 构建（当前实现见 `src/ai_service_agent/graph/workflows/fallback.py`）。工具集为空属于机械隔离，不依赖 prompt 约束"不要调用工具"。
 - **调用上限分层**：当前 `READ_MODEL_CALL_LIMIT` 只适用于 ReadGraph；Fallback 的调用上限指 `explain_llm` **单次 run 内模型调用次数**，后续实现也必须使用官方 `ModelCallLimitMiddleware`（建议 `run_limit=3`、`exit_behavior="end"`），不是跨 turn 的 fallback 次数限制。
-- **跨 turn 兜底升级（2026-09-23 实现）**：同一会话最多产生 `fallback_max_turns=5` 次 fallback 回复；第 6 次 fallback 由 `check_handoff` 确定性触发 `interrupt(handoff_request)`，`reason="fallback limit exceeded"`，并把 `context["fallback_count"]` 清零（人工 Resolve 后重新计数）。当前 `fallback_count` 是首个落地触发源；同一工具连续失败后续应复用同一 `check_handoff` 消费入口与 `context` 计数语义，禁止各自维护独立计数逻辑；hook 只读观测，不得修改 State。
+- **跨 turn 兜底升级（2026-09-23 实现；2026-10-11 阈值调整）**：同一会话最多产生 `fallback_max_turns=4` 次 fallback 回复；第 5 次 fallback 由 `check_handoff` 确定性触发 `interrupt(handoff_request)`，`reason="fallback limit exceeded"`，并把 `context["fallback_count"]` 清零（人工 Resolve 后重新计数）。当前 `fallback_count` 是首个落地触发源；同一工具连续失败后续应复用同一 `check_handoff` 消费入口与 `context` 计数语义，禁止各自维护独立计数逻辑；hook 只读观测，不得修改 State。
 - **发送前复检**：`explain_llm` 的 `done.final` 与所有子图一样复用 `/chat` 出口统一复检 `conversation_mode == "ai"`；非 `ai` 时不落 Message Store，`done.final` 置空并返回 `ModeChanged`。需要注意：SSE token 会在图流执行期间先行透出，最终复检兜底的是最终回复的持久化与 `done.final`；如后续要求 token 级绝对不透出，应统一改造 `event_stream` 的发送策略，而不是给 fallback 增加独立复检路径。
 
 ### 6.5 子图中途触发 Handoff（统一机制）
@@ -153,7 +154,7 @@
 
 | 节点/子图 | 读 | 写 |
 |---|---|---|
-| GuardNode | `messages`（原始输入）、`user_id` | `guard_status` |
+| GuardNode | `messages`（原始输入）、`user_id` | `guard_status`、`guard_reason` |
 | Router | `messages`、`user_id` | `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control` |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context` | `messages` |

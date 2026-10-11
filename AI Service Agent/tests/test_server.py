@@ -1,5 +1,6 @@
 import sqlite3
 import time
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,31 @@ from ai_service_agent.testing import ApprovalFlowFakeModel
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import write as write_mod
 from ai_service_agent.tools import orders as orders_mod
+from ai_service_agent.graph import builder as builder_mod
+from ai_service_agent.harness import server as server_module
+
+
+@pytest.fixture(autouse=True)
+def isolated_business_db(monkeypatch, tmp_path):
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("seed_mock_db_server", root / "scripts" / "seed_mock_db.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(db_path))
+    real_settings = builder_mod.get_settings()
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _Settings(real_settings))
+    monkeypatch.setattr(server_module, "get_settings", lambda: _Settings(real_settings))
 
 
 def test_sessions_creates_ai_mode(tmp_path):
@@ -169,7 +195,7 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
     db = str(tmp_path / "approval.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[]), chatwoot=cw))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         "".join(r.iter_text())
 
     conn = sqlite3.connect(db)
@@ -415,14 +441,20 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     )
     seed_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed_module)
+    real_builder_settings = builder_mod.get_settings()
     class _WriteSettings:
         mock_ecommerce_db_path = str(tmp_path / "isolated-mock.db")
+
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(tmp_path / "isolated-mock.db")
 
     isolated_db = tmp_path / "isolated-mock.db"
     seed_module.build_database(str(isolated_db))
 
-    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
-    monkeypatch.setattr(orders_mod, "get_settings", lambda: _WriteSettings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings(real_builder_settings))
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _WriteSettings(real_builder_settings))
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _WriteSettings(real_builder_settings))
     model = ToolCallingFakeModel(responses=[
         router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区测试路 99 号"}),
@@ -468,9 +500,9 @@ def test_chat_and_resolve_share_make_ai_graph_entry(tmp_path, monkeypatch):
 
     calls = []
 
-    def spy(model, checkpointer, registry=None):
-        calls.append((model, checkpointer))
-        return _real_make_ai_graph(model, checkpointer, registry=registry)
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return _real_make_ai_graph(*args, **kwargs)
 
     monkeypatch.setattr(server_mod, "make_ai_graph", spy)
     client = TestClient(create_app(str(tmp_path / "g.db"), model="fake"))
@@ -495,7 +527,7 @@ def test_chat_holds_when_approval_pending(tmp_path):
     db = str(tmp_path / "hold.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         text1 = "".join(r.iter_text())
     assert '"approval_required"' in text1
 
@@ -541,7 +573,7 @@ def test_chat_simulate_approval_resumes_approve(tmp_path):
     db = str(tmp_path / "sim.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[]), simulate_approval=True))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         text1 = "".join(r.iter_text())
     assert '"approval_required"' in text1
 
@@ -560,7 +592,7 @@ def test_approve_resume_persists_final_to_message_store(tmp_path):
     db = str(tmp_path / "d7.db")
     client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "申请退款"}) as r:
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         "".join(r.iter_text())
     conn = sqlite3.connect(db)
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]

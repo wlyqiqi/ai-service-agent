@@ -1,12 +1,14 @@
 import re
 
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from ai_service_agent.config import get_settings
+from ai_service_agent.config import get_settings, make_router_model
+from ai_service_agent.domain.orders import OrderRepository, SQLiteOrderRepository
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.messages import message_text
 from ai_service_agent.graph.route_policy import resolve_route_policy
@@ -20,12 +22,13 @@ from ai_service_agent.graph.router import (
     make_deepseek_router,
     make_jev_router,
 )
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.graph.workflows.high_risk_agent import make_high_risk_graph
 from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
-from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY, make_tool_registry
 
 
 _PROFILE_UPDATE_PATTERN = re.compile(
@@ -79,7 +82,8 @@ def _policy_gate(state: dict) -> dict:
 
 
 def _safety_final(state: dict) -> dict:
-    get_stream_writer()({"type": "safety_rejected", "data": {"rule": "guard", "reason": "guard_keyword_hit"}})
+    reason = state.get("guard_reason") or "guard_rule_hit"
+    get_stream_writer()({"type": "safety_rejected", "data": {"rule": "guard", "reason": reason}})
     return {"messages": [AIMessage(content=GUARD_REJECT_TEXT)], "execution_status": "completed"}
 
 
@@ -93,17 +97,39 @@ def _jev_timeout_error_handler(state: dict, error: NodeError) -> Command:
     return root_error_handler(state, error)
 
 
-def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks=None):
+def build_graph(
+    model,
+    tools: list,
+    checkpointer=None,
+    registry=None,
+    tool_hooks=None,
+    order_repository: OrderRepository | None = None,
+    router_model=None,
+):
     """总图：Guard ∥ Router -> policy_gate -> ReadGraph / Fallback / safety_final（统一出口）。
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
+    router_model：Router 专用模型（替代 JEV）；默认按 ROUTER_MODEL / ARK_MODEL 解析。
     """
-    reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
+    repository = order_repository or SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
+    reg = registry if registry is not None else make_tool_registry(repository)
     guard = make_guard_node()
     read_graph = make_read_graph(model, tools, tool_hooks=tool_hooks)
     fallback = make_fallback_graph(model)
-    mutation_graph = make_mutation_graph(model, reg.for_risk_level("mutation"), reg, tool_hooks=tool_hooks)
-    high_risk_graph = make_high_risk_graph(model, reg.for_risk_level("high_risk"), reg, tool_hooks=tool_hooks)
+    mutation_graph = make_mutation_graph(
+        model,
+        reg.for_risk_level("mutation"),
+        reg,
+        tool_hooks=tool_hooks,
+        order_repository=repository,
+    )
+    high_risk_graph = make_high_risk_graph(
+        model,
+        reg.for_risk_level("high_risk"),
+        reg,
+        tool_hooks=tool_hooks,
+        order_repository=repository,
+    )
 
     def finalize(state: dict) -> dict:
         # 保留子图产出的终态 clarifying（P4 D1 普通轮澄清）；failed 防覆盖。
@@ -113,13 +139,22 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
             return {}
         return {"execution_status": "completed"}
 
-    builder = StateGraph(CustomerServiceState).set_node_defaults(error_handler=root_error_handler)
+    builder = StateGraph(CustomerServiceState, context_schema=GraphContext).set_node_defaults(error_handler=root_error_handler)
     settings = get_settings()
     use_jev = (
         settings.jev_enabled
         and bool(settings.jev_api_key)
         and not settings.fake_model
     )
+    if router_model is None:
+        if (
+            settings.router_model_name
+            and not settings.fake_model
+            and not isinstance(model, FakeMessagesListChatModel)
+        ):
+            router_model = make_router_model()
+        else:
+            router_model = model
     if use_jev:
         builder.add_node(
             "router_jev",
@@ -129,7 +164,7 @@ def build_graph(model, tools: list, checkpointer=None, registry=None, tool_hooks
         )
     builder.add_node(
         "router_deepseek",
-        make_deepseek_router(model),
+        make_deepseek_router(router_model),
         error_handler=root_error_handler,
         retry_policy=RETRY_DEEPSEEK_ROUTER,
         timeout=make_timeout_policy(settings.router_node_timeout_seconds),

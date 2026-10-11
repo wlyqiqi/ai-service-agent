@@ -67,12 +67,23 @@ def make_timeout_policy(run_timeout: float) -> TimeoutPolicy:
 
 
 def _emit_node_error(error: NodeError) -> None:
+    """Emit normalized error event; keep stable code + user copy, put root cause in detail."""
+    inner = getattr(error, "error", None)
+    if inner is None and isinstance(error, BaseException):
+        inner = error
+    if isinstance(inner, BaseException):
+        detail = f"{type(inner).__name__}: {inner}"[:500]
+    elif inner is not None:
+        detail = str(inner)[:500]
+    else:
+        detail = ""
     try:
         get_stream_writer()({
             "type": "error",
             "data": {
                 "code": "runtime_error",
                 "message": RUNTIME_ERROR_TEXT,
+                "detail": detail,
             },
         })
     except RuntimeError:

@@ -39,6 +39,7 @@ class ToolMeta:
 - 返回值必须是 JSON 可序列化结构；工具内部异常由 `handle_tool_errors` 归一化，不得裸抛到图外。
 - 写工具必须支持幂等键（`idempotent=True` + 参数带 `request_id`），防重放。
 - 工具自身不承载横切逻辑（事件、观测、审计、限流等）：由 harness hook 在工具执行前后统一挂接（见 `architecture.md` §8.1）。
+- **订单边界（2026-10-10）**：订单读写工具不直接打开数据库连接；实现通过 `OrderRepository` 访问订单事实与命令。高风险写工具由 `make_cancel_order_tool(order_repository)` / `make_refund_apply_tool(order_repository)` 工厂构造；SQLite 只保留在 `SQLiteOrderRepository` adapter 内，后续可替换为 Postgres / HTTP / ERP adapter。
 
 ## 3. 与安全预检的衔接
 
@@ -58,8 +59,8 @@ class ToolMeta:
 | `update_order_note` | 修改订单备注 | mutation | 幂等；内部实现写模拟电商库 `orders.note`；仅限本人订单（D4） |
 | `create_invoice` | 开具发票 | mutation | 幂等；内部实现写模拟电商库 `invoices`；仅限本人订单；状态规则由 safety_check 裁决：`cancelled` / `refunding` / `refunded` 返回 `invoice_not_allowed`；金额规则由 safety_check 裁决（`amount + 已开票累计 <= orders.total_amount`），一单一开、允许部分开票 |
 | `create_service_ticket` | 创建售后工单 | mutation | 幂等；内部实现写模拟电商库 `service_tickets`；仅限本人订单；工单-会话关联留待 handoff 集成阶段实现 |
-| `cancel_order` | 取消订单 | high_risk | 幂等；需人工审批；内部实现写模拟电商库 `orders.status/cancelled_at`；仅限本人 `paid` 订单；`paid -> cancelled`；不触发退款、不回补库存；同一 `request_id` 仅在取消事务成功提交后生成幂等记录 |
-| `refund_apply` | 退款申请 | high_risk | 需人工审批；状态规则由 safety_check 裁决：`paid` 或签收 7 天窗口内的 `signed` 允许，`signed` 超窗返回 `refund_window_expired`，`completed` 返回 `refund_not_allowed`，`refunding` / `refunded` 分别返回 `order_already_refunding` / `order_already_refunded` |
+| `cancel_order` | 取消订单 | high_risk | 幂等；需人工审批；通过 `OrderRepository` 执行；仅限本人 `paid` 订单；`paid -> cancelled`；必须显式携带 `order_id`，不自动选择候选；不触发退款、不回补库存；同一 `request_id` 仅在取消事务成功提交后生成幂等记录 |
+| `refund_apply` | 退款申请 | high_risk | 需人工审批；通过 `OrderRepository` 执行；必须显式携带 `order_id`，不自动选择候选；状态规则由 safety_check 裁决：`paid` 或签收 7 天窗口内的 `signed` 允许，`signed` 超窗返回 `refund_window_expired`，`completed` 返回 `refund_not_allowed`，`refunding` / `refunded` 分别返回 `order_already_refunding` / `order_already_refunded` |
 
 - **P3 实现（D5 定案）**：`account_update` / `order_cancel` / `refund_apply` 以 stub 落地（内存 fake store，不引入真实外部系统依赖），`idempotent=True` + 参数带 `request_id`（防重放，见 §2）；按 `min_risk_level` 档注册进 ToolRegistry，`for_risk_level` 分层注入不变。
 - **P4 实现（D3/D4 定案）**：`orders.py` 升级为最小订单状态模型（`order_id -> {user_id, status, signed_at, cancelled_at}`，含确定性种子数据供离线 eval/测试）；`order_lookup` 承担读侧属主校验（D4）；订单状态事实由 `precheck_fetch` 节点提供给预检（D3，见 safety-spec.md §1.2）。

@@ -58,7 +58,9 @@ def test_settings_p3_defaults():
     assert s.simulate_approval is False
     assert "确认" in s.confirm_keywords
     assert "取消" in s.cancel_keywords
-    assert r"绕过审批" in s.guard_patterns
+    assert r"绕过审批" in s.guard_rule_patterns["approval_bypass"]
+    assert "直接执行" not in str(s.guard_rule_patterns)
+    assert "投诉到封" not in str(s.guard_rule_patterns)
 
 def test_chatwoot_settings_defaults(monkeypatch):
     from ai_service_agent.config import Settings

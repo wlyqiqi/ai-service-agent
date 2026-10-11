@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     model_name: str = Field(default="deepseek-v4-flash", validation_alias="ARK_MODEL")
     model_endpoint: str | None = Field(default=None, validation_alias="ARK_BASE_URL")
     model_api_key: str | None = Field(default=None, validation_alias="ARK_API_KEY")
+    # Router 专用模型（替代不可用的 JEV）；空则与 ARK_MODEL 共用同一模型
+    router_model_name: str | None = Field(default=None, validation_alias="ROUTER_MODEL")
     router_conf_threshold: float = 0.6
     router_node_timeout_seconds: float = Field(
         default=6.0, validation_alias="ROUTER_NODE_TIMEOUT_SECONDS"
@@ -55,11 +57,14 @@ class Settings(BaseSettings):
         "培训", "审核", "成本", "智能", "呼吸", "操作", "考试",
         "招聘", "岗位", "工作", "工资", "流程", "制度", "标准",
     ]
-    # P3（D2/D4/OQ-1）：Guard v1 过渡规则（关键词/正则，非终态）；确认/取消关键词；审批有效期
-    guard_patterns: list[str] = [
-        r"忽略.*规则", r"绕过审批", r"不需要审批", r"不用审批", r"直接执行",
-        r"系统管理员", r"admin", r"查询.*标记为已退款", r"投诉到封",
-    ]
+    # Guard v2：命名规则包（确定性、无 LLM）。情绪威胁不在此 reject。
+    # 键为 guard_reason；值为该包正则列表。勿恢复裸词「直接执行」「投诉到封」。
+    guard_rule_patterns: dict[str, list[str]] = {
+        "prompt_injection": [r"忽略.*规则"],
+        "approval_bypass": [r"绕过审批", r"不需要审批", r"不用审批"],
+        "privilege_spoof": [r"系统管理员", r"admin"],
+        "state_forgery": [r"查询.*标记为已退款"],
+    }
     confirm_keywords: list[str] = ["确认", "同意", "好的", "可以", "是", "没错"]
     cancel_keywords: list[str] = ["取消", "算了", "不用了", "不要", "否"]
     approval_expires_minutes: int = 30
@@ -67,7 +72,8 @@ class Settings(BaseSettings):
     # P4（D1）：Clarify 最大澄清轮次，超限转 fallback
     clarify_max_turns: int = 2
     # 同一会话最多 fallback 回复次数；第 fallback_max_turns + 1 次触发转人工。
-    fallback_max_turns: int = 5
+    # 默认 4：最多 4 次兜底回复，第 5 次进入 Fallback 时确定性转人工。
+    fallback_max_turns: int = 4
     # Chatwoot 坐席端（API inbox；仅人工车道启用；未配置则 chatwoot_enabled=False）
     chatwoot_enabled: bool = False
     chatwoot_base_url: str | None = Field(default=None, validation_alias="CHATWOOT_BASE_URL")
@@ -119,11 +125,30 @@ def _sync_langsmith_env(settings: Settings, environ: dict | None = None) -> None
         environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
 
 
-def make_model() -> ChatOpenAI:
-    """生产模型：ARK（OpenAI 兼容，走 config）。"""
+def _openai_compat_model(model_name: str) -> ChatOpenAI:
+    """OpenAI 兼容端点（SiliconFlow / ARK）；关闭 thinking（含 Qwen chat_template_kwargs）。"""
     settings = get_settings()
     return ChatOpenAI(
-        model=settings.model_name,
+        model=model_name,
         api_key=settings.model_api_key,
         base_url=settings.model_endpoint,
+        extra_body={
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     )
+
+
+def make_model() -> ChatOpenAI:
+    """子图 / 生成用生产模型（ARK_MODEL）。"""
+    return _openai_compat_model(get_settings().model_name)
+
+
+def make_router_model() -> ChatOpenAI:
+    """Router 专用模型：ROUTER_MODEL 优先，否则回落 ARK_MODEL。
+
+    用于替代不可用的 JEV 主路由；必须关 thinking 以压低每 turn 延迟。
+    """
+    settings = get_settings()
+    name = (settings.router_model_name or "").strip() or settings.model_name
+    return _openai_compat_model(name)

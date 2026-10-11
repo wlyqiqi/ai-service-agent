@@ -301,7 +301,7 @@ def run_all(control_dir: str | Path) -> dict:
             "handoff_phrases": get_settings().handoff_phrases,
             "handoff_negative_suffix": get_settings().handoff_negative_suffix,
             "router_conf_threshold": get_settings().router_conf_threshold,
-            "guard_patterns": get_settings().guard_patterns,
+            "guard_rule_patterns": get_settings().guard_rule_patterns,
             "confirm_keywords": get_settings().confirm_keywords,
             "cancel_keywords": get_settings().cancel_keywords,
             "approval_expires_minutes": get_settings().approval_expires_minutes,

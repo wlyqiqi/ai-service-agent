@@ -4,7 +4,7 @@ from ai_service_agent.harness.tool_hooks import LoggingToolHook
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
 
-def make_ai_graph(model, checkpointer, registry=None):
+def make_ai_graph(model, checkpointer, registry=None, order_repository=None):
     """/chat 与 /handoffs/{id}/resolve 共用的图构建入口（P2 一致性要求）。
 
     两处必须调用本函数，保证 build_graph 参数（model / tools / checkpointer / registry）完全一致。
@@ -14,7 +14,14 @@ def make_ai_graph(model, checkpointer, registry=None):
     """
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
     tools = reg.for_risk_level("read")
-    return build_graph(model, tools=tools, checkpointer=checkpointer, registry=reg, tool_hooks=[LoggingToolHook()])
+    return build_graph(
+        model,
+        tools=tools,
+        checkpointer=checkpointer,
+        registry=reg,
+        tool_hooks=[LoggingToolHook()],
+        order_repository=order_repository,
+    )
 
 
 # langgraph CLI / platform 入口（langgraph.json -> harness/graph.py:app）。

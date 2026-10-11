@@ -4,7 +4,7 @@
 - router_deepseek -> ROUTER_SYSTEM / ROUTE_INTENT_SYSTEM
 - select_llm  -> SELECT_SYSTEM_TEMPLATE
 - agent_llm   -> READ_SYSTEM_PROMPT（ReadGraph）
-Guard v1 为关键词/正则，无 LLM 提示词。
+Guard v2 为确定性规则包（无 LLM 提示词）。
 """
 
 

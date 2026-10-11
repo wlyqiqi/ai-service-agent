@@ -1,0 +1,892 @@
+{
+  "summary": {
+    "experiment_name": "real-model-decoupled-20261010-133346-54cd71e0",
+    "experiment_url": "https://smith.langchain.com/o/7b7ef818-afd9-42a4-84cc-0f331bfd835f/datasets/4fc94b31-6919-420c-8d21-9cf53308b39b/compare?selectedSessions=37adde5b-4ba0-4d36-b4aa-ed704efe85ae",
+    "cases": 40,
+    "passed": 38,
+    "failed": 2
+  },
+  "results": [
+    {
+      "id": "REAL-HIGHRISK-001",
+      "category": "high_risk_refund",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "refund_apply_execute",
+        "target_graph": "high_risk_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "refund_apply"
+        ],
+        "events": [
+          "approval_required",
+          "done"
+        ],
+        "timeline": [
+          [
+            "approval_required",
+            "done"
+          ]
+        ],
+        "approval": {
+          "http_status": 200,
+          "body": {
+            "approval_id": "e5fda932-ed06-438b-86b8-9e7f3fb2ed5f",
+            "status": "approved"
+          }
+        },
+        "latency_ms": 21333.1
+      }
+    },
+    {
+      "id": "REAL-HIGHRISK-002",
+      "category": "high_risk_refund_clarify",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "refund_apply_execute",
+        "target_graph": "high_risk_graph",
+        "execution_status": "clarifying",
+        "interrupts": [],
+        "tools": [],
+        "events": [
+          "clarification_required",
+          "done"
+        ],
+        "timeline": [
+          [
+            "clarification_required",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 15579.1
+      }
+    },
+    {
+      "id": "REAL-HIGHRISK-003",
+      "category": "high_risk_cancel",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "cancel_order_execute",
+        "target_graph": "high_risk_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "cancel_order"
+        ],
+        "events": [
+          "approval_required",
+          "done"
+        ],
+        "timeline": [
+          [
+            "approval_required",
+            "done"
+          ]
+        ],
+        "approval": {
+          "http_status": 200,
+          "body": {
+            "approval_id": "323604fe-64f3-4b82-8b8f-6078e7281a04",
+            "status": "approved"
+          }
+        },
+        "latency_ms": 10413.0
+      }
+    },
+    {
+      "id": "REAL-HIGHRISK-004",
+      "category": "high_risk_precheck",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "cancel_order_execute",
+        "target_graph": "high_risk_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [],
+        "events": [
+          "done"
+        ],
+        "timeline": [
+          [
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 10808.3
+      }
+    },
+    {
+      "id": "REAL-HUMAN-001",
+      "category": "handoff_explicit",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "events": [
+          "handoff_created",
+          "done"
+        ],
+        "latency_ms": 16.5
+      }
+    },
+    {
+      "id": "REAL-HUMAN-002",
+      "category": "handoff_explicit",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "events": [
+          "handoff_created",
+          "done"
+        ],
+        "latency_ms": 20.2
+      }
+    },
+    {
+      "id": "REAL-MUTATION-001",
+      "category": "mutation_phone",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "account_profile_update",
+        "target_graph": "mutation_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "update_phone"
+        ],
+        "events": [
+          "confirmation_required",
+          "done",
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "confirmation_required",
+            "done"
+          ],
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 7862.6
+      }
+    },
+    {
+      "id": "REAL-MUTATION-002",
+      "category": "mutation_address",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "account_profile_update",
+        "target_graph": "mutation_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "update_address"
+        ],
+        "events": [
+          "confirmation_required",
+          "done",
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "confirmation_required",
+            "done"
+          ],
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 15823.1
+      }
+    },
+    {
+      "id": "REAL-MUTATION-003",
+      "category": "mutation_note",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "update_order_note"
+        ],
+        "events": [
+          "confirmation_required",
+          "done",
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "confirmation_required",
+            "done"
+          ],
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 10913.4
+      }
+    },
+    {
+      "id": "REAL-MUTATION-004",
+      "category": "mutation_invoice",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "create_invoice"
+        ],
+        "events": [
+          "confirmation_required",
+          "done",
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "confirmation_required",
+            "done"
+          ],
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 12512.8
+      }
+    },
+    {
+      "id": "REAL-MUTATION-005",
+      "category": "mutation_service",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "create_service_ticket"
+        ],
+        "events": [
+          "confirmation_required",
+          "done",
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "confirmation_required",
+            "done"
+          ],
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 11223.1
+      }
+    },
+    {
+      "id": "REAL-MUTATION-006",
+      "category": "mutation_clarify",
+      "status": "fail",
+      "problems": [
+        "event missing: clarification_required"
+      ],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [],
+        "events": [
+          "done"
+        ],
+        "timeline": [
+          [
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 9589.2
+      }
+    },
+    {
+      "id": "REAL-MUTATION-007",
+      "category": "mutation_clarify",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "execution_status": "clarifying",
+        "interrupts": [],
+        "tools": [],
+        "events": [
+          "clarification_required",
+          "done"
+        ],
+        "timeline": [
+          [
+            "clarification_required",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 9254.6
+      }
+    },
+    {
+      "id": "REAL-READ-001",
+      "category": "read_order",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_query",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "order_lookup"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 13461.7
+      }
+    },
+    {
+      "id": "REAL-READ-002",
+      "category": "read_order",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_query",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "order_lookup"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 16017.7
+      }
+    },
+    {
+      "id": "REAL-READ-003",
+      "category": "read_orders",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "my_orders",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "my_orders"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 15690.9
+      }
+    },
+    {
+      "id": "REAL-READ-004",
+      "category": "read_shipment",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "shipment_query",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "shipment_query"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 15349.4
+      }
+    },
+    {
+      "id": "REAL-READ-005",
+      "category": "read_shipment",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "shipment_query",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "shipment_query"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 17859.1
+      }
+    },
+    {
+      "id": "REAL-READ-006",
+      "category": "read_faq",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "kb_search"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 19715.8
+      }
+    },
+    {
+      "id": "REAL-READ-007",
+      "category": "read_faq",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "kb_search"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 18459.5
+      }
+    },
+    {
+      "id": "REAL-READ-008",
+      "category": "read_faq",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "kb_search"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 13919.3
+      }
+    },
+    {
+      "id": "REAL-READ-009",
+      "category": "read_faq",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "execution_status": "completed",
+        "interrupts": [],
+        "tools": [
+          "kb_search"
+        ],
+        "events": [
+          "tool_call",
+          "tool_result",
+          "done"
+        ],
+        "timeline": [
+          [
+            "tool_call",
+            "tool_result",
+            "done"
+          ]
+        ],
+        "approval": null,
+        "latency_ms": 18862.2
+      }
+    },
+    {
+      "id": "REAL-ROUTE-001",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "confidence": 0.92,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 5513.7
+      }
+    },
+    {
+      "id": "REAL-ROUTE-002",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "confidence": 0.98,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 7912.8
+      }
+    },
+    {
+      "id": "REAL-ROUTE-003",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "faq",
+        "target_graph": "read_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 8058.3
+      }
+    },
+    {
+      "id": "REAL-ROUTE-004",
+      "category": "router_intent",
+      "status": "fail",
+      "problems": [
+        "route_intent expected=faq actual=unknown",
+        "target_graph expected=read_graph actual=fallback"
+      ],
+      "actual": {
+        "route_intent": "unknown",
+        "target_graph": "fallback",
+        "confidence": 0.0,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6798.0
+      }
+    },
+    {
+      "id": "REAL-ROUTE-005",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "smalltalk",
+        "target_graph": "read_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 5812.1
+      }
+    },
+    {
+      "id": "REAL-ROUTE-006",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "smalltalk",
+        "target_graph": "read_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6832.5
+      }
+    },
+    {
+      "id": "REAL-ROUTE-007",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_query",
+        "target_graph": "read_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6171.0
+      }
+    },
+    {
+      "id": "REAL-ROUTE-008",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "my_orders",
+        "target_graph": "read_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 4927.5
+      }
+    },
+    {
+      "id": "REAL-ROUTE-009",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "shipment_query",
+        "target_graph": "read_graph",
+        "confidence": 0.97,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 4968.1
+      }
+    },
+    {
+      "id": "REAL-ROUTE-010",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "account_profile_update",
+        "target_graph": "mutation_graph",
+        "confidence": 0.97,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 4490.3
+      }
+    },
+    {
+      "id": "REAL-ROUTE-011",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "account_profile_update",
+        "target_graph": "mutation_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 7864.1
+      }
+    },
+    {
+      "id": "REAL-ROUTE-012",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "confidence": 0.97,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6497.3
+      }
+    },
+    {
+      "id": "REAL-ROUTE-013",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 5697.9
+      }
+    },
+    {
+      "id": "REAL-ROUTE-014",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "cancel_order_execute",
+        "target_graph": "high_risk_graph",
+        "confidence": 0.98,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6066.2
+      }
+    },
+    {
+      "id": "REAL-ROUTE-015",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "refund_apply_execute",
+        "target_graph": "high_risk_graph",
+        "confidence": 0.98,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6618.3
+      }
+    },
+    {
+      "id": "REAL-ROUTE-016",
+      "category": "router_intent",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "unsupported_action",
+        "target_graph": "fallback",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 5941.1
+      }
+    },
+    {
+      "id": "REAL-ROUTE-017",
+      "category": "router_multi_turn",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "cancel_order_execute",
+        "target_graph": "high_risk_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 5166.4
+      }
+    },
+    {
+      "id": "REAL-ROUTE-018",
+      "category": "router_multi_turn",
+      "status": "pass",
+      "problems": [],
+      "actual": {
+        "route_intent": "order_mutation",
+        "target_graph": "mutation_graph",
+        "confidence": 0.95,
+        "routing_backend": "deepseek",
+        "routing_fallback": true,
+        "latency_ms": 6464.5
+      }
+    }
+  ]
+}

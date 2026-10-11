@@ -93,15 +93,15 @@ def test_fallback_non_handoff_routes_to_explain_llm():
     assert out["messages"][-1].content == "抱歉，暂时无法直接处理，您可以换个说法，或让我为您转接人工客服。"
 
 
-def test_fallback_allows_five_turns_then_triggers_handoff():
-    """同一 thread 允许 5 次 fallback 回复；第 6 次 fallback 必须确定性转人工。"""
+def test_fallback_allows_four_turns_then_triggers_handoff():
+    """同一 thread 允许 4 次 fallback 回复；第 5 次 fallback 必须确定性转人工。"""
     from conftest import ainvoke_graph
 
     graph = make_fallback_graph(ToolCallingFakeModel(
-        responses=[AIMessage(content=f"兜底回复 {index}") for index in range(1, 6)]
+        responses=[AIMessage(content=f"兜底回复 {index}") for index in range(1, 5)]
     ))
     context = {}
-    for index in range(1, 6):
+    for index in range(1, 5):
         out = ainvoke_graph(
                 graph,
                 {"messages": [HumanMessage(content=f"第 {index} 次")], "context": context, "handoff": False}
@@ -110,15 +110,15 @@ def test_fallback_allows_five_turns_then_triggers_handoff():
         assert out["context"]["fallback_count"] == index
         context = out["context"]
 
-    sixth = ainvoke_graph(
+    fifth = ainvoke_graph(
         graph,
-        {"messages": [HumanMessage(content="第 6 次")], "context": context, "handoff": False}
+        {"messages": [HumanMessage(content="第 5 次")], "context": context, "handoff": False}
     )
-    interrupt_values = [item.value for item in sixth.get("__interrupt__", [])]
-    assert sixth["execution_status"] == "waiting_handoff"
-    assert sixth["handoff"] is True
+    interrupt_values = [item.value for item in fifth.get("__interrupt__", [])]
+    assert fifth["execution_status"] == "waiting_handoff"
+    assert fifth["handoff"] is True
     assert any(item.get("reason") == "fallback limit exceeded" for item in interrupt_values)
-    assert sixth["context"]["fallback_count"] == 0
+    assert fifth["context"]["fallback_count"] == 0
 
 
 def test_fallback_handoff_path_generates_no_in_graph_text():

@@ -9,6 +9,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.graph.workflows.copy import clarify_missing_text
 from ai_service_agent.graph.workflows.copy import clarify_fallback_text
@@ -38,12 +39,14 @@ def isolated_mock_db(monkeypatch, tmp_path):
     db_path = tmp_path / "mock_ecommerce.db"
     module.build_database(str(db_path))
     from ai_service_agent.tools import orders as orders_mod, write as write_mod
+    from ai_service_agent.graph import builder as builder_mod
 
     class _Settings:
         mock_ecommerce_db_path = str(db_path)
 
     monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
     monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(builder_mod, "SQLiteOrderRepository", lambda path: SQLiteOrderRepository(str(db_path)))
 
 
 def _graph(model):
@@ -85,6 +88,56 @@ async def test_select_incomplete_sets_clarify_missing():
     assert out["context"]["clarify_missing"] == ["order_id", "address"]
     assert "pending_tool" not in out["context"]
     assert out["context"]["clarify_count"] == 1  # select 不清零，由 clarify 节点/完整 select 管理
+
+
+@pytest.mark.asyncio
+async def test_select_invoice_placeholders_clarify_not_invalid_args():
+    """真机漂移：create_invoice 用空串/amount=0 占位时走 D1 澄清，不 safety_rejected(invalid_args)。"""
+    model = ToolCallingFakeModel(responses=[select_json_message(
+        "create_invoice",
+        {"order_id": "", "amount": 0, "company": "", "tax_no": ""},
+    )])
+    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    out = await node({"messages": [HumanMessage(content="我要开发票")], "context": {}})
+    assert out["context"]["clarify_missing"] == ["order_id", "amount", "company", "tax_no"]
+    assert "pending_tool" not in out["context"]
+    assert out["context"].get("precheck_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_select_invoice_non_positive_amount_only_clarifies_amount():
+    """仅金额占位为 0 时，其余字段保留，只澄清 amount。"""
+    model = ToolCallingFakeModel(responses=[select_json_message(
+        "create_invoice",
+        {
+            "order_id": "ORD-PAID-1",
+            "amount": 0,
+            "company": "星辰科技有限公司",
+            "tax_no": "91110108MA01AB12CD",
+        },
+    )])
+    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
+    assert out["context"]["clarify_missing"] == ["amount"]
+    assert "pending_tool" not in out["context"]
+
+
+@pytest.mark.asyncio
+async def test_select_invoice_bad_amount_type_still_invalid_args():
+    """真类型错误仍拒绝，不误判为缺参澄清。"""
+    model = ToolCallingFakeModel(responses=[select_json_message(
+        "create_invoice",
+        {
+            "order_id": "ORD-PAID-1",
+            "amount": "abc",
+            "company": "星辰科技有限公司",
+            "tax_no": "91110108MA01AB12CD",
+        },
+    )])
+    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
+    assert out["context"].get("precheck_reason") == "invalid_args"
+    assert "clarify_missing" not in out["context"]
 
 
 @pytest.mark.asyncio
@@ -166,17 +219,17 @@ def test_multi_turn_clarify_then_complete_enters_highrisk():
     clarify_count 清零发生在子图内，父图视图在 resume 完成后才同步。
     """
     saver = MemorySaver()
-    t1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c7", user_id="user-with-no-paid-order")
+    t1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c7", user_id="u0084")
     assert t1["execution_status"] == "clarifying"
     assert t1["context"]["clarify_count"] == 1
     assert not t1.get("__interrupt__")
 
-    # 第二轮补参：ORD-UNKNOWN 不在种子库 -> 无事实 -> 预检通过 -> approval_required（同 t3-pos）
-    t2 = _turn(_build(_highrisk_model({"order_id": "ORD-UNKNOWN"}), saver), "订单号是 ORD-UNKNOWN", "c7")
+    # 第二轮补参：显式订单号进入审批，模型不得在缺参轮自动补 ID
+    t2 = _turn(_build(_highrisk_model({"order_id": "ORD-2026-10015"}), saver), "订单号是 ORD-2026-10015", "c7", user_id="u0084")
     interrupts = [it.value for it in t2.get("__interrupt__", [])]
     approval = next((v for v in interrupts if v.get("type") == "approval_required"), None)
     assert approval is not None                  # 第二轮正常进入 HighRisk 审批闸
-    assert "ORD-UNKNOWN" in approval["summary"]  # 完整 select 已被消费（参数进入审批摘要）
+    assert "ORD-2026-10015" in approval["summary"]  # 完整 select 已被消费（参数进入审批摘要）
     assert not any(getattr(m, "type", "") == "tool" for m in t2["messages"])  # 审批前工具不执行
 
 

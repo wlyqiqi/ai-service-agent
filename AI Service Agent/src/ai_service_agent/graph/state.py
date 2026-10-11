@@ -30,6 +30,7 @@ class CustomerServiceState(TypedDict):
     routing_fallback: bool
     route_control: Literal["policy", "deepseek_fallback"] | None
     guard_status: Literal["pass", "fail"] | None   # Guard 并行检测结果（graph-spec §2）
+    guard_reason: str | None                       # fail 时规则包名；pass 为 None
     context: dict
     pending_approval: ApprovalRequest | None       # 派生业务字段（approval-spec §2）
     execution_status: Literal[

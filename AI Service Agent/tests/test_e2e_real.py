@@ -15,6 +15,8 @@ import sqlite3
 import tempfile
 import threading
 import time
+import importlib.util
+from pathlib import Path
 from typing import ClassVar
 
 import httpx
@@ -27,6 +29,16 @@ from langchain_openai import ChatOpenAI
 
 from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.server import create_app
+from ai_service_agent.domain.orders import SQLiteOrderRepository
+
+
+def _seed_business_db(path: str):
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_e2e_helper", str(Path(__file__).resolve().parents[1] / "scripts" / "seed_mock_db.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.build_database(path)
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
 
@@ -73,14 +85,14 @@ class E2EFakeModel(ToolCallingFakeModel):
 
     def _select(self, user: str) -> str:
         if "退款" in user or "退了吧" in user:
-            return '{"tool": "refund_apply", "args": {"order_id": "10086", "amount": 199.0}}'
+            return '{"tool": "refund_apply", "args": {"order_id": "ORD-PAID-1", "amount": 99.0}}'
         if "取消订单" in user:
-            return '{"tool": "cancel_order", "args": {"order_id": "10086", "reason": "不想要了"}}'
+            return '{"tool": "cancel_order", "args": {"order_id": "ORD-PAID-1", "reason": "不想要了"}}'
         if "我要改个地址" in user:
             return '{"tool": "update_address", "args": {}}'
         if "备注" in user:
             return '{"tool": "update_order_note", "args": {"note": "放驿站就行"}}'
-        return '{"tool": "update_address", "args": {"order_id": "10086", "address": "北京市朝阳区望京SOHO"}}'
+        return '{"tool": "update_address", "args": {"order_id": "ORD-PAID-1", "address": "北京市朝阳区望京SOHO"}}'
 
 
 def _make_model():
@@ -106,9 +118,16 @@ def _free_port() -> int:
 def server():
     tmp = tempfile.mkdtemp(prefix="e2e-real-")
     db_path = os.path.join(tmp, "e2e.db")
+    seed_spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_e2e",
+        str(Path(__file__).resolve().parents[1] / "scripts" / "seed_mock_db.py"),
+    )
+    seed_module = importlib.util.module_from_spec(seed_spec)
+    seed_spec.loader.exec_module(seed_module)
+    seed_module.build_database(db_path)
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
-    app = create_app(db_path, model=_make_model())
+    app = create_app(db_path, model=_make_model(), order_repository=SQLiteOrderRepository(db_path))
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
@@ -152,7 +171,7 @@ def event_types(events: list[dict]) -> list[str]:
     return [e.get("type", "?") for e in events]
 
 
-def new_session(client: httpx.Client, user_id: str = "e2e-user") -> str:
+def new_session(client: httpx.Client, user_id: str = "u1") -> str:
     r = client.post("/sessions", json={"user_id": user_id})
     assert r.status_code == 200, f"create session failed: {r.status_code} {r.text}"
     return r.json()["session_id"]
@@ -225,7 +244,7 @@ class TestCoreScenarios:
         """Mutation：改地址 -> confirmation_required -> 确认 -> update_address 执行。"""
         sid = new_session(client)
 
-        code1, ev1 = chat_sse(client, sid, "订单10086的收货地址改成北京市朝阳区")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
         types1 = event_types(ev1)
         confirm = any(e.get("type") == "confirmation_required" for e in ev1)
         done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
@@ -248,7 +267,7 @@ class TestCoreScenarios:
     def test_highrisk_approve(self, client, server):
         """HighRisk approve：退款 -> approval_required -> approve -> refund_apply 执行。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
 
@@ -266,7 +285,7 @@ class TestCoreScenarios:
     def test_highrisk_reject(self, client, server):
         """HighRisk reject：退款 -> approval_required -> reject -> 工具不执行。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
 
@@ -322,7 +341,7 @@ class TestApprovalExpired:
     def test_highrisk_expired_approve_rejected(self, client, server):
         """过期审批：改 expires_at 为过去时间 -> approve -> expired，不执行工具。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
         assert approval_id
@@ -345,7 +364,7 @@ class TestApprovalExpired:
     def test_highrisk_expired_reject_rejected(self, client, server):
         """过期审批 reject 同样被前置有效性检查拦截。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
         assert approval_id
@@ -474,11 +493,16 @@ class TestRealFaultToleranceE2E:
             return failing_tools
 
         monkeypatch.setattr(mutation_agent, "ToolNode", failing_tools_tool_node)
-        app = create_app(str(tmp_path / "mutation-error.db"), model=_make_model())
+        app = create_app(
+            str(tmp_path / "mutation-error.db"),
+            model=_make_model(),
+            order_repository=SQLiteOrderRepository(str(tmp_path / "mutation-seed.db")),
+        )
+        _seed_business_db(str(tmp_path / "mutation-seed.db"))
         client = TestClient(app)
 
         sid = new_session(client)
-        code1, events1 = chat_sse(client, sid, "订单10086的收货地址改成北京市朝阳区")
+        code1, events1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
         assert code1 == 200
         assert any(e.get("type") == "confirmation_required" for e in events1)
 
@@ -604,7 +628,7 @@ class TestCheckpointerRecovery:
         def _start():
             port = _free_port()
             state["port"] = port
-            app = create_app(db_path, model=_make_model())
+            app = create_app(db_path, model=_make_model(), order_repository=SQLiteOrderRepository(db_path))
             srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
             thread = threading.Thread(target=srv.run, daemon=True)
             thread.start()
@@ -622,6 +646,7 @@ class TestCheckpointerRecovery:
 
         state["start"] = _start
         state["stop"] = _stop
+        _seed_business_db(db_path)
         _start()
         yield state
         if state["srv"] is not None and not state["srv"].should_exit:
@@ -636,7 +661,7 @@ class TestCheckpointerRecovery:
         # Phase 1: 发起 HighRisk 请求，拿到 approval_id
         with httpx.Client(timeout=120.0, base_url=base) as client:
             sid = new_session(client)
-            code1, ev1 = chat_sse(client, sid, "订单10086申请退款")
+            code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
             approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
             approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
 
@@ -685,7 +710,7 @@ class TestFrontendApiContract:
     def test_confirm_action_endpoint(self, client, server):
         """POST /actions/confirm：Mutation 确认按钮调用的接口。"""
         sid = new_session(client)
-        chat_sse(client, sid, "订单10086的收货地址改成北京市朝阳区")
+        chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
 
         r = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
         assert r.status_code == 200
@@ -721,7 +746,7 @@ class TestFrontendApiContract:
     def test_list_approvals_endpoint(self, client, server):
         """GET /approvals：审批列表查询。"""
         sid = new_session(client)
-        chat_sse(client, sid, "订单10086申请退款")
+        chat_sse(client, sid, "订单ORD-PAID-1申请退款")
 
         r = client.get("/approvals")
         assert r.status_code == 200

@@ -20,6 +20,7 @@ from langgraph.prebuilt import ToolNode
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.approval import make_approval_request
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.allowed_tools import (
     make_allowed_tool_boundary_wrapper_async,
@@ -43,11 +44,16 @@ from ai_service_agent.graph.workflows.safety import (
 )
 from ai_service_agent.graph.workflows.clarify import make_clarify_node
 from ai_service_agent.graph.workflows.select import make_select_node
-from ai_service_agent.tools.orders import order_items_summary
 from ai_service_agent.tools.registry import ToolRegistry
 
 
-def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=None):
+def make_high_risk_graph(
+    model,
+    tools: list,
+    registry: ToolRegistry,
+    tool_hooks=None,
+    order_repository=None,
+):
     def prepare_approval(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
         if pending["tool"] == "cancel_order":
@@ -63,7 +69,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
                 summary = (
                     f"取消订单 {facts['order_id']}｜"
                     f"金额 {facts['total_amount']}｜"
-                    f"商品：{order_items_summary(order_id)}｜"
+                    f"商品：{facts.get('product_summary', '商品信息不可用')}｜"
                     f"申请人 {state.get('user_id', '')}｜"
                     f"状态 已付款"
                 )
@@ -97,7 +103,7 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
                     f"退款金额 {resolved_amount}｜"
                     f"订单总额 {facts['total_amount']}｜"
                     f"已占用退款 {occupied}｜"
-                    f"商品：{order_items_summary(order_id)}｜"
+                    f"商品：{facts.get('product_summary', '商品信息不可用')}｜"
                     f"申请人 {state.get('user_id', '')}｜"
                     f"状态 {'已付款' if facts['status'] == 'paid' else '已签收'}"
                 )
@@ -206,22 +212,22 @@ def make_high_risk_graph(model, tools: list, registry: ToolRegistry, tool_hooks=
     def _recheck_target(state: dict) -> str:
         return "finalize_aborted" if state.get("context", {}).get("recheck_reason") else "execute"
 
-    builder = StateGraph(CustomerServiceState)
+    builder = StateGraph(CustomerServiceState, context_schema=GraphContext)
     handler = make_subgraph_error_handler("finalize_failed")
     builder.set_node_defaults(error_handler=handler)
     builder.add_node(
         "select_llm",
-        make_select_node(model, "high_risk", tools, registry),
+        make_select_node(model, "high_risk", tools, registry, order_repository),
         retry_policy=RETRY_LLM,
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
     builder.add_node("clarify", make_clarify_node())
-    builder.add_node("precheck_fetch", make_precheck_fetch_node())
+    builder.add_node("precheck_fetch", make_precheck_fetch_node(order_repository))
     builder.add_node("safety_check", make_safety_check_node("high_risk", registry))
     builder.add_node("safety_final", safety_final)
     builder.add_node("prepare_approval", prepare_approval)
     builder.add_node("approval_pause", approval_pause)
-    builder.add_node("recheck", make_recheck_node("high_risk", registry))
+    builder.add_node("recheck", make_recheck_node("high_risk", registry, order_repository))
     builder.add_node("execute", execute)
     hook_sync = make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None
     hook_async = make_tool_hook_wrapper(tool_hooks) if tool_hooks else None

@@ -168,3 +168,10 @@ docs/                     # project-audit.md + specs/
 - **Handoff Record** 创建与 `mode` 切换为**同一事务**（`handoff-spec.md` §1.2 的原子性）。
 - 全景观图：`docs/diagrams/state-machines.html`。
 
+## 12. Order 数据边界（2026-10-10）
+
+- 订单领域通过 `OrderRepository` 暴露，接口包含读事实（`get_order_snapshot` / `list_actionable_orders`）与高风险命令（`cancel_order` / `refund_apply`）。
+- `SQLiteOrderRepository` 是唯一知道 SQLite schema、连接方式和事务边界的 adapter；`GraphContext.order_repository` 是图内唯一订单依赖入口。
+- HighRisk / Mutation 节点通过 LangGraph `Runtime[GraphContext]` 使用 repository；高风险写工具通过 repository 工厂构造。
+- 后续接入 Postgres、HTTP API 或 ERP 时只新增 adapter 并在组装层注入，不改 select / safety / approval / graph 业务逻辑。
+

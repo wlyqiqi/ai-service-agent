@@ -100,10 +100,11 @@ async def test_root_error_handler_recovers_failing_async_node(monkeypatch):
     assert await graph.ainvoke({"execution_status": "running"}) == {
         "execution_status": "failed"
     }
-    assert events == [{
-        "type": "error",
-        "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
-    }]
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert events[0]["data"]["code"] == "runtime_error"
+    assert events[0]["data"]["message"] == RUNTIME_ERROR_TEXT
+    assert "async failure" in events[0]["data"].get("detail", "")
 
 
 @pytest.mark.asyncio
@@ -156,7 +157,9 @@ def test_error_event_is_normalized_and_customer_safe(monkeypatch):
 
     fault_tolerance.root_error_handler({}, error)
 
-    assert events == [{
-        "type": "error",
-        "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
-    }]
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert events[0]["data"]["code"] == "runtime_error"
+    assert events[0]["data"]["message"] == RUNTIME_ERROR_TEXT
+    assert "Traceback" not in events[0]["data"]["message"]
+    assert "database unavailable" in events[0]["data"].get("detail", "")

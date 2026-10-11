@@ -222,10 +222,12 @@ async def test_deepseek_node_timeout_retries_only_router(monkeypatch):
             assert nodes["__error_handler__router_deepseek"] == {
                 "execution_status": "failed"
             }
-            assert events == [{
-                "type": "error",
-                "data": {"code": "runtime_error", "message": RUNTIME_ERROR_TEXT},
-            }]
+            assert len(events) == 1
+            assert events[0]["type"] == "error"
+            assert events[0]["data"]["code"] == "runtime_error"
+            assert events[0]["data"]["message"] == RUNTIME_ERROR_TEXT
+            assert "NodeTimeoutError" in events[0]["data"].get("detail", "")
+            assert "router_deepseek" in events[0]["data"]["detail"]
             assert len(errors) == 1
             assert errors[0].node == "router_deepseek"
     finally:
