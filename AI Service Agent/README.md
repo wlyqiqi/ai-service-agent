@@ -37,7 +37,10 @@ copy .env.example .env   # 填入 ARK_API_KEY / ARK_BASE_URL / ARK_MODEL
 # 3) 启动服务（127.0.0.1:8000；配置 fake_model=true 时使用离线 fake model）
 uv run ai-service-agent
 
-# 4) 真实模型 SSE 冒烟（FAQ / Mutation / HighRisk / Handoff / Clarify 五场景）
+# 4) LangGraph Studio（默认 checkout/pull main；功能分支加 -Branch <name>）
+.\scripts\start_studio.ps1
+
+# 5) 真实模型 SSE 冒烟（FAQ / Mutation / HighRisk / Handoff / Clarify 五场景）
 uv run python scripts/real_model_http_smoke.py
 ```
 
