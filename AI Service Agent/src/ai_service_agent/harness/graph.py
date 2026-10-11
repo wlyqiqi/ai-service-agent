@@ -1,4 +1,12 @@
-from ai_service_agent.config import make_model
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_openai import ChatOpenAI
+
+from ai_service_agent.config import (
+    make_fallback_model,
+    make_model,
+    make_router_model,
+    make_select_model,
+)
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.harness.tool_hooks import LoggingToolHook
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
@@ -11,9 +19,15 @@ def make_ai_graph(model, checkpointer, registry=None, order_repository=None):
     tools 按 read 档从 ToolRegistry 注入（tool-spec.md §1）：ReadGraph 只拿到
     min_risk_level == "read" 的工具；mutation / high_risk 档由 build_graph 内部按 registry
     派生（P3 起 registry 传给 build_graph，两处参数永不漂移）。
+
+    Fake / 非 ChatOpenAI：四档共用传入 model（单测零改动）。
+    生产 ChatOpenAI：router / select / fallback 走对应工厂；model 作 read。
     """
     reg = registry if registry is not None else DEFAULT_TOOL_REGISTRY
     tools = reg.for_risk_level("read")
+    use_profiles = isinstance(model, ChatOpenAI) and not isinstance(
+        model, FakeMessagesListChatModel
+    )
     return build_graph(
         model,
         tools=tools,
@@ -21,6 +35,9 @@ def make_ai_graph(model, checkpointer, registry=None, order_repository=None):
         registry=reg,
         tool_hooks=[LoggingToolHook()],
         order_repository=order_repository,
+        router_model=make_router_model() if use_profiles else model,
+        select_model=make_select_model() if use_profiles else model,
+        fallback_model=make_fallback_model() if use_profiles else model,
     )
 
 

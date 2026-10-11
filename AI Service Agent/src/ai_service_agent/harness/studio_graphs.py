@@ -10,10 +10,14 @@
 
 本模块把子图作为独立 graph 注册（langgraph.json ``graphs`` 多条目），在 Studio 图选择器
 中可直接查看每个子图的完整节点与边。构建参数与 ``harness/graph.py:make_ai_graph`` 保持
-一致（同一 model / registry / tool_hooks，防止视图与运行时漂移）。
+一致（同一 registry / tool_hooks / 分档 model，防止视图与运行时漂移）。
 """
 
-from ai_service_agent.config import make_model
+from ai_service_agent.config import (
+    make_fallback_model,
+    make_read_model,
+    make_select_model,
+)
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
 from ai_service_agent.graph.workflows.high_risk_agent import make_high_risk_graph
@@ -21,15 +25,17 @@ from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
 from ai_service_agent.harness.tool_hooks import LoggingToolHook
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
-_model = make_model()
+_read_model = make_read_model()
+_select_model = make_select_model()
+_fallback_model = make_fallback_model()
 _reg = DEFAULT_TOOL_REGISTRY
 _hooks = [LoggingToolHook()]
 
-read_graph = make_read_graph(_model, _reg.for_risk_level("read"), tool_hooks=_hooks)
+read_graph = make_read_graph(_read_model, _reg.for_risk_level("read"), tool_hooks=_hooks)
 mutation_graph = make_mutation_graph(
-    _model, _reg.for_risk_level("mutation"), _reg, tool_hooks=_hooks
+    _select_model, _reg.for_risk_level("mutation"), _reg, tool_hooks=_hooks
 )
 high_risk_graph = make_high_risk_graph(
-    _model, _reg.for_risk_level("high_risk"), _reg, tool_hooks=_hooks
+    _select_model, _reg.for_risk_level("high_risk"), _reg, tool_hooks=_hooks
 )
-fallback_graph = make_fallback_graph(_model)
+fallback_graph = make_fallback_graph(_fallback_model)

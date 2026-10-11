@@ -1,7 +1,8 @@
 import httpx
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.messages import ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.router import (
@@ -132,6 +133,42 @@ def test_jev_and_deepseek_share_recent_turn_context():
         "请提供订单号和新地址",
         "ORD-2026-10099",
     ]
+
+
+def test_build_router_messages_respects_input_token_budget(monkeypatch):
+    """Live Router path applies ROUTER_TOTAL_INPUT_MAX_TOKENS via trim_messages."""
+    import ai_service_agent.config as config_mod
+    from ai_service_agent.config import Settings
+    from ai_service_agent.prompts import ROUTE_INTENT_SYSTEM
+
+    # Budget must exceed system tokens (reserved separately) but stay tight for dynamics.
+    fixed_tokens = count_tokens_approximately(
+        [SystemMessage(content=ROUTE_INTENT_SYSTEM)],
+        tools=[],
+    )
+    settings = Settings(
+        _env_file=None,
+        router_total_input_max_tokens=fixed_tokens + 30,
+    )
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings)
+    import ai_service_agent.graph.router as router_mod
+
+    monkeypatch.setattr(router_mod, "get_settings", lambda: settings)
+
+    long_prior = "历史回复内容" * 80
+    state = {
+        "messages": [
+            HumanMessage(content="上一轮问题"),
+            AIMessage(content=long_prior),
+            HumanMessage(content="当前问题"),
+        ]
+    }
+    messages = build_router_messages(state)
+    assert messages
+    assert messages[-1].content == "当前问题"
+    # Tight dynamic budget should drop the bulky prior AI turn.
+    joined = "".join(str(m.content) for m in messages)
+    assert long_prior not in joined
 
 
 @pytest.mark.asyncio

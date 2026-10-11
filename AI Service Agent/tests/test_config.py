@@ -1,6 +1,68 @@
 from ai_service_agent.config import Settings, get_settings
 
 
+def test_model_harness_settings_defaults():
+    s = Settings(_env_file=None)
+    assert s.router_max_tokens == 256
+    assert s.select_max_tokens == 512
+    assert s.read_max_tokens == 1024
+    assert s.fallback_max_tokens == 512
+    assert s.router_temperature == 0.0
+    assert s.select_temperature == 0.0
+    assert s.read_temperature == 0.3
+    assert s.fallback_temperature == 0.3
+    assert s.router_model_timeout_seconds == 5.0
+    assert s.llm_model_timeout_seconds == 10.0
+    assert s.router_model_timeout_seconds < s.router_node_timeout_seconds
+    assert s.llm_model_timeout_seconds < s.llm_node_timeout_seconds
+
+
+def test_model_profile_factories(monkeypatch):
+    import ai_service_agent.config as config_mod
+
+    settings = Settings(
+        _env_file=None,
+        model_api_key="sk-test",
+        model_endpoint="https://api.siliconflow.cn/v1",
+        model_name="deepseek-ai/DeepSeek-V4-Flash",
+    )
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings)
+
+    router = config_mod.make_router_model()
+    select = config_mod.make_select_model()
+    read = config_mod.make_read_model()
+    fallback = config_mod.make_fallback_model()
+
+    assert router.temperature == 0.0
+    assert router.max_tokens == 256
+    assert router.max_retries == 0
+    assert router.extra_body["enable_thinking"] is False
+
+    assert select.temperature == 0.0
+    assert select.max_tokens == 512
+    assert read.temperature == 0.3
+    assert read.max_tokens == 1024
+    assert fallback.temperature == 0.3
+    assert fallback.max_tokens == 512
+    assert config_mod.make_model().max_tokens == read.max_tokens
+
+
+def test_model_timeout_must_be_under_node_timeout(monkeypatch):
+    import ai_service_agent.config as config_mod
+    import pytest
+
+    settings = Settings(
+        _env_file=None,
+        model_api_key="sk-test",
+        model_endpoint="https://api.siliconflow.cn/v1",
+        router_model_timeout_seconds=6.0,
+        router_node_timeout_seconds=6.0,
+    )
+    monkeypatch.setattr(config_mod, "get_settings", lambda: settings)
+    with pytest.raises(ValueError, match="router"):
+        config_mod.make_router_model()
+
+
 def test_langsmith_env_sync_enabled():
     from ai_service_agent.config import _sync_langsmith_env
 

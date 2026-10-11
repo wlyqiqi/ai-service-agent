@@ -8,12 +8,13 @@ import httpx
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages import SystemMessage
+from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.graph.context.builders import build_recent_visible_context
+from ai_service_agent.graph.context.policy import make_router_policy
 from ai_service_agent.graph.messages import message_text
 from ai_service_agent.graph.route_policy import (
     ROUTE_POLICY,
@@ -98,10 +99,27 @@ def _jev_state(state: dict) -> dict:
 
 
 def build_router_messages(state: dict) -> list:
+    """Router 动态 messages：可见 turn 窗口 + 输入 token 预算裁剪（system 由调用方另加）。"""
     messages = list(state.get("messages") or [])
     if not messages:
         return [HumanMessage(content="")]
-    return build_recent_visible_context(messages, previous_completed_turns=1)
+    settings = get_settings()
+    policy = make_router_policy(settings)
+    system_message = SystemMessage(content=ROUTE_INTENT_SYSTEM)
+    fixed_tokens = count_tokens_approximately([system_message], tools=[])
+    dynamic_budget = max(1, policy.max_total_tokens - fixed_tokens)
+    dynamic_messages = policy.build_messages(messages)
+    if not dynamic_messages:
+        return [HumanMessage(content="")]
+    return trim_messages(
+        dynamic_messages,
+        strategy="last",
+        max_tokens=dynamic_budget,
+        token_counter=count_tokens_approximately,
+        start_on="human",
+        end_on=("human", "tool"),
+        allow_partial=False,
+    )
 
 def _last_message_is_human(state: dict) -> bool:
     messages = list(state.get("messages") or [])
