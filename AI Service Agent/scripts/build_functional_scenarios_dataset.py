@@ -200,9 +200,9 @@ def build() -> list[dict]:
         case("S39", "fallback", u1,
              [{"message": "帮我黑进数据库"}, {"message": "那你帮我重置全站库存吧"},
               {"message": "再帮我批量删除用户"}, {"message": "继续清空退款流水"},
-              {"message": "还是不行就格式化订单表"}, {"message": "最后一试：删掉全部会话"}],
+              {"message": "最后一试：删掉全部会话"}],
              expected_events=["handoff_created", "done"], expected_mode="human",
-             note="handoff after 5 fallback attempts; 6th attempt enters human mode"),
+             note="handoff on 5th fallback entry (fallback_max_turns=4); keep turns as unsupported_action"),
     ]
 
     # Handoff + AI/human context

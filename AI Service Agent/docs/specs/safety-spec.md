@@ -65,7 +65,7 @@
 | 类别 | 规则 | 可配置项 |
 |---|---|---|
 | 显式请求 | 用户明确要求"转人工/人工客服/找真人"等意图 | 关键词/意图列表 |
-| 连续失败（路由级 / 兜底级） | 连续 N 次 `unknown`、低置信度路由或 fallback 兜底 | N=5（`fallback_max_turns`）；最多 5 次 fallback 回复，第 6 次 fallback 触发 handoff |
+| 连续失败（路由级 / 兜底级） | 连续 N 次 `unknown`、低置信度路由或 fallback 兜底 | N=4（`fallback_max_turns`）；最多 4 次 fallback 回复，第 5 次 fallback 触发 handoff |
 | 连续失败（工具级） | 同一工具连续失败 N 次 | N（默认 3），计数存 `context` |
 | 重复未解决 | 同一诉求重复提出超过 X 次仍未解决 | X（默认 3） |
 | 情绪信号 | 负向情绪（愤怒/投诉高频词）且连续出现 | 检测开关 |

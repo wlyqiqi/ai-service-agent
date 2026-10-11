@@ -130,7 +130,7 @@
 
 - **物理隔离**：`explain_llm` 必须以 `create_agent(model, tools=[], system_prompt=FALLBACK_SYSTEM_PROMPT)` 构建（当前实现见 `src/ai_service_agent/graph/workflows/fallback.py`）。工具集为空属于机械隔离，不依赖 prompt 约束"不要调用工具"。
 - **调用上限分层**：当前 `READ_MODEL_CALL_LIMIT` 只适用于 ReadGraph；Fallback 的调用上限指 `explain_llm` **单次 run 内模型调用次数**，后续实现也必须使用官方 `ModelCallLimitMiddleware`（建议 `run_limit=3`、`exit_behavior="end"`），不是跨 turn 的 fallback 次数限制。
-- **跨 turn 兜底升级（2026-09-23 实现）**：同一会话最多产生 `fallback_max_turns=5` 次 fallback 回复；第 6 次 fallback 由 `check_handoff` 确定性触发 `interrupt(handoff_request)`，`reason="fallback limit exceeded"`，并把 `context["fallback_count"]` 清零（人工 Resolve 后重新计数）。当前 `fallback_count` 是首个落地触发源；同一工具连续失败后续应复用同一 `check_handoff` 消费入口与 `context` 计数语义，禁止各自维护独立计数逻辑；hook 只读观测，不得修改 State。
+- **跨 turn 兜底升级（2026-09-23 实现；2026-10-11 阈值调整）**：同一会话最多产生 `fallback_max_turns=4` 次 fallback 回复；第 5 次 fallback 由 `check_handoff` 确定性触发 `interrupt(handoff_request)`，`reason="fallback limit exceeded"`，并把 `context["fallback_count"]` 清零（人工 Resolve 后重新计数）。当前 `fallback_count` 是首个落地触发源；同一工具连续失败后续应复用同一 `check_handoff` 消费入口与 `context` 计数语义，禁止各自维护独立计数逻辑；hook 只读观测，不得修改 State。
 - **发送前复检**：`explain_llm` 的 `done.final` 与所有子图一样复用 `/chat` 出口统一复检 `conversation_mode == "ai"`；非 `ai` 时不落 Message Store，`done.final` 置空并返回 `ModeChanged`。需要注意：SSE token 会在图流执行期间先行透出，最终复检兜底的是最终回复的持久化与 `done.final`；如后续要求 token 级绝对不透出，应统一改造 `event_stream` 的发送策略，而不是给 fallback 增加独立复检路径。
 
 ### 6.5 子图中途触发 Handoff（统一机制）
