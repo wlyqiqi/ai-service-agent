@@ -7,7 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # populate_by_name：测试与代码可用字段名（model_api_key），.env 仍用 ARK_* alias
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     db_path: str = "data/ai_service.db"
     # 模拟电商库（order_lookup 等 read 工具的真实数据源替代品；工具对外接口不变）

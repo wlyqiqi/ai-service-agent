@@ -12,7 +12,7 @@
 |---|---|
 | Python | 3.14.5（`.venv` 为 Junction → `D:\常用软件\LangGragh\.venv`；系统 Python 在 `D:\常用软件\python`） |
 | 包管理/构建 | `pyproject.toml`（`requires-python = ">=3.14"`，`uv_build` 后端，`[project.scripts] ai-service-agent`） |
-| langgraph | **1.2.10**（`importlib.metadata` 确认；`langgraph.__version__` 属性不存在） |
+| langgraph | **1.2.14**（`importlib.metadata` 确认；`langgraph.__version__` 属性不存在；`interrupt(..., response_schema=...)` Form Interrupt 自 1.2.12 起可用） |
 | langgraph-prebuilt | 1.1.0 |
 | langgraph-checkpoint | 4.1.1 |
 | langgraph-checkpoint-sqlite | 3.1.1 |

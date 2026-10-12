@@ -11,7 +11,8 @@
 | `graph-spec.md` | 总图：入口 resume 调度/Router/Policy/Read/Mutation/HighRisk/Fallback | 改图的人 |
 | `tool-spec.md` | 工具注册表与 risk_level 权限模型 | 加工具的人 |
 | `approval-spec.md` | 审批服务（Approval Service） | 做审批的人 |
-| `event-spec.md` | 归一化事件协议（SSE/WS） | 前后端对接的人 |
+| `event-spec.md` | 归一化事件协议（SSE/WS）；含 `form_required` / `form_rejected`（Form Interrupt 投影） | 前后端对接的人 |
+| `mutation-form-interrupt-spec.md` | Mutation Form / Form Interrupt / Form Resume 产品与实现决策 | 改 Mutation 写路径 / 表单事件的人 |
 | `safety-spec.md` | 安全预检 + handoff 触发规则 | 安全相关改动 |
 | `handoff-spec.md` | conversation_mode 状态机 + Handoff 生命周期 + 轻量判断 | 做会话入口 / handoff 的人 |
 | `mvp-first-mile.md` | MVP 第一公里实现范围与里程碑（brainstorming 定稿） | 做 MVP 实现 / 执行计划的人 |
@@ -23,6 +24,7 @@
 |---|---|
 | 实现 ReadGraph | `graph-spec.md` + `state-spec.md` + `tool-spec.md` |
 | 实现 MutationGraph | `graph-spec.md` + `state-spec.md` + `safety-spec.md` + `event-spec.md` |
+| 实现 Mutation Form（Form Interrupt） | `mutation-form-interrupt-spec.md` + `event-spec.md` §2.2 + `graph-spec.md` + `CONTEXT.md`（根目录术语） |
 | 实现 HighRiskGraph | `graph-spec.md` + `state-spec.md` + `approval-spec.md` + `safety-spec.md` + `event-spec.md` |
 | 实现审批服务 | `approval-spec.md` + `event-spec.md` |
 | 加一个新工具 | `tool-spec.md` + `safety-spec.md` |
