@@ -6,7 +6,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
-from ai_service_agent.graph.workflows.copy import FIELD_LABELS
+from ai_service_agent.graph.workflows.copy import FIELD_LABELS, form_plain_text_refuse_text
 from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
@@ -237,35 +237,37 @@ async def _handle_locked_agent_bot_message(
                     elif action in ("canceled", "cancel"):
                         resume_payload = {"action": "cancel"}
                     else:
-                        return None
+                        # 纯文本不是 Form Resume：友好引导，不写库、不新起 run
+                        final_text = form_plain_text_refuse_text()
                 else:
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 
-        async def run_graph():
-            nonlocal final_text, clarification_data, confirmation_summary
-            async for event in event_stream(
-                graph,
-                config,
-                history,
-                on_interrupt=on_interrupt,
-                resume_payload=resume_payload,
-                extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
-            ):
-                if event.get("type") == "done":
-                    final_text = event.get("data", {}).get("final")
-                    final_message_id = event.get("data", {}).get("message_id")
-                elif event.get("type") == "clarification_required":
-                    clarification_data = event.get("data") or {}
-                elif event.get("type") == "confirmation_required":
-                    confirmation_summary = event.get("data", {}).get("summary")
-                elif event.get("type") == "handoff_created" and on_handoff_created is not None:
-                    await on_handoff_created(event)
+        if final_text is None:
+            async def run_graph():
+                nonlocal final_text, clarification_data, confirmation_summary
+                async for event in event_stream(
+                    graph,
+                    config,
+                    history,
+                    on_interrupt=on_interrupt,
+                    resume_payload=resume_payload,
+                    extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
+                ):
+                    if event.get("type") == "done":
+                        final_text = event.get("data", {}).get("final")
+                        final_message_id = event.get("data", {}).get("message_id")
+                    elif event.get("type") == "clarification_required":
+                        clarification_data = event.get("data") or {}
+                    elif event.get("type") == "confirmation_required":
+                        confirmation_summary = event.get("data", {}).get("summary")
+                    elif event.get("type") == "handoff_created" and on_handoff_created is not None:
+                        await on_handoff_created(event)
 
-        if thread_lock_factory is not None:
-            async with await thread_lock_factory(thread_id):
+            if thread_lock_factory is not None:
+                async with await thread_lock_factory(thread_id):
+                    await run_graph()
+            else:
                 await run_graph()
-        else:
-            await run_graph()
 
     if final_text is not None and (status is None or status.get_mode(conversation_id) == "ai"):
         await chatwoot.send_bot_message(conversation_id, final_text)

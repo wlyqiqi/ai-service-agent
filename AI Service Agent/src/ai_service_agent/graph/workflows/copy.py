@@ -94,6 +94,11 @@ def operation_cancelled_text() -> str:
     return "好的，已按您的要求取消本次操作，订单信息未做任何变更。还有其他需要，随时告诉我。"
 
 
+def form_plain_text_refuse_text() -> str:
+    """Form Interrupt 挂起期间用户发纯文本时的友好引导（Form-Only Write）。"""
+    return "请用表单提交本次修改；纯文本不会改订单。填写完成后点击确认即可。"
+
+
 def approval_approved_text(tool: str) -> str:
     return f"您的{_label(tool)}申请已通过审核并执行完成，相关结果可以在订单详情中查看。"
 

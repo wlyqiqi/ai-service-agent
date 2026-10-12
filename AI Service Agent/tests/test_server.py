@@ -715,6 +715,188 @@ def test_confirm_form_resume_writes_order_picker_selection_once(tmp_path, monkey
     assert list(asyncio.run(pending_interrupts())) == []
 
 
+def test_confirm_precheck_failure_reissues_form_rejected_same_session(tmp_path, monkeypatch):
+    """Confirm validate/precheck failure re-interrupts the same Form session.
+
+    Seam: Conversation Runtime /chat + /actions/confirm (issue #20).
+    Client sees form_rejected with errors; form_session_id is unchanged.
+    Corrected Form Resume still writes once (Form-Only Write / ToolNode).
+    """
+    import asyncio
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from ai_service_agent.domain.orders import SQLiteOrderRepository
+    from ai_service_agent.harness.graph import make_ai_graph
+
+    business_db = tmp_path / "mock_ecommerce.db"
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+
+    def customer_address() -> str:
+        conn = sqlite3.connect(business_db)
+        try:
+            row = conn.execute(
+                "SELECT address FROM customers WHERE customer_id = ?", ("u1",)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    original_address = customer_address()
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message(
+            "update_address",
+            {"order_id": "ORD-PAID-1", "address": "预填地址"},
+        ),
+    ])
+    db = str(tmp_path / "form-rejected.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+
+    form_events = [event for event in events if event.get("type") == "form_required"]
+    assert len(form_events) == 1
+    session_id_form = form_events[0]["data"]["form_session_id"]
+    assert session_id_form
+    assert customer_address() == original_address
+
+    rejected = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": session_id,
+            "action": "confirm",
+            "fields": {
+                "order_id": "ORD-CANCEL-1",
+                "address": "不可写的新地址",
+            },
+        },
+    )
+    assert rejected.status_code == 200
+    body = rejected.json()
+    assert body["ok"] is True and body["action"] == "confirm"
+    resume_types = [event.get("type") for event in body["events"]]
+    assert "form_rejected" in resume_types
+    assert "tool_call" not in resume_types
+    assert "safety_rejected" not in resume_types
+    assert resume_types[-1] == "done"
+    rejected_events = [event for event in body["events"] if event.get("type") == "form_rejected"]
+    assert len(rejected_events) == 1
+    rejected_data = rejected_events[0]["data"]
+    assert rejected_data["form_session_id"] == session_id_form
+    assert rejected_data["tool"] == "update_address"
+    assert rejected_data.get("errors")
+    assert customer_address() == original_address
+
+    conn = sqlite3.connect(db)
+    thread_id = conn.execute(
+        "SELECT thread_id FROM conversation_status WHERE conversation_id = ?",
+        (session_id,),
+    ).fetchone()[0]
+    conn.close()
+
+    async def pending_interrupts():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(
+                model, saver, order_repository=SQLiteOrderRepository(str(business_db)),
+            )
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return state.interrupts
+
+    pending = asyncio.run(pending_interrupts())
+    assert pending
+    assert pending[0].value.get("errors")
+    assert pending[0].value.get("form_session_id") == session_id_form
+
+    good_address = "修正后的表单地址 66 号"
+    confirmed = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": session_id,
+            "action": "confirm",
+            "fields": {
+                "order_id": "ORD-PAID-1",
+                "address": good_address,
+            },
+        },
+    )
+    assert confirmed.status_code == 200
+    ok_body = confirmed.json()
+    assert ok_body["ok"] is True
+    ok_types = [event.get("type") for event in ok_body["events"]]
+    assert ok_types[-1] == "done"
+    assert "form_rejected" not in ok_types
+    tool_calls = [event for event in ok_body["events"] if event.get("type") == "tool_call"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["data"]["name"] == "update_address"
+    assert tool_calls[0]["data"]["args"]["order_id"] == "ORD-PAID-1"
+    assert tool_calls[0]["data"]["args"]["address"] == good_address
+    assert customer_address() == good_address
+    assert list(asyncio.run(pending_interrupts())) == []
+
+
+def test_plain_text_during_form_interrupt_refuses_with_guidance(tmp_path, monkeypatch):
+    """Plain text while Form Interrupt is pending does not write and shows guidance.
+
+    Seam: Conversation Runtime /chat (issue #20). Still replays form projection;
+    no Mutation-only chat-JSON skip-Router bypass.
+    """
+    business_db = tmp_path / "mock_ecommerce.db"
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+
+    def customer_address() -> str:
+        conn = sqlite3.connect(business_db)
+        try:
+            row = conn.execute(
+                "SELECT address FROM customers WHERE customer_id = ?", ("u1",)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    original_address = customer_address()
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
+    ])
+    db = str(tmp_path / "form-plain-refuse.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
+        open_events = _parse_sse("".join(resp.iter_text()))
+    assert any(event.get("type") == "form_required" for event in open_events)
+
+    with client.stream(
+        "POST", "/chat", json={"session_id": session_id, "message": "把地址改成上海市浦东新区"},
+    ) as resp:
+        hold_events = _parse_sse("".join(resp.iter_text()))
+
+    hold_types = [event.get("type") for event in hold_events]
+    assert "form_required" in hold_types
+    assert "tool_call" not in hold_types
+    assert customer_address() == original_address
+    tokens = [
+        event["data"].get("text", "")
+        for event in hold_events
+        if event.get("type") == "token"
+    ]
+    guidance = "".join(tokens)
+    assert "表单" in guidance
+    assert "纯文本" in guidance or "不会改" in guidance
+    done = next(event for event in hold_events if event.get("type") == "done")
+    assert done["data"].get("final")
+    assert "表单" in done["data"]["final"]
+
+
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
     from ai_service_agent.harness.handoff import HANDOFF_NOTICE
     client = TestClient(create_app(str(tmp_path / "n.db"), model=KeywordHandoffFakeModel(responses=[])))

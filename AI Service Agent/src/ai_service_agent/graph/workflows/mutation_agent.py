@@ -2,6 +2,8 @@
 
 select -> 安全预检 -> prepare_form -> Form Interrupt
 -> Form Resume(confirm/cancel) -> recheck -> execute(写工具) / 取消收尾。
+Confirm 后校验/业务预检失败：条件边回到 form_interrupt，同一 form_session_id
+再次 Form Interrupt（SSE 投影 form_rejected），不走 safety_rejected 收尾。
 Confirm 的写库参数来自 Form Resume 字段值（含 Order Picker 的 order_id），
 再加系统 request_id，由 execute 构造单次 tool_call，经 ToolNode 写一次。
 select 留下的 pending_tool.args 不是 Confirm 真源（Form-Only Write）。
@@ -38,7 +40,6 @@ from ai_service_agent.graph.workflows.copy import (
     confirmation_summary,
     mutation_tool_failed_text,
     operation_cancelled_text,
-    recheck_failed_text,
     RUNTIME_ERROR_TEXT,
 )
 from ai_service_agent.graph.workflows.safety import (
@@ -102,7 +103,17 @@ def make_mutation_graph(
     order_repository=None,
 ):
     def prepare_form(state: dict) -> dict:
-        return {"execution_status": "waiting_confirmation"}
+        # Mint form_session_id before Form Interrupt so resume re-runs of
+        # form_interrupt keep the same session (interrupt-before is idempotent).
+        # Recheck failures loop back to form_interrupt without prepare_form, so the
+        # id stays stable for form_rejected; a later new form gets a fresh id here.
+        ctx = {
+            key: item
+            for key, item in dict(state.get("context") or {}).items()
+            if key not in ("form_errors", "recheck_reason")
+        }
+        ctx["form_session_id"] = str(uuid.uuid4())
+        return {"execution_status": "waiting_confirmation", "context": ctx}
 
     def _order_repository(runtime: Runtime[GraphContext] | None):
         if runtime is not None and runtime.context is not None:
@@ -112,7 +123,14 @@ def make_mutation_graph(
         return order_repository
 
     def form_interrupt(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
-        pending = state["context"]["pending_tool"]
+        # interrupt once per invocation; validate/precheck failures loop back via
+        # conditional edge with form_errors (Closed MutationGraph / event-spec §2.2).
+        ctx = dict(state.get("context") or {})
+        pending = ctx["pending_tool"]
+        form_session_id = ctx.get("form_session_id") or str(uuid.uuid4())
+        errors = ctx.get("form_errors")
+        if errors in (None, {}, [], ""):
+            errors = None
         candidates: list[dict] = []
         repository = _order_repository(runtime)
         user_id = state.get("user_id") or ""
@@ -122,26 +140,37 @@ def make_mutation_graph(
             except (OrderRepositoryUnavailable, ValueError):
                 candidates = []
         meta = registry.meta_for(pending["tool"])
+        value = {
+            "tool": pending["tool"],
+            "order_candidates": candidates,
+            "summary": confirmation_summary(pending["tool"], pending["args"]),
+            "form_session_id": form_session_id,
+        }
+        if errors:
+            value["errors"] = errors
         resume = _lg_types.interrupt(
-            {
-                "tool": pending["tool"],
-                "order_candidates": candidates,
-                "summary": confirmation_summary(pending["tool"], pending["args"]),
-            },
+            value,
             response_schema=_form_resume_model(None if meta is None else meta.schema),
         )
         action = _resume_action(resume)
         accepted = action == "confirm"
-        ctx = {**state.get("context", {}), "confirm_result": "confirm" if accepted else "cancel"}
+        next_ctx = {
+            key: item
+            for key, item in ctx.items()
+            if key not in ("form_errors", "recheck_reason", "confirm_result")
+        }
+        next_ctx["form_session_id"] = form_session_id
+        next_ctx["confirm_result"] = "confirm" if accepted else "cancel"
         if not accepted:
-            return {"context": ctx, "execution_status": "completed"}
+            next_ctx.pop("form_session_id", None)
+            return {"context": next_ctx, "execution_status": "completed"}
         request_id = pending.get("request_id") or str(uuid.uuid4())
-        ctx["pending_tool"] = {
+        next_ctx["pending_tool"] = {
             "tool": pending["tool"],
             "args": {**_resume_field_values(resume), "request_id": request_id},
             "request_id": request_id,
         }
-        return {"context": ctx}
+        return {"context": next_ctx, "execution_status": "waiting_confirmation"}
 
     def execute(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
@@ -182,9 +211,6 @@ def make_mutation_graph(
     def finalize_rejected(state: dict) -> dict:
         return {"messages": [AIMessage(content=operation_cancelled_text())], "execution_status": "completed"}
 
-    def finalize_aborted(state: dict) -> dict:
-        return {"messages": [AIMessage(content=recheck_failed_text())], "execution_status": "completed"}
-
     def finalize_failed(state: dict) -> dict:
         return {"messages": [AIMessage(content=RUNTIME_ERROR_TEXT)], "execution_status": "failed"}
 
@@ -203,7 +229,8 @@ def make_mutation_graph(
         return "recheck" if state.get("context", {}).get("confirm_result") == "confirm" else "finalize_rejected"
 
     def _recheck_target(state: dict) -> str:
-        return "finalize_aborted" if state.get("context", {}).get("recheck_reason") else "execute"
+        # Closed MutationGraph: same form session re-interrupt (form_rejected), not abort.
+        return "form_interrupt" if state.get("context", {}).get("recheck_reason") else "execute"
 
     builder = StateGraph(CustomerServiceState).set_node_defaults(
         error_handler=make_subgraph_error_handler("finalize_failed"),
@@ -220,7 +247,10 @@ def make_mutation_graph(
     builder.add_node("safety_final", safety_final)
     builder.add_node("prepare_form", prepare_form)
     builder.add_node("form_interrupt", form_interrupt)
-    builder.add_node("recheck", make_recheck_node("mutation", registry, order_repository))
+    builder.add_node(
+        "recheck",
+        make_recheck_node("mutation", registry, order_repository, form_reinterrupt=True),
+    )
     builder.add_node("execute", execute)
     hook_sync = make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None
     hook_async = make_tool_hook_wrapper(tool_hooks) if tool_hooks else None
@@ -237,7 +267,6 @@ def make_mutation_graph(
     )
     builder.add_node("finalize_ok", finalize_ok)
     builder.add_node("finalize_rejected", finalize_rejected)
-    builder.add_node("finalize_aborted", finalize_aborted)
     builder.add_node("finalize_failed", finalize_failed)
     builder.add_edge(START, "select_llm")
     builder.add_conditional_edges(
@@ -254,13 +283,12 @@ def make_mutation_graph(
         "form_interrupt", _confirm_target, {"recheck": "recheck", "finalize_rejected": "finalize_rejected"}
     )
     builder.add_conditional_edges(
-        "recheck", _recheck_target, {"execute": "execute", "finalize_aborted": "finalize_aborted"}
+        "recheck", _recheck_target, {"execute": "execute", "form_interrupt": "form_interrupt"}
     )
     builder.add_edge("execute", "tools")
     builder.add_edge("tools", "finalize_ok")
     builder.add_edge("finalize_ok", END)
     builder.add_edge("finalize_rejected", END)
-    builder.add_edge("finalize_aborted", END)
     builder.add_edge("safety_final", END)
     builder.add_edge("finalize_failed", END)
     return builder.compile()
