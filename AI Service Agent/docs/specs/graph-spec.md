@@ -102,19 +102,17 @@
 
 ### 6.2 MutationGraph（workflow）
 
-- 确定性流程：**select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**；完整 → **安全预检**（`safety-spec.md`；含业务规则，D3：`precheck_fetch` 提供订单状态事实 → `context["precheck_data"]`，`safety_check` 确定性裁决）→ `interrupt()` 用户确认（含影响摘要）→ 执行写操作工具 → 结果。
-- 参数不完整判定（D1）：必填业务字段（不含 `request_id`）缺失/为空串/数值占位（`<=0`，如开票 `amount=0`），或（全可选工具）全部业务字段为空 → select 先归一占位符再判定，进入 clarify 节点：确定性模板文案（字段→中文 label）+ `execution_status=clarifying` + 发 `clarification_required`；`context["clarify_count"]` 自增，**完整成功 select 时清零**，超过 N=2 → 确定性 fallback 文案 + `completed`。解析失败 / 工具不在档 / 真 schema 类型错误仍为拒绝（`safety_rejected`），不走 clarify。
-- 写图 select 允许集为档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` →
-  clarify 节点（普通轮，`clarification_required` + `reason:"tier_mismatch"`，`execution_status=clarifying`）。
-- 用户确认对应 `Command(resume={"action":"confirm"|"cancel"})`（schema 见 §3）。
-- 用户拒绝 → 收尾并记录，不执行。
-- **恢复后、执行前最小不变量 recheck（D6 定案）**：确认/取消恢复后，执行写工具前复核 `request_id` 存在、参数未变、`context` 非陈旧；不重跑完整预检、不重新调 LLM。确认结果写入 `context`（graph-spec §9），不新增 State 字段。
+- 确定性流程（Mutation Form / Form Interrupt，见 `mutation-form-interrupt-spec.md` / `CONTEXT.md`）：**select（确认 tool；业务字段可不全）** → **安全预检**（`safety-spec.md`；缺参时仅做登录/档位等闸门，字段完备性延后）→ **Form Interrupt**（`interrupt(value=..., response_schema=...)`，SSE 投影 `form_required` / `form_rejected`）→ **Form Resume**（`Command(resume=...)` Confirm/Cancel）→ **recheck** → ToolNode 写一次 / 取消收尾。
+- **不再**把 Mutation 主路径建成聊天 `clarification_required` → `confirmation_required` / `confirm_pause` 仪式。业务字段由 Mutation Form 收集（Form-Only Write）；Operation Clarify（tool 未定）在进子图之前的入口层完成（见 `CONTEXT.md`）。
+- select：tool 已知即写 `pending_tool`（已知字段作 prefills）；真 schema 类型/未知字段错误仍 `safety_rejected`。写图 select 允许集档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` → clarify（普通轮，`clarification_required` + `reason:"tier_mismatch"`）。
+- Form Resume Confirm 对应结构化字段 + `action:"confirm"`；Cancel 为 `action:"cancel"` 哨兵（schema 见 §3 / event-spec §2.2）。Cancel → 收尾不写库。
+- **Form Resume 后、执行前 recheck（D6 + Form Interrupt）**：校验 Form Resume 字段 + 业务预检；失败则同一 `form_session_id` 再次 Form Interrupt（`form_rejected`），不走 `safety_rejected` 收尾。确认结果写入 `context`（§9），不新增 State 字段。
 
 ### 6.3 HighRiskGraph
 
-- **select（参数完备性，同 §6.2 clarify 机制）** → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
+- **select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**：确定性模板文案 + `execution_status=clarifying` + `clarification_required`；`context["clarify_count"]` 自增，完整成功 select 时清零，超过 N=2 → fallback。完整 → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
-  选中已注册低档工具 → tier_mismatch 澄清（同 §6.2）。
+  选中已注册低档工具 → tier_mismatch 澄清（`clarification_required` + `reason:"tier_mismatch"`）。
 - **显式 `order_id`（2026-10-10）**：`cancel_order` / `refund_apply` 必须由当前用户输入或可见上下文显式给出 `order_id`；即使名下只有一笔可操作订单也不自动选中。候选仅用于澄清：多笔列出候选、零笔说明无可操作订单，均继续 `clarification_required`，不进入审批。
 - `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态；由于预检只放行 `paid` 订单，进入审批时的状态预期为 `paid`。
 - `refund_apply` 审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
@@ -160,8 +158,10 @@
 | ReadGraph | `messages`、`context` | `messages` |
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
-| select（mutation/high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
-| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required` |
+| select（mutation） | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或 `tier_clarify`；成功/进表单时清零 `clarify_count`） |
+| select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
+| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（HighRisk 缺参 / 写图 `tier_mismatch`；Mutation 业务缺参不走此节点） |
+| prepare_form / form_interrupt（mutation） | `context`（`pending_tool`、`form_session_id`、`form_errors`） | Form Interrupt；`execution_status=waiting_confirmation`；Confirm 后写 `pending_tool.args`（Form Resume 真源） |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |

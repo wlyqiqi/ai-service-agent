@@ -80,33 +80,35 @@ def test_config_clarify_max_turns_default():
 
 
 @pytest.mark.asyncio
-async def test_select_incomplete_sets_clarify_missing():
-    """select 直测：update_address 全空 -> clarify_missing，不落 pending_tool、不动 count。"""
+async def test_select_incomplete_mutation_sets_pending_tool_for_form():
+    """T7: mutation select 缺参 -> pending_tool（供 Form Interrupt），不再 clarify_missing。"""
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {})])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = await node({"messages": [HumanMessage(content="改一下收货地址")], "context": {"clarify_count": 1}})
-    assert out["context"]["clarify_missing"] == ["order_id", "address"]
-    assert "pending_tool" not in out["context"]
-    assert out["context"]["clarify_count"] == 1  # select 不清零，由 clarify 节点/完整 select 管理
+    assert "clarify_missing" not in out["context"]
+    pending = out["context"]["pending_tool"]
+    assert pending["tool"] == "update_address"
+    assert pending["request_id"]
+    assert out["context"]["clarify_count"] == 0
 
 
 @pytest.mark.asyncio
-async def test_select_invoice_placeholders_clarify_not_invalid_args():
-    """真机漂移：create_invoice 用空串/amount=0 占位时走 D1 澄清，不 safety_rejected(invalid_args)。"""
+async def test_select_invoice_placeholders_mutation_pending_not_invalid_args():
+    """T7: create_invoice 空串/amount=0 占位 -> mutation pending_tool，不 safety_rejected。"""
     model = ToolCallingFakeModel(responses=[select_json_message(
         "create_invoice",
         {"order_id": "", "amount": 0, "company": "", "tax_no": ""},
     )])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = await node({"messages": [HumanMessage(content="我要开发票")], "context": {}})
-    assert out["context"]["clarify_missing"] == ["order_id", "amount", "company", "tax_no"]
-    assert "pending_tool" not in out["context"]
+    assert "clarify_missing" not in out["context"]
+    assert out["context"]["pending_tool"]["tool"] == "create_invoice"
     assert out["context"].get("precheck_reason") is None
 
 
 @pytest.mark.asyncio
-async def test_select_invoice_non_positive_amount_only_clarifies_amount():
-    """仅金额占位为 0 时，其余字段保留，只澄清 amount。"""
+async def test_select_invoice_non_positive_amount_mutation_keeps_other_prefills():
+    """T7: 仅金额占位为 0 时，其余字段进 pending_tool prefills，缺 amount 由表单补。"""
     model = ToolCallingFakeModel(responses=[select_json_message(
         "create_invoice",
         {
@@ -118,8 +120,12 @@ async def test_select_invoice_non_positive_amount_only_clarifies_amount():
     )])
     node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
     out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
-    assert out["context"]["clarify_missing"] == ["amount"]
-    assert "pending_tool" not in out["context"]
+    assert "clarify_missing" not in out["context"]
+    args = out["context"]["pending_tool"]["args"]
+    assert args["order_id"] == "ORD-PAID-1"
+    assert args["company"] == "星辰科技有限公司"
+    assert args["tax_no"] == "91110108MA01AB12CD"
+    assert not args.get("amount")
 
 
 @pytest.mark.asyncio
@@ -165,15 +171,17 @@ def test_highrisk_empty_required_clarifies():
     assert out["context"]["clarify_missing"] == ["order_id"]
 
 
-def test_mutation_empty_args_clarifies():
-    """2026-09-17 工具集定案：mutation 图空参 select（update_address 缺必填）-> 澄清，非 interrupt。"""
+def test_mutation_empty_args_opens_form_interrupt():
+    """T7: mutation 空参 select（tool 已知）-> Form Interrupt，不再聊天缺参澄清。"""
     model = ToolCallingFakeModel(responses=[
         router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {}),
     ])
     out = _invoke(_graph(model), "改一下收货地址", "c3")
-    assert out["execution_status"] == "clarifying"
-    assert out["context"]["clarify_missing"] == ["order_id", "address"]
+    assert out.get("__interrupt__")
+    assert out["execution_status"] != "clarifying"
+    assert "clarify_missing" not in out.get("context", {})
+    assert out["__interrupt__"][0].value.get("tool") == "update_address"
 
 
 def test_clarify_over_limit_falls_back():

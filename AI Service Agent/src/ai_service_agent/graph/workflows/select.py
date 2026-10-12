@@ -1,7 +1,9 @@
 """工具选择（OQ-2）：LLM 结构化输出 {tool, args} + 确定性校验兜底。
 
-LLM 负责理解，确定性代码负责校验（AGENTS.md §18）：工具必须在档内 + args 必须过 schema。
-校验失败 -> writer safety_rejected(rule=precheck) + 置 precheck_reason + 条件边路由 safety_final，不进入 interrupt。
+LLM 负责理解，确定性代码负责校验：工具必须在档内。
+Mutation：tool 已知即写 pending_tool（字段可不全 → Form Interrupt prefills）。
+HighRisk：缺参写 clarify_missing → 聊天 clarify；完整则 pending_tool。
+真 schema 类型/未知字段错误 -> safety_rejected，不进入 interrupt。
 """
 
 import asyncio
@@ -19,7 +21,7 @@ from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 
 from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
-from ai_service_agent.graph.workflows.safety import RISK_ORDER
+from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_business_fields
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
@@ -221,6 +223,7 @@ def make_select_node(
     def _clarify(state: dict, missing: list[str]) -> dict:
         # 参数不完整 != 拒绝（D1）：只写 clarify_missing，由条件边路由到 clarify 节点（普通轮）。
         # 不发 safety_rejected；execution_status 由 clarify 节点置 clarifying。
+        # Mutation 主路径不再走此分支（见 _pending_for_form）；HighRisk 仍用聊天补参。
         return {"context": {**state.get("context", {}), "clarify_missing": missing}}
 
     def _tier_clarify(state: dict, tool_name: str) -> dict:
@@ -228,18 +231,26 @@ def make_select_node(
         # 不 reject（工具真实存在）、不进闸门、不执行。
         return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
 
-    def _incomplete_fields(args: dict, meta) -> list[str]:
-        """参数完备性（D1）：必填业务字段缺失/为空串，或全可选工具全部业务字段为空 -> 返回缺失字段；完整 -> []。"""
-        if meta.schema is None:
-            return []
-        fields = [n for n in meta.schema.model_fields if n != "request_id"]
-        required = [n for n in fields if meta.schema.model_fields[n].is_required()]
-        missing = [n for n in required if not args.get(n)]
-        if missing:
-            return missing
-        if not required and all(not args.get(n) for n in fields):
-            return fields
-        return []
+    def _partial_args_for_form(args: dict, meta) -> dict:
+        """Mutation Form prefills：保留已知 schema 字段 + request_id，不要求一次填齐。"""
+        known = set(meta.schema.model_fields)
+        partial = {key: value for key, value in args.items() if key in known}
+        partial.setdefault("request_id", str(uuid.uuid4()))
+        return partial
+
+    def _pending_for_form(state: dict, tool_name: str, args: dict) -> dict:
+        """Mutation：tool 已知即落 pending_tool，缺参由 Form Interrupt 收集（Form-Only Write）。"""
+        ctx = {**state.get("context", {})}
+        ctx.pop("clarify_missing", None)
+        ctx.pop("tier_clarify", None)
+        ctx.pop("cancellation_candidates", None)
+        ctx["clarify_count"] = 0
+        ctx["pending_tool"] = {
+            "tool": tool_name,
+            "args": args,
+            "request_id": args["request_id"],
+        }
+        return {"context": ctx}
 
     async def select(
         state: dict,
@@ -331,14 +342,22 @@ def make_select_node(
             except ValidationError as exc:
                 errors = exc.errors()
                 missing = [e["loc"][0] for e in errors if e["type"] == "missing" and e["loc"]]
-                # 只有"全部为缺必填"才走 clarify；混有类型/格式错误仍按 invalid_args 拒绝
+                # 只有"全部为缺必填"才走缺参路径；混有类型/格式错误仍按 invalid_args 拒绝
                 if missing and len(missing) == len(errors):
                     missing = [f for f in missing if f != "request_id"]
                     if missing:
+                        if tier == "mutation":
+                            return _pending_for_form(
+                                state, tool_name, _partial_args_for_form(args, meta)
+                            )
                         return _clarify(state, missing)
                 return _reject(state, "invalid_args")
-            incomplete = _incomplete_fields(args, meta)
+            incomplete = incomplete_business_fields(args, meta)
             if incomplete:
+                if tier == "mutation":
+                    return _pending_for_form(
+                        state, tool_name, _partial_args_for_form(args, meta)
+                    )
                 return _clarify(state, incomplete)
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)

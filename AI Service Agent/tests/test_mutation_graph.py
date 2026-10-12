@@ -217,58 +217,40 @@ def test_mutation_0089_delete_orders_unknown_tool():
     assert out["execution_status"] == "completed"
     assert out["context"].get("precheck_reason") == "unknown_tool"
     assert [m for m in out["messages"] if getattr(m, "type", "") == "tool"] == []
-def test_mutation_multi_turn_clarify_then_confirm_executes(seed, monkeypatch):
+def test_mutation_incomplete_args_open_form_interrupt(seed, monkeypatch):
+    """T7: tool 已知但业务字段不全 → Form Interrupt，不再走聊天 clarify → confirm_pause。"""
     _use_db(monkeypatch, seed[1])
-    """跨轮端到端：缺参"我要改个地址"澄清 -> 用户补地址 -> confirmation interrupt -> confirm 执行一次。
-
-    对应真机冒烟 Mutation 场景与 mutation 写图链路（select_llm -> clarify -> form_interrupt -> recheck -> execute）。
-    共享 MemorySaver 保持跨轮 checkpoint 状态（context/pending_tool 随 thread_id 延续）。
-    """
-    saver = MemorySaver()
-
-    def _build(model):
-        return build_graph(model, tools=[kb_search], checkpointer=saver)
-
-    def _turn(graph, text, thread_id):
-        return ainvoke_graph(graph,
-            {"messages": [HumanMessage(content=text)], "user_id": "u1", "session_id": thread_id},
-            {"configurable": {"thread_id": thread_id}},
-        )
-
-    clarify_model = ToolCallingFakeModel(responses=[
+    model = ToolCallingFakeModel(responses=[
         router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {}),
     ])
-    complete_model = ToolCallingFakeModel(responses=[
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    out = _invoke(graph, "我要改个地址", "mt-form-incomplete-1")
+    pending = out.get("__interrupt__", [])
+    assert pending
+    assert pending[0].value["tool"] == "update_address"
+    assert "clarify_missing" not in out.get("context", {})
+    assert out["execution_status"] != "clarifying"
+    assert any(item["order_id"] == "ORD-PAID-1" for item in pending[0].value["order_candidates"])
+
+
+def test_mutation_incomplete_form_resume_confirm_executes(seed, monkeypatch):
+    """T7 happy path: 缺参直接 Form Interrupt → Form Resume(Confirm) 写库一次。"""
+    _use_db(monkeypatch, seed[1])
+    model = ToolCallingFakeModel(responses=[
         router_json_message("account_profile_update", 0.9),
-        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
+        select_json_message("update_address", {}),
     ])
-    tid = "mt-clarify-1"
-
-    # 轮1：缺参 -> 澄清（普通轮，非 interrupt）
-    t1 = _turn(_build(clarify_model), "我要改个地址", tid)
-    assert t1["execution_status"] == "clarifying"
-    assert not t1.get("__interrupt__")
-    assert t1["context"]["clarify_missing"] == ["order_id", "address"]
-    assert "收货地址" in t1["messages"][-1].content
-
-    # 轮2：补地址 -> 完整 select -> Form Interrupt（参数已进 summary，本轮不执行工具）
-    t2 = _turn(_build(complete_model), "新地址是北京市朝阳区", tid)
-    form = next(
-        (it for it in t2.get("__interrupt__", []) if isinstance(it.value, dict) and it.value.get("tool") == "update_address"),
-        None,
-    )
-    assert form is not None
-    assert "收货地址修改" in form.value["summary"]
-    assert "北京市朝阳区" in form.value["summary"]
-    assert any(item["order_id"] == "ORD-PAID-1" for item in form.value["order_candidates"])
-
-    # 轮3：confirm -> recheck -> execute -> 工具只执行一次
-    t3 = _build(complete_model).invoke(Command(resume=_confirm_address()), {"configurable": {"thread_id": tid}})
-    assert t3["execution_status"] == "completed"
-    tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    tid = "mt-form-incomplete-2"
+    t1 = _invoke(graph, "我要改个地址", tid)
+    assert t1.get("__interrupt__")
+    assert t1["execution_status"] != "clarifying"
+    t2 = _invoke(graph, "确认", tid, resume=_confirm_address())
+    assert t2["execution_status"] == "completed"
+    tool_msgs = [m for m in t2["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"
-    assert "收货地址已修改成功" in t3["messages"][-1].content
+    assert "收货地址已修改成功" in t2["messages"][-1].content
 
 
 def _cancel_model(payload: dict):

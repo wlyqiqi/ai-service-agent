@@ -487,6 +487,63 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     assert "收货地址已修改成功" in rows[-1]["content"]
 
 
+def test_incomplete_mutation_opens_form_then_confirm_writes(tmp_path, monkeypatch):
+    """T7: tool known but empty args → form_required in one /chat turn; Confirm writes once.
+
+    No chat clarification_required / confirmation_required ritual on Mutation happy path.
+    """
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_server_incomplete_form", root / "scripts" / "seed_mock_db.py"
+    )
+    seed_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed_module)
+    real_builder_settings = builder_mod.get_settings()
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(tmp_path / "incomplete-form-mock.db")
+
+        def __init__(self, real):
+            self.__dict__.update(real.__dict__)
+            self.mock_ecommerce_db_path = str(tmp_path / "incomplete-form-mock.db")
+
+    isolated_db = tmp_path / "incomplete-form-mock.db"
+    seed_module.build_database(str(isolated_db))
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings(real_builder_settings))
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _WriteSettings(real_builder_settings))
+    monkeypatch.setattr(builder_mod, "get_settings", lambda: _WriteSettings(real_builder_settings))
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message("update_address", {}),
+    ])
+    db = str(tmp_path / "incomplete-form.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要改个地址"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+    types = [event.get("type") for event in events]
+    assert "form_required" in types
+    assert "clarification_required" not in types
+    assert "confirmation_required" not in types
+
+    r = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": session_id,
+            "action": "confirmed",
+            "order_id": "ORD-PAID-1",
+            "fields": {"address": "北京市朝阳区望京 T7 路 1 号"},
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["action"] == "confirm"
+    assert "收货地址已修改成功" in body["final"]
+
+
 def _parse_sse(text: str) -> list[dict]:
     import json
 

@@ -144,7 +144,35 @@ def make_precheck_fetch_node(
     return precheck_fetch
 
 
-def _check(pending: dict, tier: str, registry: ToolRegistry, user_id: str) -> str | None:
+def incomplete_business_fields(args: dict, meta) -> list[str]:
+    """Missing required business fields (or all-empty optional tool). Shared by select + safety."""
+    if meta is None or meta.schema is None:
+        return []
+    fields = [name for name in meta.schema.model_fields if name != "request_id"]
+    required = [name for name in fields if meta.schema.model_fields[name].is_required()]
+    missing = [name for name in required if not args.get(name)]
+    if missing:
+        return missing
+    if not required and all(not args.get(name) for name in fields):
+        return fields
+    return []
+
+
+def _incomplete_business_fields(pending: dict, registry: ToolRegistry) -> bool:
+    """True when Mutation Form still needs required fields (defer schema reject until Form Resume)."""
+    tool_name = pending.get("tool")
+    meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
+    return bool(incomplete_business_fields(pending.get("args") or {}, meta))
+
+
+def _check(
+    pending: dict,
+    tier: str,
+    registry: ToolRegistry,
+    user_id: str,
+    *,
+    defer_incomplete_fields: bool = False,
+) -> str | None:
     tool_name = pending.get("tool")
     meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
     if meta is None:
@@ -152,7 +180,8 @@ def _check(pending: dict, tier: str, registry: ToolRegistry, user_id: str) -> st
     if RISK_ORDER[tier] < RISK_ORDER[meta.min_risk_level]:
         return "tool_not_allowed_at_tier"
     args = pending.get("args") or {}
-    if meta.schema is not None:
+    skip_schema = defer_incomplete_fields and _incomplete_business_fields(pending, registry)
+    if meta.schema is not None and not skip_schema:
         try:
             meta.schema.model_validate(args)
         except Exception:
@@ -174,15 +203,24 @@ def _check(pending: dict, tier: str, registry: ToolRegistry, user_id: str) -> st
 
 
 def make_safety_check_node(tier: str, registry: ToolRegistry) -> Callable[[dict], dict]:
-    """预检节点：位于写操作执行前、interrupt 前（safety-spec §1.1）；失败不进入 interrupt 不调工具。"""
+    """预检节点：位于写操作执行前、interrupt 前（safety-spec §1.1）；失败不进入 interrupt 不调工具。
+
+    Mutation 缺参时放行至 Form Interrupt；字段/业务完备性在 Form Resume 后的 recheck 裁决。
+    """
     def safety_check(state: dict) -> dict:
         ctx = state.get("context", {})
         ctx = {key: value for key, value in ctx.items() if key != "precheck_reason"}
-        reason = _check(ctx.get("pending_tool") or {}, tier, registry, state.get("user_id", ""))
-        if reason is None:
-            reason = _apply_business_rules(
-                ctx.get("pending_tool") or {}, ctx.get("precheck_data"), state.get("user_id", "")
-            )
+        pending = ctx.get("pending_tool") or {}
+        defer = tier == "mutation" and _incomplete_business_fields(pending, registry)
+        reason = _check(
+            pending,
+            tier,
+            registry,
+            state.get("user_id", ""),
+            defer_incomplete_fields=defer,
+        )
+        if reason is None and not defer:
+            reason = _apply_business_rules(pending, ctx.get("precheck_data"), state.get("user_id", ""))
         if reason is None:
             return {"context": {**ctx, "precheck": "pass"}}
         get_stream_writer()({"type": "safety_rejected", "data": {"rule": "precheck", "reason": reason}})
