@@ -56,7 +56,9 @@
 | `token` | AI 气泡流式文本（打字机效果） |
 | `tool_call` / `tool_result` | 内部过程事件；用户页面不渲染工具调用信息 |
 | `clarification_required` | 澄清卡片：列出缺失字段（如“请提供订单号”）+ 快捷补全选项。P0 中，前端可将 `missing` 包含 `phone` 或 `address` 的澄清映射为本地单次填写表单；无法唯一映射时仍使用文本澄清。表单旧信息来自只读 `GET /me/profile`，提交后仍通过 `POST /chat` 走后端流程 |
-| `confirmation_required` | 确认卡片：操作影响摘要 + `[确认]` `[取消]`（Mutation） |
+| `form_required` | **Mutation Form**（Form Interrupt 投影）：按 `response_schema` / `fields` 渲染字段，**始终**展示 Order Picker 下拉 + `[确认]` `[取消]`；权威挂起态在服务端 interrupt，客户端不另建「Form Pending」库 |
+| `form_rejected` | 同一 `form_session_id` 的 Mutation Form 原地叠 errors（校验/业务预检失败），保留草稿，不新开无关表单 |
+| `confirmation_required` | 确认卡片：操作影响摘要 + `[确认]` `[取消]`（旧 Mutation 路径；主路径由 `form_required` 取代） |
 | `confirmation_updated` | 确认卡片状态刷新（已确认 / 已取消） |
 | `approval_required` | 审批卡片：摘要 + “审批中”状态 + 到期时间（HighRisk） |
 | `approval_updated` | 审批卡片状态刷新（通过 / 拒绝 / 过期） |
@@ -72,18 +74,24 @@ UX 规则：
 - 人工车道：轮询刷新坐席回复，新消息自动滚动到底。
 - AI 回复的 `mode == ai` 实时校验由后端强制（`handoff-spec.md` §1.4），前端只负责展示，不做兜底逻辑。
 
-## Mutation form display
+## Mutation Form display（Form Interrupt / Form Resume）
 
-- Form definitions and field validation are frontend presentation logic.
-- The backend does not send or understand a form schema.
+- 主路径：消费 SSE `form_required` / `form_rejected`（见 `event-spec.md` §2.2），从 interrupt 投影渲染 Mutation Form。
+- Order Picker：始终以下拉展示 `order_candidates`（仅一笔也不自动选中）；不提供自由文本订单号输入。
+- Confirm / Cancel → `POST /actions/confirm` Form Resume（`action` + `fields` / `order_id`），**不**把表单编成自由文本再 `POST /chat`。
+- `form_rejected` 按 `form_session_id` 叠到同一 on-screen 表单，展示 `errors`，保留草稿。
+- 客户端不得另建「Form Pending」权威会话库；pending = 服务端仍有 Form Interrupt / 事件投影。
+
+## Legacy clarify form display（`clarification_required` 本地表单）
+
+- Form definitions and field validation are frontend presentation logic for the clarify shortcut path.
 - `GET /me/profile` is read-only and returns only the authenticated caller's phone and address.
 - `GET /me/orders?address_editable=true` is read-only and returns only the authenticated caller's address-editable orders.
 - Old profile values are display-only and are not submitted as tool arguments.
-- `update_phone` and `update_address` P0 forms collect each new value once.
-- The address form displays a single editable order as read-only context, or a dropdown when multiple editable orders exist.
-- The address form does not offer free-text order ID entry and does not display orders that safety precheck will reject.
+- `update_phone` and `update_address` P0 clarify forms collect each new value once.
+- The address clarify form displays a single editable order as read-only context, or a dropdown when multiple editable orders exist.
 - If no editable orders exist or order options fail to load, the frontend shows a status notice instead of a manual order-ID fallback.
-- Form submission produces a normalized text message and continues through the existing chat flow.
+- Clarify form submission still produces a normalized text message through `POST /chat`（与 Mutation Form Resume 通道不同）.
 
 ## 6. 前端状态与数据流
 
@@ -141,11 +149,12 @@ UX 规则：
 | `sendMessage` | `POST /chat` `{session_id, message}`（SSE） | 事件流逐条渲染 |
 | `getMessages` | `GET /conversations/{id}/messages` | 返回 `{items, mode}`；页面归一化为 `{messages, mode}` |
 
-### 10.2 仍为占位（D5：AI 车道动作，后续任务对接）
+### 10.2 AI 车道动作
 
 | 函数 | 真实后端契约 | 说明 |
 |---|---|---|
-| `confirm` / `clarify` | 经 `/chat` resume（`resolve_resume_payload`） | 页面动作接口待对齐；不属于「用户 ↔ 坐席」链路 |
+| `confirm` | `POST /actions/confirm`（Form Resume / 旧 confirmation resume） | Mutation Form：`action=confirm|cancel`，Confirm 可带 `fields` + `order_id`；属于 AI 车道，不属于「用户 ↔ 坐席」链路 |
+| `clarify` | 经 `/chat` resume（`resolve_resume_payload`） | 页面动作接口待对齐 |
 | `approve` / `reject` | `POST /approvals/{id}/approve` 或 `/reject` | 页面 approve 端点待对齐 |
 
 ## 11. 变更纪律
