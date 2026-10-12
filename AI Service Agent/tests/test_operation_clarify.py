@@ -59,7 +59,8 @@ def test_hybrid_tool_resolve_marks_operation_clarify_for_vague_mutation():
     assert out["context"].get("operation_clarify") is True
 
 
-def test_hybrid_tool_resolve_narrows_allowed_tools_when_unique():
+def test_hybrid_tool_resolve_concrete_intent_enters_mutation_without_flag():
+    """Concrete tool phrasing must not Operation Clarify (Form Interrupt path)."""
     node = make_hybrid_tool_resolve_node()
     out = node(
         {
@@ -70,8 +71,8 @@ def test_hybrid_tool_resolve_narrows_allowed_tools_when_unique():
             "context": {},
         }
     )
-    assert out["allowed_tools"] == ["update_address"]
-    assert "operation_clarify" not in out.get("context", {})
+    assert out.get("context", {}).get("operation_clarify") is not True
+    assert "allowed_tools" not in out  # Policy allowlist unchanged
 
 
 def test_operation_clarify_node_emits_chat_not_form(monkeypatch):

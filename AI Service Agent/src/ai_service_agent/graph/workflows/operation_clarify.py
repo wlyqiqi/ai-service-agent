@@ -78,10 +78,12 @@ def needs_operation_clarify(text: str, allowed_tools: Sequence[str] | None = Non
 
 
 def make_hybrid_tool_resolve_node() -> Callable[[dict], dict]:
-    """Narrow ``allowed_tools`` when unique; vague-only → Operation Clarify.
+    """Vague mutation-like text → Operation Clarify before MutationGraph.
 
-    Non-vague, non-matching text still enters MutationGraph so select can
-    reject unknown tools (Closed MutationGraph; no internal business handoff).
+    High-confidence keyword→tool mapping is available via ``resolve_mutation_tool``
+    for callers/tests; this node does **not** rewrite Policy ``allowed_tools``
+    (select / Fake eval scripts still choose within the Policy allowlist).
+    Non-vague text enters MutationGraph so select can reject unknown tools.
     """
 
     def hybrid_tool_resolve(state: dict) -> dict:
@@ -91,13 +93,8 @@ def make_hybrid_tool_resolve_node() -> Callable[[dict], dict]:
             return {}
         text = _latest_user_text(state)
         allowed = list(state.get("allowed_tools") or MUTATION_TOOLS)
-        resolved = resolve_mutation_tool(text, allowed)
         ctx = {**state.get("context", {})}
         ctx.pop("operation_clarify", None)
-        if resolved is not None:
-            return {"allowed_tools": [resolved], "context": ctx}
-        if len(allowed) == 1 and allowed[0] in MUTATION_TOOLS:
-            return {"allowed_tools": allowed, "context": ctx}
         if needs_operation_clarify(text, allowed):
             ctx["operation_clarify"] = True
             return {"context": ctx}
