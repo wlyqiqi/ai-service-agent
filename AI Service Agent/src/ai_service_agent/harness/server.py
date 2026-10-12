@@ -34,6 +34,7 @@ from ai_service_agent.harness.chatwoot import (
     is_agent_message,
     verify_chatwoot_signature,
 )
+from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import HANDOFF_NOTICE, HandoffService
 from ai_service_agent.harness.messages import MessageStore
@@ -534,7 +535,9 @@ def create_app(
                 cfg = {"configurable": {"thread_id": thread_id}}
                 state = await graph.aget_state(cfg)
                 pending = state.interrupts[0].value if state.interrupts else None
-                if not isinstance(pending, dict) or pending.get("type") != "confirmation_required":
+                if not isinstance(pending, dict) or (
+                    pending.get("type") != "confirmation_required" and not is_form_interrupt(pending)
+                ):
                     raise HTTPException(status_code=409, detail="no pending confirmation")
 
                 events: list[dict] = []

@@ -1,7 +1,8 @@
 """MutationGraph（graph-spec §6.2，D6）：显式 workflow，非 ReAct。
 
-select -> 安全预检 -> prepare_confirm（发 confirmation_required + 状态）-> confirm interrupt
--> resume(confirm/cancel) -> recheck -> execute(写工具) / 拒绝收尾。
+select -> 安全预检 -> prepare_form -> Form Interrupt
+-> Form Resume(confirm/cancel) -> recheck -> execute(写工具) / 取消收尾。
+Confirm 仍沿用已选中的 pending_tool 执行；Cancel 哨兵不写库。
 确认结果写回 context（graph-spec §9），不新增 State 字段。
 
 路由一律用条件边（LangGraph 1.2.11 实测：Command(goto) 不抑制静态出边，静态后继与
@@ -10,13 +11,17 @@ dict，由条件边函数路由，规避该冲突）。
 """
 
 import json
+from typing import Literal
 
 import langgraph.types as _lg_types
 from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.runtime import Runtime
+from pydantic import BaseModel
 
+from ai_service_agent.domain.orders import OrderRepositoryUnavailable
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.allowed_tools import (
     make_allowed_tool_boundary_wrapper_async,
@@ -44,6 +49,12 @@ from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
 
+class MutationFormResume(BaseModel):
+    """Form Resume body. Cancel is the sentinel that ends the Form Interrupt."""
+
+    action: Literal["confirm", "cancel"]
+
+
 def make_mutation_graph(
     model,
     tools: list,
@@ -51,17 +62,36 @@ def make_mutation_graph(
     tool_hooks=None,
     order_repository=None,
 ):
-    def prepare_confirm(state: dict) -> dict:
-        pending = state["context"]["pending_tool"]
-        summary = confirmation_summary(pending["tool"], pending["args"])
-        get_stream_writer()({"type": "confirmation_required", "data": {"summary": summary}})
-        return {"context": {**state.get("context", {}), "confirm_summary": summary}, "execution_status": "waiting_confirmation"}
+    def prepare_form(state: dict) -> dict:
+        return {"execution_status": "waiting_confirmation"}
 
-    def confirm_pause(state: dict) -> dict:
-        resume = _lg_types.interrupt({"type": "confirmation_required", "summary": state["context"]["confirm_summary"]})
-        action = resume.get("action") if isinstance(resume, dict) else None
+    def _order_repository(runtime: Runtime[GraphContext] | None):
+        if runtime is not None and runtime.context is not None:
+            repository = getattr(runtime.context, "order_repository", None)
+            if repository is not None:
+                return repository
+        return order_repository
+
+    def form_interrupt(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
+        pending = state["context"]["pending_tool"]
+        candidates: list[dict] = []
+        repository = _order_repository(runtime)
+        user_id = state.get("user_id") or ""
+        if repository is not None and user_id:
+            try:
+                candidates = repository.list_order_picker_candidates(user_id, pending["tool"])
+            except (OrderRepositoryUnavailable, ValueError):
+                candidates = []
+        resume = _lg_types.interrupt(
+            {
+                "tool": pending["tool"],
+                "order_candidates": candidates,
+                "summary": confirmation_summary(pending["tool"], pending["args"]),
+            },
+            response_schema=MutationFormResume,
+        )
+        action = resume.action if isinstance(resume, MutationFormResume) else None
         accepted = action == "confirm"
-        get_stream_writer()({"type": "confirmation_updated", "data": {"action": "confirm" if accepted else "cancel"}})
         ctx = {**state.get("context", {}), "confirm_result": "confirm" if accepted else "cancel"}
         if not accepted:
             return {"context": ctx, "execution_status": "completed"}
@@ -121,7 +151,7 @@ def make_mutation_graph(
         return "safety_final"
 
     def _safety_target(state: dict) -> str:
-        return "safety_final" if state.get("context", {}).get("precheck_reason") else "prepare_confirm"
+        return "safety_final" if state.get("context", {}).get("precheck_reason") else "prepare_form"
 
     def _confirm_target(state: dict) -> str:
         return "recheck" if state.get("context", {}).get("confirm_result") == "confirm" else "finalize_rejected"
@@ -142,8 +172,8 @@ def make_mutation_graph(
     builder.add_node("precheck_fetch", make_precheck_fetch_node(order_repository))
     builder.add_node("safety_check", make_safety_check_node("mutation", registry))
     builder.add_node("safety_final", safety_final)
-    builder.add_node("prepare_confirm", prepare_confirm)
-    builder.add_node("confirm_pause", confirm_pause)
+    builder.add_node("prepare_form", prepare_form)
+    builder.add_node("form_interrupt", form_interrupt)
     builder.add_node("recheck", make_recheck_node("mutation", registry, order_repository))
     builder.add_node("execute", execute)
     hook_sync = make_tool_hook_wrapper_sync(tool_hooks) if tool_hooks else None
@@ -171,11 +201,11 @@ def make_mutation_graph(
     builder.add_edge("clarify", END)
     builder.add_edge("precheck_fetch", "safety_check")
     builder.add_conditional_edges(
-        "safety_check", _safety_target, {"prepare_confirm": "prepare_confirm", "safety_final": "safety_final"}
+        "safety_check", _safety_target, {"prepare_form": "prepare_form", "safety_final": "safety_final"}
     )
-    builder.add_edge("prepare_confirm", "confirm_pause")
+    builder.add_edge("prepare_form", "form_interrupt")
     builder.add_conditional_edges(
-        "confirm_pause", _confirm_target, {"recheck": "recheck", "finalize_rejected": "finalize_rejected"}
+        "form_interrupt", _confirm_target, {"recheck": "recheck", "finalize_rejected": "finalize_rejected"}
     )
     builder.add_conditional_edges(
         "recheck", _recheck_target, {"execute": "execute", "finalize_aborted": "finalize_aborted"}

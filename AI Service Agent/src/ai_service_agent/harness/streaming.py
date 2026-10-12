@@ -7,6 +7,7 @@ from langgraph.types import Command
 
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 from ai_service_agent.harness.errors import normalize_error
+from ai_service_agent.harness.form_events import project_form_interrupt
 
 
 async def snapshot_assistant_ids(graph, config: dict) -> set:
@@ -98,11 +99,15 @@ async def event_stream(
             elif mode == "updates":
                 if not _ns:  # 顶层：__interrupt__ 权威出现位置（子图 namespace 重复项忽略）
                     interrupts = payload.get("__interrupt__")
-                    if interrupts and on_interrupt is not None:
+                    if interrupts:
                         for it in interrupts:
-                            extra = await on_interrupt(it.value)
-                            if extra:
-                                yield extra
+                            projected = project_form_interrupt(it)
+                            if projected:
+                                yield projected
+                            if on_interrupt is not None:
+                                extra = await on_interrupt(it.value)
+                                if extra:
+                                    yield extra
                     for _node_name, node_update in payload.items():
                         if _node_name == "__interrupt__" or not isinstance(node_update, dict):
                             continue

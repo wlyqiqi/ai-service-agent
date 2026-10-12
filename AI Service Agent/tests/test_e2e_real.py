@@ -241,16 +241,16 @@ class TestCoreScenarios:
         assert st["mode"] == "ai"
 
     def test_mutation_confirm_flow(self, client, server):
-        """Mutation：改地址 -> confirmation_required -> 确认 -> update_address 执行。"""
+        """Mutation：改地址 -> form_required -> 确认 -> update_address 执行。"""
         sid = new_session(client)
 
         code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
         types1 = event_types(ev1)
-        confirm = any(e.get("type") == "confirmation_required" for e in ev1)
+        confirm = any(e.get("type") == "form_required" for e in ev1)
         done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
 
         assert code1 == 200
-        assert confirm, f"expected confirmation_required, got {types1}"
+        assert confirm, f"expected form_required, got {types1}"
         assert done1 is not None
 
         code2, ev2 = chat_sse(client, sid, "确认")
@@ -504,7 +504,7 @@ class TestRealFaultToleranceE2E:
         sid = new_session(client)
         code1, events1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
         assert code1 == 200
-        assert any(e.get("type") == "confirmation_required" for e in events1)
+        assert any(e.get("type") == "form_required" for e in events1)
 
         code2, events2 = chat_sse(client, sid, "确认")
         types2 = event_types(events2)
