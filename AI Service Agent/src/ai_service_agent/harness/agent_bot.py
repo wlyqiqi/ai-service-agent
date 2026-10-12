@@ -217,9 +217,7 @@ async def _handle_locked_agent_bot_message(
                     return None
                 if approval_state == "expired":
                     resume_payload = {"result": "expired"}
-                elif isinstance(interrupt_value, dict) and (
-                    interrupt_value.get("type") == "confirmation_required" or is_form_interrupt(interrupt_value)
-                ):
+                elif isinstance(interrupt_value, dict) and interrupt_value.get("type") == "confirmation_required":
                     action = (submitted_values or {}).get("confirmation") or (submitted_values or {}).get("action")
                     if action == "confirmed":
                         resume_payload = {"action": "confirm"}
@@ -227,6 +225,14 @@ async def _handle_locked_agent_bot_message(
                         resume_payload = {"action": "cancel"}
                     else:
                         resume_payload = resolve_resume_payload(interrupt_value, content)
+                elif is_form_interrupt(interrupt_value):
+                    action = (submitted_values or {}).get("confirmation") or (submitted_values or {}).get("action")
+                    if action in ("confirmed", "confirm"):
+                        resume_payload = {"action": "confirm"}
+                    elif action in ("canceled", "cancel"):
+                        resume_payload = {"action": "cancel"}
+                    else:
+                        return None
                 else:
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 

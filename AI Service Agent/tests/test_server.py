@@ -567,6 +567,13 @@ def test_known_tool_mutation_form_cancel_resume_does_not_write(tmp_path, monkeyp
     assert pending[0].value["order_candidates"] == form["order_candidates"]
     assert pending[0].response_schema["properties"]["action"]["enum"] == ["confirm", "cancel"]
 
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "确认"}) as resp:
+        hold_events = _parse_sse("".join(resp.iter_text()))
+    assert any(event.get("type") == "form_required" for event in hold_events)
+    assert "tool_call" not in {event.get("type") for event in hold_events}
+    assert customer_address() == original_address
+    assert asyncio.run(pending_interrupts())
+
     cancelled = client.post(
         "/actions/confirm", json={"conversation_id": session_id, "action": "cancel"},
     )

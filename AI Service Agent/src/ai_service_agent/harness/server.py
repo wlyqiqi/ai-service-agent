@@ -34,7 +34,7 @@ from ai_service_agent.harness.chatwoot import (
     is_agent_message,
     verify_chatwoot_signature,
 )
-from ai_service_agent.harness.form_events import is_form_interrupt
+from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import HANDOFF_NOTICE, HandoffService
 from ai_service_agent.harness.messages import MessageStore
@@ -487,6 +487,13 @@ def create_app(
                                 return
                         elif approval_state == "expired":
                             resume_payload = {"result": "expired"}   # HighRiskGraph 过期收尾
+                        elif is_form_interrupt(it):
+                            # 纯文本不是 Form Resume。挂起仍以 checkpoint interrupt 为准，只重放投影。
+                            projected = project_form_interrupt(st.interrupts[0])
+                            if projected:
+                                yield projected
+                            yield {"type": "done", "data": {"final": None, "message_id": None}}
+                            return
                         else:
                             resume_payload = resolve_resume_payload(it, body.message)
                     async for ev in event_stream(
