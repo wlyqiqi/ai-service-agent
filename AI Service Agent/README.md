@@ -64,14 +64,14 @@ langgraph validate
 | 场景 | 输入示例 | 预期链路 |
 |---|---|---|
 | FAQ / Read | 查订单状态 | SSE 完整事件流 → `done` |
-| Mutation | 把收货地址改成北京市朝阳区 | `confirmation_required` → resume confirm → 工具只执行一次 → `done` |
+| Mutation | 把收货地址改成北京市朝阳区 | 当前：`confirmation_required` → resume confirm → 工具只执行一次 → `done`。目标 Mutation Form：`form_required` / `form_rejected`（Form Interrupt 投影，见 `event-spec.md` §2.2；写路径切换属后续票） |
 | HighRisk | 订单10086申请退款 | `approval_required` → `/approvals/{id}/approve` → resume → 工具只执行一次 → `done` |
 | Handoff | 转人工 | `handoff_created` → `conversation_mode=human` → `/handoffs/{id}/resolve` → AI 恢复接管 → `done` |
 | Clarify | 退了吧（CTRL-0076） | `clarification_required`（缺订单号）→ 补参后下一轮进入 HighRisk |
 
 ## 文档导航
 
-- 规格：`docs/specs/`（architecture / graph / state / event / safety / approval / tool / handoff）
+- 规格：`docs/specs/`（architecture / graph / state / event / safety / approval / tool / handoff / mutation-form-interrupt）· 术语：`CONTEXT.md`
 - 决策记录：`docs/decisions/`（P1–P5 各阶段定案 + Guard / 0076 评估）
 - 实现计划：`docs/plans/`（2026-09-14 起各阶段 TDD 计划）
 - 审计与实测：`docs/project-audit.md`（环境基线）· `docs/real-model-smoke.md`（真机证据）

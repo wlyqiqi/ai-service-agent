@@ -4,7 +4,7 @@
 基于 LangGraph 构建 AI 客服系统：确定性工作流 + 智能体混合架构，按操作风险分层（Read / Mutation / HighRisk），配套完整 harness（FastAPI 网关、审批、事件、会话、观测）。
 
 ## 2. 技术栈
-- Python 3.14（`.venv` 为 junction → `D:\常用软件\LangGragh\.venv`）；LangGraph 1.2.10、langchain-core 1.5.3、langchain-openai 1.4.1、langsmith 0.10.14；模型走火山方舟 ARK（`.env` 配置，OpenAI 兼容）。
+- Python 3.14（`.venv` 为 junction → `D:\常用软件\LangGragh\.venv`）；LangGraph 1.2.14（`interrupt` Form Interrupt 需 ≥1.2.12 的 `response_schema`）、langchain-core 1.5.3、langchain-openai 1.4.1、langsmith 0.10.14；模型走火山方舟 ARK（`.env` 配置，OpenAI 兼容）。
 - FastAPI 网关（**未安装**，使用前先加入 pyproject）；SQLite checkpointer；`langgraph` CLI 全局 0.4.31（venv 内无 CLI）。
 - 环境基线与实测能力清单：`docs/project-audit.md`。
 
