@@ -8,6 +8,7 @@ from ai_service_agent.graph.workflows.copy import (
     clarify_missing_text,
     clarify_no_candidates_text,
     clarify_tier_text,
+    operation_clarify_text,
     completion_text,
     confirmation_summary,
     guard_reject_text,
@@ -41,6 +42,9 @@ def test_clarify_fixed_texts_have_cs_tone():
     assert "转人工" in clarify_fallback_text()
     assert "暂不支持" in clarify_no_candidates_text() or "没有" in clarify_no_candidates_text()
     assert "退款" in clarify_tier_text() or "取消" in clarify_tier_text()
+    op = operation_clarify_text()
+    assert "地址" in op and "发票" in op
+    assert "表单" not in op
 
 
 def test_confirmation_summary_keeps_facts():
