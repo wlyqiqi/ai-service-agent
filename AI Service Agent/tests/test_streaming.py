@@ -271,7 +271,7 @@ def test_stream_resume_done_final_from_new_message(monkeypatch, tmp_path):
     events = _collect(event_stream(
         graph, {"configurable": {"thread_id": "r1"}},
         messages=[HumanMessage(content="确认")],
-        resume_payload={"action": "confirm"},
+        resume_payload={"action": "confirm", "order_id": "ORD-PAID-1", "address": "北京市朝阳区"},
     ))
     done = events[-1]
     assert done["type"] == "done"

@@ -2,8 +2,10 @@
 
 select -> 安全预检 -> prepare_form -> Form Interrupt
 -> Form Resume(confirm/cancel) -> recheck -> execute(写工具) / 取消收尾。
-Confirm 仍沿用已选中的 pending_tool 执行；Cancel 哨兵不写库。
-确认结果写回 context（graph-spec §9），不新增 State 字段。
+Confirm 的写库参数来自 Form Resume 字段值（含 Order Picker 的 order_id），
+再加系统 request_id，由 execute 构造单次 tool_call，经 ToolNode 写一次。
+select 留下的 pending_tool.args 不是 Confirm 真源（Form-Only Write）。
+Cancel 哨兵不写库。确认结果写回 context（graph-spec §9），不新增 State 字段。
 
 路由一律用条件边（LangGraph 1.2.11 实测：Command(goto) 不抑制静态出边，静态后继与
 goto 目标会并发执行导致共享 LastValue 通道双写 InvalidUpdateError；决策节点返回普通
@@ -11,14 +13,15 @@ dict，由条件边函数路由，规避该冲突）。
 """
 
 import json
-from typing import Literal
+import uuid
+from typing import Any, Literal
 
 import langgraph.types as _lg_types
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable
 from ai_service_agent.graph.runtime_context import GraphContext
@@ -49,10 +52,46 @@ from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
 
-class MutationFormResume(BaseModel):
-    """Form Resume body. Cancel is the sentinel that ends the Form Interrupt."""
+def _form_resume_model(tool_schema: type[BaseModel] | None) -> type[BaseModel]:
+    """Confirm Form Resume shape derived from the tool schema.
 
-    action: Literal["confirm", "cancel"]
+    Business fields stay optional so Form Cancel (``{"action": "cancel"}``) still
+    validates. ``request_id`` is not a form field; the graph injects it.
+    """
+    definitions: dict[str, Any] = {
+        "action": (Literal["confirm", "cancel"], ...),
+    }
+    if tool_schema is not None:
+        for name, field in tool_schema.model_fields.items():
+            if name in ("request_id", "action"):
+                continue
+            definitions[name] = (field.annotation | None, None)
+    return create_model("MutationFormResume", **definitions)
+
+
+def _resume_action(resume) -> str | None:
+    if isinstance(resume, BaseModel):
+        action = resume.action
+    elif isinstance(resume, dict):
+        action = resume.get("action")
+    else:
+        return None
+    return action if isinstance(action, str) else None
+
+
+def _resume_field_values(resume) -> dict:
+    """Structured Confirm values. Ignores action and any client request_id."""
+    if isinstance(resume, BaseModel):
+        data = resume.model_dump()
+    elif isinstance(resume, dict):
+        data = dict(resume)
+    else:
+        return {}
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in ("action", "request_id") and value is not None
+    }
 
 
 def make_mutation_graph(
@@ -82,19 +121,26 @@ def make_mutation_graph(
                 candidates = repository.list_order_picker_candidates(user_id, pending["tool"])
             except (OrderRepositoryUnavailable, ValueError):
                 candidates = []
+        meta = registry.meta_for(pending["tool"])
         resume = _lg_types.interrupt(
             {
                 "tool": pending["tool"],
                 "order_candidates": candidates,
                 "summary": confirmation_summary(pending["tool"], pending["args"]),
             },
-            response_schema=MutationFormResume,
+            response_schema=_form_resume_model(None if meta is None else meta.schema),
         )
-        action = resume.action if isinstance(resume, MutationFormResume) else None
+        action = _resume_action(resume)
         accepted = action == "confirm"
         ctx = {**state.get("context", {}), "confirm_result": "confirm" if accepted else "cancel"}
         if not accepted:
             return {"context": ctx, "execution_status": "completed"}
+        request_id = pending.get("request_id") or str(uuid.uuid4())
+        ctx["pending_tool"] = {
+            "tool": pending["tool"],
+            "args": {**_resume_field_values(resume), "request_id": request_id},
+            "request_id": request_id,
+        }
         return {"context": ctx}
 
     def execute(state: dict) -> dict:

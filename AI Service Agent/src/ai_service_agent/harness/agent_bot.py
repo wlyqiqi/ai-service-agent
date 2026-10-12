@@ -226,9 +226,14 @@ async def _handle_locked_agent_bot_message(
                     else:
                         resume_payload = resolve_resume_payload(interrupt_value, content)
                 elif is_form_interrupt(interrupt_value):
-                    action = (submitted_values or {}).get("confirmation") or (submitted_values or {}).get("action")
+                    submitted = submitted_values or {}
+                    action = submitted.get("confirmation") or submitted.get("action")
                     if action in ("confirmed", "confirm"):
                         resume_payload = {"action": "confirm"}
+                        for key, value in submitted.items():
+                            if key in ("action", "confirmation", "request_id"):
+                                continue
+                            resume_payload[key] = value
                     elif action in ("canceled", "cancel"):
                         resume_payload = {"action": "cancel"}
                     else:
