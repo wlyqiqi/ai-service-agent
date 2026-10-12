@@ -59,6 +59,11 @@ class OrderRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_order_picker_candidates(self, user_id: str, tool: str) -> list[dict]:
+        """Order Picker rows for a known mutation tool. Empty when the tool has no list."""
+        raise NotImplementedError
+
+    @abstractmethod
     def cancel_order(
         self,
         order_id: str,
@@ -91,6 +96,15 @@ _STATUS_MAP = {
 }
 _REFUND_WINDOW_DAYS = 7
 _CUMULATIVE_REFUND_STATUSES = ("paid", "signed", "refunding")
+# Raw orders.status values. Address edits stay pre-fulfillment; other mutation
+# tools list orders that are not cancelled or in a refund terminal state.
+_ORDER_PICKER_STATUSES = {
+    "update_address": ("paid",),
+    "update_phone": ("paid", "shipped", "delivered", "completed"),
+    "update_order_note": ("paid", "shipped", "delivered", "completed"),
+    "create_invoice": ("paid", "shipped", "delivered", "completed"),
+    "create_service_ticket": ("paid", "shipped", "delivered", "completed"),
+}
 
 
 def _now() -> str:
@@ -172,14 +186,23 @@ class SQLiteOrderRepository(OrderRepository):
         )
 
     def list_actionable_orders(self, user_id: str, action: str) -> list[dict]:
-        if not user_id:
-            raise OrderRepositoryUnavailable("not_logged_in")
         if action == "cancel_order":
             statuses = ("paid",)
         elif action == "refund_apply":
             statuses = ("paid", "completed")
         else:
             raise ValueError(f"unsupported actionable order action: {action}")
+        return self._list_orders_for_customer(user_id, statuses)
+
+    def list_order_picker_candidates(self, user_id: str, tool: str) -> list[dict]:
+        statuses = _ORDER_PICKER_STATUSES.get(tool)
+        if not user_id or not statuses:
+            return []
+        return self._list_orders_for_customer(user_id, statuses)
+
+    def _list_orders_for_customer(self, user_id: str, statuses: tuple[str, ...]) -> list[dict]:
+        if not user_id:
+            raise OrderRepositoryUnavailable("not_logged_in")
         placeholders = ",".join("?" for _ in statuses)
         try:
             conn = self._connect()

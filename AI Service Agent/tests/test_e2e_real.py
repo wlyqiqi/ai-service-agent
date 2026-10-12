@@ -241,25 +241,25 @@ class TestCoreScenarios:
         assert st["mode"] == "ai"
 
     def test_mutation_confirm_flow(self, client, server):
-        """Mutation：改地址 -> confirmation_required -> 确认 -> update_address 执行。"""
+        """Mutation：改地址 -> form_required -> 确认 -> update_address 执行。"""
         sid = new_session(client)
 
         code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
         types1 = event_types(ev1)
-        confirm = any(e.get("type") == "confirmation_required" for e in ev1)
+        confirm = any(e.get("type") == "form_required" for e in ev1)
         done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
 
         assert code1 == 200
-        assert confirm, f"expected confirmation_required, got {types1}"
+        assert confirm, f"expected form_required, got {types1}"
         assert done1 is not None
 
-        code2, ev2 = chat_sse(client, sid, "确认")
-        calls, results = count_tool_events(ev2, "update_address")
-        done2 = next((e for e in reversed(ev2) if e.get("type") == "done"), None)
+        confirmed = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
+        assert confirmed.status_code == 200
+        body = confirmed.json()
+        calls, results = count_tool_events(body["events"], "update_address")
 
-        assert code2 == 200
         assert calls == 1 and results == 1
-        assert done2 is not None and done2.get("data", {}).get("final")
+        assert body.get("final")
 
         st = open_status(server["db_path"], sid)
         assert st["mode"] == "ai"
@@ -504,18 +504,13 @@ class TestRealFaultToleranceE2E:
         sid = new_session(client)
         code1, events1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
         assert code1 == 200
-        assert any(e.get("type") == "confirmation_required" for e in events1)
+        assert any(e.get("type") == "form_required" for e in events1)
 
-        code2, events2 = chat_sse(client, sid, "确认")
-        types2 = event_types(events2)
-        done = next((e for e in reversed(events2) if e.get("type") == "done"), None)
-        error = next((e for e in events2 if e.get("type") == "error"), None)
-
-        assert code2 == 200
-        assert error is not None
-        assert error.get("data", {}).get("code") == "runtime_error"
-        assert "系统刚才遇到技术问题" in error.get("data", {}).get("message", "")
-        assert done is not None and done.get("data", {}).get("final")
+        confirmed = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
+        assert confirmed.status_code == 502
+        messages = open_messages(str(tmp_path / "mutation-error.db"), sid)
+        assert messages[-1]["role"] == "assistant"
+        assert "系统刚才遇到技术问题" in messages[-1]["content"]
 
 
 # ---------------------------------------------------------------------------

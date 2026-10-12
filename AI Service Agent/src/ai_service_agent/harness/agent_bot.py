@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.workflows.copy import FIELD_LABELS
+from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -224,6 +225,14 @@ async def _handle_locked_agent_bot_message(
                         resume_payload = {"action": "cancel"}
                     else:
                         resume_payload = resolve_resume_payload(interrupt_value, content)
+                elif is_form_interrupt(interrupt_value):
+                    action = (submitted_values or {}).get("confirmation") or (submitted_values or {}).get("action")
+                    if action in ("confirmed", "confirm"):
+                        resume_payload = {"action": "confirm"}
+                    elif action in ("canceled", "cancel"):
+                        resume_payload = {"action": "cancel"}
+                    else:
+                        return None
                 else:
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 

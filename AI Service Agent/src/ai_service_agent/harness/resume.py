@@ -14,6 +14,7 @@ def resolve_resume_payload(interrupt_value, latest_user_text: str = "") -> dict 
 
     handoff_request -> {"action": "handoff_resumed", "note": <latest>}；
     confirmation_required -> confirm/cancel 关键词映射（未命中 fail-closed cancel，OQ-1）；
+    Form Interrupt 不在此映射（纯文本不是 Form Resume）；
     无中断 / 未知类型 -> None（调用方按普通输入新起 run）。
     P3 Task 5 扩展：approval 中断在 approval_dispatch 单独处理（不在此映射）。
     """

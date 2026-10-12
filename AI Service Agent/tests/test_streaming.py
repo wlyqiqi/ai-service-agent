@@ -324,7 +324,7 @@ def test_stream_done_final_null_on_interrupt_turn(monkeypatch, tmp_path):
     real_settings = builder_mod.get_settings()
     monkeypatch.setattr(builder_mod, "get_settings", lambda: _Settings(real_settings))
 
-    """回归（P5 收尾）：多轮会话中 confirmation interrupt 轮无新 assistant 消息时，
+    """回归（P5 收尾）：多轮会话中 Form Interrupt 轮无新 assistant 消息时，
     done.final / message_id 必须为 None——不得回落历史 assistant 文案（否则 Message Store 重复落库）。"""
     from langgraph.checkpoint.memory import MemorySaver
     from ai_service_agent.testing import router_json_message, select_json_message
@@ -333,7 +333,7 @@ def test_stream_done_final_null_on_interrupt_turn(monkeypatch, tmp_path):
         # turn1：改地址但参数全空 -> clarify（写入 assistant 文案）
         router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {}),
-        # turn2：补参 -> confirmation interrupt（无新 assistant）
+        # turn2：补参 -> Form Interrupt（无新 assistant）
         router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
     ])
@@ -355,7 +355,7 @@ def test_stream_done_final_null_on_interrupt_turn(monkeypatch, tmp_path):
         extra_state=extra, on_interrupt=on_interrupt,
     ))
     types2 = [e["type"] for e in ev2]
-    assert "confirmation_required" in types2
+    assert "form_required" in types2
     assert ev2[-1]["type"] == "done"
     assert ev2[-1]["data"]["final"] is None
     assert ev2[-1]["data"]["message_id"] is None

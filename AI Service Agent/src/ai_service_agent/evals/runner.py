@@ -10,6 +10,7 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.route_policy import resolve_route_policy
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
+from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 
@@ -233,7 +234,10 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
         elif ep == "fallback":
             ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == FALLBACK_MARKER
         elif ep == "confirm":
-            ok = any(i.get("type") == "confirmation_required" for i in r["interrupts"])
+            ok = any(
+                i.get("type") == "confirmation_required" or is_form_interrupt(i)
+                for i in r["interrupts"]
+            )
         elif ep == "approval":
             ok = any(i.get("type") == "approval_required" for i in r["interrupts"])
         elif ep == "deny":

@@ -464,7 +464,7 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
         stream_text = "".join(resp.iter_text())
-    assert '"confirmation_required"' in stream_text
+    assert '"form_required"' in stream_text
 
     r = client.post("/actions/confirm", json={"conversation_id": session_id, "action": "confirmed"})
     assert r.status_code == 200
@@ -477,6 +477,115 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
     conn.close()
     assert rows[-1]["role"] == "assistant"
     assert "收货地址已修改成功" in rows[-1]["content"]
+
+
+def _parse_sse(text: str) -> list[dict]:
+    import json
+
+    events = []
+    for block in text.split("\n\n"):
+        for line in block.splitlines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[len("data: "):]))
+    return events
+
+
+def test_known_tool_mutation_form_cancel_resume_does_not_write(tmp_path, monkeypatch):
+    """Known-tool Mutation opens a Form Interrupt; Cancel Form Resume does not write.
+
+    Seam: Conversation Runtime /chat + /actions/confirm (issue #16).
+    Waiting-on-form is the checkpoint interrupt, not a Form Pending flag.
+    """
+    import asyncio
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from ai_service_agent.domain.orders import SQLiteOrderRepository
+    from ai_service_agent.harness.graph import make_ai_graph
+
+    business_db = tmp_path / "mock_ecommerce.db"
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+
+    def customer_address() -> str:
+        conn = sqlite3.connect(business_db)
+        try:
+            row = conn.execute(
+                "SELECT address FROM customers WHERE customer_id = ?", ("u1",)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    original_address = customer_address()
+    assert original_address == "123 Chengyuan Avenue #04-01, Singapore"
+
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区测试路 99 号"}),
+    ])
+    db = str(tmp_path / "form-cancel.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+
+    form_events = [event for event in events if event.get("type") == "form_required"]
+    assert len(form_events) == 1
+    form = form_events[0]["data"]
+    assert form["tool"] == "update_address"
+    assert any(item.get("order_id") == "ORD-PAID-1" for item in form["order_candidates"])
+    assert all(item.get("order_id") != "ORD-CANCEL-1" for item in form["order_candidates"])
+    assert all(item.get("order_id") != "ORD-1" for item in form["order_candidates"])
+    assert form["response_schema"]["properties"]["action"]["enum"] == ["confirm", "cancel"]
+    assert not form.get("errors")
+    assert "form_pending" not in {event.get("type") for event in events}
+    assert "tool_call" not in {event.get("type") for event in events}
+    assert customer_address() == original_address
+
+    conn = sqlite3.connect(db)
+    thread_id = conn.execute(
+        "SELECT thread_id FROM conversation_status WHERE conversation_id = ?",
+        (session_id,),
+    ).fetchone()[0]
+    conn.close()
+
+    async def pending_interrupts():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(
+                model, saver, order_repository=SQLiteOrderRepository(str(business_db)),
+            )
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return state.interrupts
+
+    pending = asyncio.run(pending_interrupts())
+    assert pending
+    assert pending[0].value["tool"] == "update_address"
+    assert pending[0].value["order_candidates"] == form["order_candidates"]
+    assert pending[0].response_schema["properties"]["action"]["enum"] == ["confirm", "cancel"]
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "确认"}) as resp:
+        hold_events = _parse_sse("".join(resp.iter_text()))
+    assert any(event.get("type") == "form_required" for event in hold_events)
+    assert "tool_call" not in {event.get("type") for event in hold_events}
+    assert customer_address() == original_address
+    assert asyncio.run(pending_interrupts())
+
+    cancelled = client.post(
+        "/actions/confirm", json={"conversation_id": session_id, "action": "cancel"},
+    )
+    assert cancelled.status_code == 200
+    body = cancelled.json()
+    assert body["ok"] is True and body["action"] == "cancel"
+    assert "取消" in body["final"]
+    assert "tool_call" not in {event.get("type") for event in body["events"]}
+    assert customer_address() == original_address
+
+    cleared = asyncio.run(pending_interrupts())
+    assert list(cleared) == []
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):

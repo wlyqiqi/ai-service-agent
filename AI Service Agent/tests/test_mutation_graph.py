@@ -72,12 +72,15 @@ def _invoke(graph, text, thread_id, resume=None, user_id="u1"):
     )
 
 
-def test_mutation_reaches_confirmation_interrupt(seed, monkeypatch):
+def test_mutation_reaches_form_interrupt(seed, monkeypatch):
     _use_db(monkeypatch, seed[1])
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     out = _invoke(graph, "改一下收货地址", "m1")
-    values = [it.value for it in out.get("__interrupt__", [])]
-    assert any(v.get("type") == "confirmation_required" for v in values)
+    pending = out.get("__interrupt__", [])
+    assert pending
+    assert pending[0].value["tool"] == "update_address"
+    assert any(item["order_id"] == "ORD-PAID-1" for item in pending[0].value["order_candidates"])
+    assert pending[0].response_schema["properties"]["action"]["enum"] == ["confirm", "cancel"]
 
 
 def test_mutation_confirm_executes_tool(seed, monkeypatch):
@@ -213,7 +216,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes(seed, monkeypatch):
     _use_db(monkeypatch, seed[1])
     """跨轮端到端：缺参"我要改个地址"澄清 -> 用户补地址 -> confirmation interrupt -> confirm 执行一次。
 
-    对应真机冒烟 Mutation 场景与 mutation 写图链路（select_llm -> clarify -> confirm_pause -> recheck -> execute）。
+    对应真机冒烟 Mutation 场景与 mutation 写图链路（select_llm -> clarify -> form_interrupt -> recheck -> execute）。
     共享 MemorySaver 保持跨轮 checkpoint 状态（context/pending_tool 随 thread_id 延续）。
     """
     saver = MemorySaver()
@@ -244,13 +247,16 @@ def test_mutation_multi_turn_clarify_then_confirm_executes(seed, monkeypatch):
     assert t1["context"]["clarify_missing"] == ["order_id", "address"]
     assert "收货地址" in t1["messages"][-1].content
 
-    # 轮2：补地址 -> 完整 select -> 确认中断（参数已进 summary，本轮不执行工具）
+    # 轮2：补地址 -> 完整 select -> Form Interrupt（参数已进 summary，本轮不执行工具）
     t2 = _turn(_build(complete_model), "新地址是北京市朝阳区", tid)
-    values = [it.value for it in t2.get("__interrupt__", [])]
-    confirm = next((v for v in values if v.get("type") == "confirmation_required"), None)
-    assert confirm is not None
-    assert "收货地址修改" in confirm["summary"]
-    assert "北京市朝阳区" in confirm["summary"]
+    form = next(
+        (it for it in t2.get("__interrupt__", []) if isinstance(it.value, dict) and it.value.get("tool") == "update_address"),
+        None,
+    )
+    assert form is not None
+    assert "收货地址修改" in form.value["summary"]
+    assert "北京市朝阳区" in form.value["summary"]
+    assert any(item["order_id"] == "ORD-PAID-1" for item in form.value["order_candidates"])
 
     # 轮3：confirm -> recheck -> execute -> 工具只执行一次
     t3 = _build(complete_model).invoke(Command(resume={"action": "confirm"}), {"configurable": {"thread_id": tid}})
