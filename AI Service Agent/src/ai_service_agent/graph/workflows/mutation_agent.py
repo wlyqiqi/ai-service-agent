@@ -1,12 +1,14 @@
-"""MutationGraph（graph-spec §6.2，D6）：显式 workflow，非 ReAct。
+"""MutationGraph（graph-spec §6.2）：显式 workflow，非 ReAct。
 
-select -> 安全预检 -> prepare_form -> Form Interrupt
--> Form Resume(confirm/cancel) -> recheck -> execute(写工具) / 取消收尾。
+select（tool 已知即可，业务字段可不全）-> 安全预检（缺参时放行至表单）
+-> prepare_form -> Form Interrupt -> Form Resume(confirm/cancel)
+-> recheck -> execute(写工具) / 取消收尾。
+不再走聊天 clarification_required（缺业务字段）或 confirmation_required。
 Confirm 后校验/业务预检失败：条件边回到 form_interrupt，同一 form_session_id
 再次 Form Interrupt（SSE 投影 form_rejected），不走 safety_rejected 收尾。
 Confirm 的写库参数来自 Form Resume 字段值（含 Order Picker 的 order_id），
 再加系统 request_id，由 execute 构造单次 tool_call，经 ToolNode 写一次。
-select 留下的 pending_tool.args 不是 Confirm 真源（Form-Only Write）。
+select 留下的 pending_tool.args 是 prefills，不是 Confirm 真源（Form-Only Write）。
 Cancel 哨兵不写库。确认结果写回 context（graph-spec §9），不新增 State 字段。
 
 路由一律用条件边（LangGraph 1.2.11 实测：Command(goto) 不抑制静态出边，静态后继与

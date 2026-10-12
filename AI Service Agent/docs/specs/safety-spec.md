@@ -8,8 +8,11 @@
 ### 1.1 定位
 
 - 图内**确定性节点** `safety_check`，位于 MutationGraph / HighRiskGraph 的写操作执行**之前**，作为第一道 gate。
-- 顺序固定：**安全预检 →（Mutation）用户确认 /（HighRisk）人工审批 → 执行**。预检先于 interrupt，避免让用户/审批人对非法操作做无谓确认。
-- 预检失败 → 拒绝并收尾，**不进入 interrupt**，也不调用工具。
+- 顺序固定：
+  - **Mutation（字段已齐）**：安全预检 → Form Interrupt → Form Resume → recheck → 执行。
+  - **Mutation（tool 已知但业务字段不全）**：仅登录/档位等闸门 → Form Interrupt；schema/业务完备性在 Form Resume 后的 **recheck** 裁决（失败再 Form Interrupt → `form_rejected`）。
+  - **HighRisk**：安全预检 → 人工审批 interrupt → 执行。
+- 预检失败（真正拒绝）→ 拒绝并收尾，**不进入 interrupt**，也不调用工具。Mutation 缺参放行至 Form Interrupt **不算**预检失败。
 
 ### 1.2 检查项（规则表，可配置）
 
@@ -32,7 +35,10 @@
 
 - **v1 范围（D4 定案，P3）**：先实现「参数 schema 白名单 + 权限（`min_risk_level` 匹配 + `user_id` 登录态）+ 数据边界」。
 - **P4 增量（D2/D3 定案）**：业务规则 v1 落地「必填标识符非空 + 退款时限 + 取消状态机 + 开票金额上限」（事实来自 `precheck_fetch` 写入的 `context["precheck_data"]`，仅事实；裁决仍在 `safety_check` 确定性完成）；「敏感操作复核」与其余频次/额度规则仍留后续。
-- **参数不完整 ≠ 拒绝**：select 层判定缺参/空参时走 clarify（普通轮，`execution_status=clarifying`，发 `clarification_required`，见 graph-spec.md §6.2/§6.3）；`safety_rejected` 仅用于真正的拒绝（解析失败/未知工具/schema 错误/预检规则失败）。
+- **参数不完整 ≠ 拒绝**：
+  - **Mutation**：缺参写 `pending_tool` prefills → Form Interrupt（见 graph-spec.md §6.2）；不发聊天 `clarification_required` 补业务字段。
+  - **HighRisk**：缺参走 clarify（普通轮，`clarification_required`，见 graph-spec.md §6.3）。
+  - `safety_rejected` 仅用于真正的拒绝（解析失败/未知工具/schema 类型错误/预检规则失败）。
 
 ### 1.3 结果与事件
 

@@ -58,7 +58,7 @@
 | `clarification_required` | 澄清卡片：列出缺失字段（如“请提供订单号”）+ 快捷补全选项。P0 中，前端可将 `missing` 包含 `phone` 或 `address` 的澄清映射为本地单次填写表单；无法唯一映射时仍使用文本澄清。表单旧信息来自只读 `GET /me/profile`，提交后仍通过 `POST /chat` 走后端流程 |
 | `form_required` | **Mutation Form**（Form Interrupt 投影）：按 `response_schema` / `fields` 渲染字段，**始终**展示 Order Picker 下拉 + `[确认]` `[取消]`；权威挂起态在服务端 interrupt，客户端不另建「Form Pending」库 |
 | `form_rejected` | 同一 `form_session_id` 的 Mutation Form 原地叠 errors（校验/业务预检失败），保留草稿，不新开无关表单 |
-| `confirmation_required` | 确认卡片：操作影响摘要 + `[确认]` `[取消]`（旧 Mutation 路径；主路径由 `form_required` 取代） |
+| `confirmation_required` | 确认卡片：操作影响摘要 + `[确认]` `[取消]`（**已弃用**的旧 Mutation 聊天确认；主路径为 `form_required`，保留仅为兼容） |
 | `confirmation_updated` | 确认卡片状态刷新（已确认 / 已取消） |
 | `approval_required` | 审批卡片：摘要 + “审批中”状态 + 到期时间（HighRisk） |
 | `approval_updated` | 审批卡片状态刷新（通过 / 拒绝 / 过期） |
