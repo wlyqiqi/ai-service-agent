@@ -82,7 +82,7 @@ Keep intent clarification (“change address or invoice?”) **outside** Mutatio
 - Good tests assert external behavior: events seen by the client, whether a write occurred, execution_status, and that Router did not re-classify a Form Resume. Do not assert internal private helper names or exact node count.
 - **Primary seam:** Conversation Runtime chat + resume E2E (same class of tests as existing mutation confirm / approval resume flows): form interrupt emitted → Confirm resume writes once → precheck failure re-interrupts with errors → Cancel does not write → plain text during interrupt does not write.
 - **Optional seam:** MutationGraph unit tests with Fake model and direct `Command(resume=...)` for state transitions without HTTP.
-- Prior art: existing mutation graph tests, approval resume paths in server/streaming tests, interrupt three-state coverage patterns, real_smoke mutation lanes (update after protocol change).
+- Prior art: existing mutation graph tests, approval resume paths in server/streaming tests, interrupt three-state coverage patterns, real_smoke mutation lanes / functional scenarios / real_model eval (T8: expect `form_required` / Form Resume, not Mutation `confirmation_required` or chat missing-field clarify).
 - Prefer offline Fake model + stub tools; live SiliconFlow smoke optional after protocol lands.
 - Regression: HighRisk approval path and Read path must not regress; Mutation must not still require chat clarification for happy-path address update when tool is known.
 

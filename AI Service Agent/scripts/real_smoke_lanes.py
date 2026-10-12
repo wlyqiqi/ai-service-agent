@@ -259,13 +259,26 @@ def lane_l1_read(client: httpx.Client, db_path: str) -> dict:
 
 
 def lane_l2_mutation_confirm(client: httpx.Client, db_path: str) -> dict:
+    """Mutation happy path: form_required → Form Resume Confirm → write once."""
     sid = new_session(client)
     code1, ev1 = chat_sse(client, sid, "订单 ORD-PAID-1 的收货地址改成北京市朝阳区")
     types1 = event_types(ev1)
-    confirm = any(e.get("type") == "confirmation_required" for e in ev1)
+    form_required = any(e.get("type") == "form_required" for e in ev1)
     done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
 
-    code2, ev2 = chat_sse(client, sid, "确认")
+    address = "北京市朝阳区"
+    resume = client.post(
+        f"{BASE}/actions/confirm",
+        json={
+            "conversation_id": sid,
+            "action": "confirm",
+            "order_id": "ORD-PAID-1",
+            "fields": {"address": address},
+        },
+    )
+    code2 = resume.status_code
+    body2 = resume.json() if resume.headers.get("content-type", "").startswith("application/json") else {}
+    ev2 = list(body2.get("events") or [])
     types2 = event_types(ev2)
     calls, results = count_tool_events(ev2, "update_address")
     tool_result_ev = next(
@@ -277,10 +290,10 @@ def lane_l2_mutation_confirm(client: httpx.Client, db_path: str) -> dict:
         None,
     )
     done2 = next((e for e in reversed(ev2) if e.get("type") == "done"), None)
-    final2 = (done2 or {}).get("data", {}).get("final")
+    final2 = body2.get("final") or (done2 or {}).get("data", {}).get("final")
     expected_final = completion_text(
         "update_address",
-        {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"},
+        {"order_id": "ORD-PAID-1", "address": address},
     )
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m.get("name") == "update_address"]
@@ -296,7 +309,7 @@ def lane_l2_mutation_confirm(client: httpx.Client, db_path: str) -> dict:
     )
     passed = (
         code1 == 200
-        and confirm
+        and form_required
         and done1 is not None
         and code2 == 200
         and calls == 1
@@ -315,7 +328,7 @@ def lane_l2_mutation_confirm(client: httpx.Client, db_path: str) -> dict:
         "turn1": {
             "http": code1,
             "timeline": types1,
-            "confirmation_required": confirm,
+            "form_required": form_required,
             "done_final": (done1 or {}).get("data", {}).get("final"),
         },
         "turn2": {
@@ -336,10 +349,12 @@ def lane_l2_mutation_confirm(client: httpx.Client, db_path: str) -> dict:
     }
 
 
-def lane_l3_mutation_clarify(client: httpx.Client, db_path: str) -> dict:
+def lane_l3_mutation_form_incomplete(client: httpx.Client, db_path: str) -> dict:
+    """Tool-known missing fields → Form Interrupt; Operation Clarify stays chat-only."""
     sid = new_session(client)
     code, events = chat_sse(client, sid, "我要改个地址")
     types = event_types(events)
+    form_required = any(e.get("type") == "form_required" for e in events)
     clarify = any(e.get("type") == "clarification_required" for e in events)
     confirm = any(e.get("type") == "confirmation_required" for e in events)
     write_tools = [
@@ -359,20 +374,22 @@ def lane_l3_mutation_clarify(client: httpx.Client, db_path: str) -> dict:
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     passed = (
         code == 200
-        and clarify
+        and form_required
+        and not clarify
         and not confirm
         and not write_tools
         and done is not None
-        and st["execution_status"] == "clarifying"
+        and st["execution_status"] == "waiting_confirmation"
         and thread_id_consistent(db_path, sid)
     )
     return {
         "id": "L3",
-        "name": "MutationClarify",
+        "name": "MutationFormIncomplete",
         "pass": passed,
         "session_id": sid,
         "http_status": code,
         "timeline": types,
+        "form_required": form_required,
         "clarification_required": clarify,
         "confirmation_required": confirm,
         "write_tool_calls": len(write_tools),
@@ -577,7 +594,10 @@ def write_reports(results: list[dict], db_path: str, started_at: str) -> tuple[P
         elif r["id"] == "L2":
             notes = f"tools={r.get('turn2', {}).get('tool_call')}/{r.get('turn2', {}).get('tool_result')}"
         elif r["id"] == "L3":
-            notes = f"clarify={r.get('clarification_required')} confirm={r.get('confirmation_required')}"
+            notes = (
+                f"form={r.get('form_required')} clarify={r.get('clarification_required')} "
+                f"confirm={r.get('confirmation_required')}"
+            )
         elif r["id"] == "L4":
             notes = f"approval_id={r.get('approval_id')} tools={r.get('tool_messages')}"
         elif r["id"] == "L5":
@@ -647,7 +667,7 @@ def main() -> int:
             runners = [
                 ("L1", "Read", lane_l1_read),
                 ("L2", "MutationConfirm", lane_l2_mutation_confirm),
-                ("L3", "MutationClarify", lane_l3_mutation_clarify),
+                ("L3", "MutationFormIncomplete", lane_l3_mutation_form_incomplete),
                 ("L4", "HighRiskApprove", lane_l4_highrisk_approve),
                 ("L5", "HighRiskClarify", lane_l5_highrisk_clarify),
                 ("L6", "HandoffResolve", lane_l6_handoff),

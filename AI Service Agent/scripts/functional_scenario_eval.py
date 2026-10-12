@@ -81,6 +81,7 @@ def parse_sse(text: str) -> list[dict]:
 def watched_events(events: list[dict]) -> list[str]:
     watched = {
         "handoff_created", "clarification_required", "confirmation_required",
+        "form_required", "form_rejected",
         "approval_required", "confirmation_updated", "approval_updated",
         "safety_rejected", "tool_call", "tool_result", "done", "error", "token",
     }
@@ -90,6 +91,23 @@ def watched_events(events: list[dict]) -> list[str]:
         if t in watched and t != "token":
             out.append(t)
     return out
+
+
+def build_form_resume_body(session_id: str, turn: dict) -> dict:
+    """Map scenario confirm/cancel turns onto POST /actions/confirm (Form Resume).
+
+    Mutation Form waits on checkpoint interrupt; chat「确认」is not Form Resume
+    (CONTEXT.md Form-Only Write / Form Resume).
+    """
+    action = turn.get("action")
+    normalized = "cancel" if action == "cancel" else "confirm"
+    body: dict = {"conversation_id": session_id, "action": normalized}
+    if normalized == "confirm":
+        if turn.get("order_id") is not None:
+            body["order_id"] = turn["order_id"]
+        if turn.get("fields"):
+            body["fields"] = turn["fields"]
+    return body
 
 
 def tool_names(events: list[dict]) -> set[str]:
@@ -284,10 +302,17 @@ def run_case(client: httpx.Client, case: dict) -> dict:
 
     for turn in case.get("turns") or []:
         action = turn.get("action")
-        if action == "confirm":
-            code, ev = chat(client, sid, "确认")
-        elif action == "cancel":
-            code, ev = chat(client, sid, "取消")
+        if action in {"confirm", "cancel"}:
+            # Form Resume (and legacy confirmation_required) via /actions/confirm.
+            r = client.post(f"{BASE}/actions/confirm", json=build_form_resume_body(sid, turn))
+            code = r.status_code
+            if code == 200 and r.headers.get("content-type", "").startswith("application/json"):
+                body = r.json()
+                ev = list(body.get("events") or [])
+                if not any(e.get("type") == "done" for e in ev) and body.get("final") is not None:
+                    ev.append({"type": "done", "data": {"final": body.get("final")}})
+            else:
+                ev = [{"type": "error", "data": {"code": "confirm_http", "message": r.text[:200]}}]
         elif action == "approve":
             approval_id = next(
                 ((e.get("data") or {}).get("approval_id") for e in all_events if e.get("type") == "approval_required"),

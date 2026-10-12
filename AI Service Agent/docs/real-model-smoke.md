@@ -28,8 +28,8 @@
 
 ## 3. 全链路（Mutation / HighRisk）
 
-- mutation：`把收货地址改成北京市朝阳区` → 必须到达 `confirmation_required` interrupt，
-  且 summary 中 `address` 非 None。
+- mutation：`把收货地址改成北京市朝阳区` → 必须到达 Form Interrupt（SSE `form_required`），
+  且 summary / prefills 中 `address` 非 None；Confirm 走 Form Resume（`/actions/confirm`），不再发 `confirmation_required`。
 - high_risk：`订单10086申请退款` → 必须到达 `approval_required` interrupt
   （预检通过，不再因缺参被 invalid_args 误拒）。
 - Router 期望：`account/mutation`、`order/high_risk`（confidence ≥ 阈值 0.6）；Guard 应为 pass。
@@ -52,7 +52,7 @@
 | 场景 | 输入 | SSE timeline（实测） | 关键断言 | 结果 |
 |---|---|---|---|---|
 | FAQ/Read | 你好，有什么商品推荐吗？ | token×88 → tool_call → tool_result → done | done.final 非空；read agent 实际调用 kb_search | PASS |
-| Mutation | 把收货地址改成北京市朝阳区 → 确认 | turn1: confirmation_required → done；turn2: confirmation_updated → tool_call → tool_result → done | 中断→resume→工具恰执行 1 次；最终 execution_status=completed | PASS |
+| Mutation | 把收货地址改成北京市朝阳区 → Form Resume Confirm | turn1: form_required → done；turn2 `/actions/confirm`: tool_call → tool_result → done | Form Interrupt→Form Resume→工具恰执行 1 次；最终 execution_status=completed | PASS（T8 对齐后） |
 | HighRisk | 订单10086申请退款 → /approvals/{id}/approve | approval_required → done（审批走 HTTP 端点） | 审批 pending→approved；refund_apply 恰执行 1 次；无残留中断 | PASS |
 | Handoff | 我要转人工 → /handoffs/{id}/resolve → 你好，还在吗？ | token(转接文案) → handoff_created → error(ModeChanged) → done；resolve 后新 turn：token×24 → done | mode human→ai；record resolved；AI 恢复接管正常回复 | PASS |
 
@@ -123,8 +123,8 @@
 | 场景 | 输入 | SSE timeline / 实测 | 结果 |
 |---|---|---|---|
 | FAQ/Read | 你好，有什么商品推荐吗？ | token×N → tool_call → tool_result → done；read agent 实际调用 kb_search；done.final 非空 | PASS |
-| Mutation | 把收货地址改成北京市朝阳区 → 确认 | turn1 confirmation_required → done；turn2 确认 → confirmation_updated → tool_call → tool_result → done。真实模型选 `update_address`、`args.address=北京市朝阳区`；工具恰执行 1 次；`done.final="操作已完成。"` + Message Store 落库 | PASS |
-| MutationClarifyMultiTurn | 我要改个地址 → 新地址是北京市朝阳区 → 确认 | turn1 clarification_required（缺参澄清，未编造地址）、clarify_count=1；turn2 confirmation_required；turn3 确认 → 工具恰执行 1 次 → completed、clarify_count 清零 | PASS |
+| Mutation | 把收货地址改成北京市朝阳区 → Form Resume Confirm | turn1 `form_required` → done；turn2 `/actions/confirm` → tool_call → tool_result → done。真实模型选 `update_address`；工具恰执行 1 次；完成文案落 Message Store | PASS（T8：不再 `confirmation_required`） |
+| MutationFormIncompleteConfirm | 我要改个地址 → Form Resume Confirm | turn1 `form_required`（tool 已知缺参，不发聊天 `clarification_required`）；turn2 `/actions/confirm` 写库一次 → completed | PASS（T8） |
 | Clarify0076 | 退了吧 | clarification_required、无 approval_required；`done.final="请提供：订单号。"`（缺参不编造 order_id） | PASS |
 | HighRisk | 订单10086申请退款 → /approvals/{id}/approve | approval_required → approve → refund_apply 恰执行 1 次；审批通过文案落 Message Store | PASS |
 | Handoff | 我要转人工 → /handoffs/{id}/resolve → 你好，还在吗？ | mode human→ai；AI 恢复自然回复（"在的呢，我一直都在～"） | PASS |

@@ -93,6 +93,7 @@ def parse_sse(text: str) -> list[dict]:
 def required_events(events: list[dict]) -> list[str]:
     watched = {
         "handoff_created", "clarification_required", "confirmation_required",
+        "form_required", "form_rejected",
         "approval_required", "tool_call", "tool_result", "done", "error",
     }
     return [event.get("type", "") for event in events if event.get("type", "") in watched]
@@ -249,10 +250,28 @@ def evaluate_graph(client: httpx.Client, db_path: str, case: dict) -> dict:
     status_code, events = chat(client, session_id, case["input"])
     timeline = [required_events(events)]
 
-    if case.get("confirm") and any(event.get("type") == "confirmation_required" for event in events):
-        status, confirmation_events = chat(client, session_id, "确认")
-        if status != 200:
-            status_code = status
+    pending_form = any(
+        event.get("type") in {"form_required", "form_rejected", "confirmation_required"}
+        for event in events
+    )
+    if case.get("confirm") and pending_form:
+        # Form Resume via /actions/confirm (Form-Only Write); not chat「确认」.
+        payload: dict = {"conversation_id": session_id, "action": "confirm"}
+        if case.get("confirm_order_id") is not None:
+            payload["order_id"] = case["confirm_order_id"]
+        if case.get("confirm_fields"):
+            payload["fields"] = case["confirm_fields"]
+        response = client.post(f"{BASE}/actions/confirm", json=payload)
+        if response.status_code != 200:
+            status_code = response.status_code
+            confirmation_events = [
+                {"type": "error", "data": {"code": "confirm_http", "message": response.text[:200]}}
+            ]
+        else:
+            body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            confirmation_events = list(body.get("events") or [])
+            if not any(e.get("type") == "done" for e in confirmation_events) and body.get("final") is not None:
+                confirmation_events.append({"type": "done", "data": {"final": body.get("final")}})
         events.extend(confirmation_events)
         timeline.append(required_events(confirmation_events))
 
