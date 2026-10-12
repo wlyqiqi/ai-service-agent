@@ -19,6 +19,7 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
+from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
     ApprovalExpired,
@@ -490,11 +491,15 @@ def create_app(
                         elif approval_state == "expired":
                             resume_payload = {"result": "expired"}   # HighRiskGraph 过期收尾
                         elif is_form_interrupt(it):
-                            # 纯文本不是 Form Resume。挂起仍以 checkpoint interrupt 为准，只重放投影。
+                            # 纯文本不是 Form Resume。挂起仍以 checkpoint interrupt 为准；
+                            # 重放 form_* 投影，并给出 Form-Only Write 友好引导。
+                            tip = form_plain_text_refuse_text()
+                            yield {"type": "token", "data": {"text": tip}}
                             projected = project_form_interrupt(st.interrupts[0])
                             if projected:
                                 yield projected
-                            yield {"type": "done", "data": {"final": None, "message_id": None}}
+                            messages_store.append(conv_id, "assistant", tip)
+                            yield {"type": "done", "data": {"final": tip, "message_id": None}}
                             return
                         else:
                             resume_payload = resolve_resume_payload(it, body.message)

@@ -190,22 +190,60 @@ def make_safety_check_node(tier: str, registry: ToolRegistry) -> Callable[[dict]
     return safety_check
 
 
+def form_errors_from_reason(
+    reason: str,
+    pending: dict,
+    precheck_data: dict | None = None,
+) -> dict:
+    """Map recheck/validate failure onto Mutation Form ``errors`` (event-spec §2.2)."""
+    status = None
+    if isinstance(precheck_data, dict):
+        status = precheck_data.get("status")
+    text = precheck_reject_text(reason, status)
+    if reason == "invalid_args":
+        args = pending.get("args") or {}
+        empty = [key for key, value in args.items() if key != "request_id" and value == ""]
+        if len(empty) == 1:
+            return {empty[0]: text}
+        if empty:
+            return {key: text for key in empty}
+    if reason in (
+        "address_not_editable",
+        "order_not_found",
+        "order_state_changed",
+        "invoice_not_allowed",
+        "invoice_amount_exceeds",
+        "data_boundary",
+    ):
+        return {"order_id": text}
+    return {"_form": text}
+
+
 def make_recheck_node(
     tier: str,
     registry: ToolRegistry,
     order_repository: OrderRepository | None = None,
+    *,
+    form_reinterrupt: bool = False,
 ) -> Callable[[dict], dict]:
     """恢复后、执行前最小不变量 recheck（D6/D7）：request_id 存在、工具仍在档、schema 仍有效。
     Mutation Confirm 会先用 Form Resume 字段值改写 pending_tool.args（系统 request_id 保留）；
     版本冲突只比较同一 order_id。换了一笔 Order Picker 订单时按新订单重做业务预检。
+    ``form_reinterrupt=True``（Mutation Form）：失败写入 ``form_errors``，不发
+    ``safety_rejected``、不结束 Form Interrupt，由条件边回到 form_interrupt 再挂起。
     完整语义校验见 safety-spec 后续增量。"""
     def recheck(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
         ctx = state.get("context", {})
-        ctx = {key: value for key, value in ctx.items() if key != "recheck_reason"}
+        ctx = {
+            key: value
+            for key, value in ctx.items()
+            if key not in ("recheck_reason", "form_errors")
+        }
         pending = ctx.get("pending_tool") or {}
         reason = _check(pending, tier, registry, state.get("user_id", ""))
         if not pending.get("request_id"):
             reason = reason or "missing_request_id"
+        fresh_data = None
         if reason is None and (pending.get("args") or {}).get("order_id"):
             try:
                 snapshot = _repository(runtime, order_repository).get_order_snapshot(
@@ -231,6 +269,14 @@ def make_recheck_node(
                     if reason is None:
                         ctx = {**ctx, "precheck_data": fresh_data}
         if reason:
+            if form_reinterrupt:
+                errors = form_errors_from_reason(
+                    reason, pending, fresh_data if fresh_data is not None else ctx.get("precheck_data"),
+                )
+                return {
+                    "context": {**ctx, "recheck_reason": reason, "form_errors": errors},
+                    "execution_status": "waiting_confirmation",
+                }
             get_stream_writer()({"type": "safety_rejected", "data": {"rule": "recheck", "reason": reason}})
             return {"context": {**ctx, "recheck_reason": reason}, "execution_status": "completed"}
         return {"context": {**ctx, "recheck": "ok"}}

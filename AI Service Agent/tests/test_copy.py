@@ -66,6 +66,13 @@ def test_completion_text_address_shows_order_and_new_address():
     assert "已修改成功" in text
 
 
+def test_form_plain_text_refuse_text():
+    from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
+
+    text = form_plain_text_refuse_text()
+    assert "表单" in text and ("纯文本" in text or "不会改" in text)
+
+
 def test_operation_cancelled_text():
     text = operation_cancelled_text()
     assert "取消" in text and "未" in text
