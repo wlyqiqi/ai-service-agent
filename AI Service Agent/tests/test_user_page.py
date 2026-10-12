@@ -529,7 +529,231 @@ def test_event_types_cover_spec(tmp_path):
         "confirmation_required", "confirmation_updated", "approval_required",
         "approval_updated", "safety_rejected", "handoff_created",
         "handoff_resolved", "error", "done",
+        "form_required", "form_rejected",
     ])
+
+
+# --- Mutation Form T6: form_required / form_rejected → Form Resume (#18) ---
+
+_FORM_REQUIRED_EVENT = {
+    "type": "form_required",
+    "data": {
+        "tool": "update_address",
+        "form_session_id": "fs-1",
+        "summary": "修改收货地址",
+        "order_candidates": [
+            {"order_id": "ORD-PAID-1", "status_display": "已付款"},
+            {"order_id": "ORD-REFUND-1", "status_display": "已付款"},
+        ],
+        "response_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"enum": ["confirm", "cancel"]},
+                "order_id": {"type": "string"},
+                "address": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+def test_build_mutation_form_always_includes_order_picker(tmp_path):
+    """Order Picker is always a dropdown, even for a single candidate."""
+    out = _run_js(
+        "var data=" + json.dumps({
+            "tool": "update_address",
+            "form_session_id": "fs-solo",
+            "order_candidates": [{"order_id": "ORD-1", "status_display": "已付款"}],
+            "response_schema": {
+                "properties": {
+                    "action": {"enum": ["confirm", "cancel"]},
+                    "order_id": {"type": "string"},
+                    "address": {"type": "string"},
+                },
+            },
+        }) + ";"
+        "var form=UserPage.buildMutationFormContent(data);"
+        "var order=form.fields.find(function(f){return f.name==='order_id';});"
+        "({kind:form.kind,orderType:order&&order.type,options:order&&order.options,"
+        "names:form.fields.map(function(f){return f.name;}),"
+        "session:form.form_session_id})",
+        tmp_path,
+    )
+    assert out["kind"] == "mutation_form"
+    assert out["orderType"] == "select"
+    assert out["options"] == [{"value": "ORD-1", "label": "ORD-1 · 已付款"}]
+    assert out["names"][0] == "order_id"
+    assert "address" in out["names"]
+    assert out["session"] == "fs-solo"
+
+
+def test_apply_form_required_renders_mutation_form_card(tmp_path):
+    out = _run_js(
+        "var s=UserPage.applyEvent(UserPage.createInitialStore(),"
+        + json.dumps(_FORM_REQUIRED_EVENT) + ");"
+        "var v=UserPage.buildView(s);"
+        "var text=JSON.stringify(v.messages[0]);"
+        "var actions=[];"
+        "function scan(n){if(n&&n.tag==='button'&&n.attrs)actions.push(n.attrs['data-action']);"
+        "if(n&&n.children)(n.children||[]).forEach(scan);}"
+        "scan(v.messages[0]);"
+        "({kind:s.messages[0].kind,session:s.messages[0].content.form_session_id,"
+        "class:v.messages[0].attrs.class,actions:actions,text:text,"
+        "pa:s.pendingAction&&s.pendingAction.kind})",
+        tmp_path,
+    )
+    assert out["kind"] == "mutation_form"
+    assert out["session"] == "fs-1"
+    assert out["class"] == "card form-card mutation-form-card"
+    assert "选择订单" in out["text"]
+    assert "确认" in out["text"]
+    assert "取消" in out["text"]
+    assert "mutation-form-confirm" in out["actions"]
+    assert "mutation-form-cancel" in out["actions"]
+    assert out["pa"] == "mutation_form"
+
+
+def test_form_rejected_overlays_same_form_session(tmp_path):
+    rejected = {
+        "type": "form_rejected",
+        "data": {
+            **_FORM_REQUIRED_EVENT["data"],
+            "errors": {"address": "该订单当前不可修改收货地址"},
+        },
+    }
+    out = _run_js(
+        "var s=UserPage.applyEvent(UserPage.createInitialStore(),"
+        + json.dumps(_FORM_REQUIRED_EVENT) + ");"
+        "s.messages[0].content.values={order_id:'ORD-PAID-1',address:'draft addr'};"
+        "s=UserPage.applyEvent(s," + json.dumps(rejected) + ");"
+        "({n:s.messages.length,kind:s.messages[0].kind,"
+        "session:s.messages[0].content.form_session_id,"
+        "errors:s.messages[0].content.errors,"
+        "values:s.messages[0].content.values,"
+        "status:s.messages[0].meta.status})",
+        tmp_path,
+    )
+    assert out["n"] == 1
+    assert out["kind"] == "mutation_form"
+    assert out["session"] == "fs-1"
+    assert out["errors"] == {"address": "该订单当前不可修改收货地址"}
+    assert out["values"] == {"order_id": "ORD-PAID-1", "address": "draft addr"}
+    assert out["status"] == "pending"
+
+
+def test_api_confirm_sends_form_resume_fields(tmp_path):
+    """Confirm Form Resume uses /actions/confirm with structured fields, not chat text."""
+    out = _run_js(
+        "var sent=null;"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,body:opts.body};"
+        "return {ok:true,status:200,json:async function(){return {ok:true,action:'confirm',events:[],final:'ok'};}};},"
+        "baseUrl:'http://x'});"
+        "await api.confirm('c1','confirm',{order_id:'ORD-1',fields:{address:'新地址',order_id:'ORD-1'}});"
+        "({url:sent.url,body:JSON.parse(sent.body)})",
+        tmp_path,
+    )
+    assert out["url"] == "http://x/actions/confirm"
+    assert out["body"] == {
+        "conversation_id": "c1",
+        "action": "confirm",
+        "order_id": "ORD-1",
+        "fields": {"address": "新地址", "order_id": "ORD-1"},
+    }
+
+
+def test_api_confirm_cancel_form_resume_omits_fields(tmp_path):
+    out = _run_js(
+        "var sent=null;"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,body:opts.body};"
+        "return {ok:true,status:200,json:async function(){return {ok:true,action:'cancel',events:[],final:'已取消'};}};},"
+        "baseUrl:'http://x'});"
+        "await api.confirm('c1','cancel');"
+        "({url:sent.url,body:JSON.parse(sent.body)})",
+        tmp_path,
+    )
+    assert out["url"] == "http://x/actions/confirm"
+    assert out["body"] == {"conversation_id": "c1", "action": "cancel"}
+
+
+def test_apply_form_resume_result_marks_form_and_shows_final(tmp_path):
+    out = _run_js(
+        "var s=UserPage.applyEvent(UserPage.createInitialStore(),"
+        + json.dumps(_FORM_REQUIRED_EVENT) + ");"
+        "s=UserPage.applyFormResumeResult(s,{ok:true,action:'confirm',events:["
+        "{type:'tool_call',data:{name:'update_address',args:{}}},"
+        "{type:'tool_result',data:{name:'update_address',ok:true,summary:'ok'}},"
+        "{type:'done',data:{final:'收货地址已修改成功'}}],"
+        "final:'收货地址已修改成功'},'fs-1');"
+        "({kinds:s.messages.map(function(m){return m.kind;}),"
+        "status:s.messages[0].meta.status,"
+        "last:s.messages[s.messages.length-1].content,"
+        "pa:s.pendingAction})",
+        tmp_path,
+    )
+    assert out["kinds"] == ["mutation_form", "text"]
+    assert out["status"] == "completed"
+    assert "收货地址已修改成功" in out["last"]
+    assert out["pa"] is None or out["pa"].get("status") == "completed"
+
+
+def test_apply_form_resume_result_form_rejected_keeps_session(tmp_path):
+    out = _run_js(
+        "var s=UserPage.applyEvent(UserPage.createInitialStore(),"
+        + json.dumps(_FORM_REQUIRED_EVENT) + ");"
+        "s=UserPage.applyFormResumeResult(s,{ok:true,action:'confirm',events:["
+        "{type:'form_rejected',data:" + json.dumps(_FORM_REQUIRED_EVENT["data"] | {"errors": {"order_id": "订单不可改"}}) + "},"
+        "{type:'done',data:{final:true}}],final:null},'fs-1');"
+        "({n:s.messages.filter(function(m){return m.kind==='mutation_form';}).length,"
+        "errors:s.messages[0].content.errors,status:s.messages[0].meta.status})",
+        tmp_path,
+    )
+    assert out["n"] == 1
+    assert out["errors"] == {"order_id": "订单不可改"}
+    assert out["status"] == "pending"
+
+
+def test_mutation_form_html_wires_confirm_cancel_to_actions_confirm(html: str):
+    assert "mutation-form-confirm" in html
+    assert "mutation-form-cancel" in html
+    assert "applyFormResumeResult" in html
+    assert "buildMutationFormContent" in html
+    # Must not route Mutation Form Confirm through free-text chat.
+    assert "formatFormSubmission" in html  # legacy clarify forms may still exist
+    assert "mutation-form-confirm" in html
+    assert "/actions/confirm" in html
+
+
+def test_user_page_form_resume_payload_matches_runtime_confirm_contract(tmp_path):
+    """Seam check: UI Form Resume body shape matches /actions/confirm (issue #18)."""
+    out = _run_js(
+        "var s=UserPage.applyEvent(UserPage.createInitialStore(),"
+        + json.dumps(_FORM_REQUIRED_EVENT) + ");"
+        "var form=s.messages[0].content;"
+        "var values={order_id:'ORD-REFUND-1',address:'表单确认的新地址 88 号'};"
+        "form.values=values;"
+        "var sent=null;"
+        "var api=UserPage.createApi({fetchImpl:async function(url,opts){sent={url:url,body:JSON.parse(opts.body)};"
+        "return {ok:true,status:200,json:async function(){return {"
+        "ok:true,action:'confirm',"
+        "events:[{type:'tool_call',data:{name:'update_address',args:values}},"
+        "{type:'tool_result',data:{name:'update_address',ok:true,summary:'ok'}},"
+        "{type:'done',data:{final:'收货地址已修改成功'}}],"
+        "final:'收货地址已修改成功'};}};},baseUrl:''});"
+        "var result=await api.confirm('conv-1','confirm',{order_id:values.order_id,fields:values});"
+        "s=UserPage.applyFormResumeResult(s,result,form.form_session_id);"
+        "({sent:sent,status:s.messages[0].meta.status,"
+        "kinds:s.messages.map(function(m){return m.kind;})})",
+        tmp_path,
+    )
+    assert out["sent"]["url"] == "/actions/confirm"
+    assert out["sent"]["body"] == {
+        "conversation_id": "conv-1",
+        "action": "confirm",
+        "order_id": "ORD-REFUND-1",
+        "fields": {"order_id": "ORD-REFUND-1", "address": "表单确认的新地址 88 号"},
+    }
+    assert out["status"] == "completed"
+    assert out["kinds"] == ["mutation_form", "text"]
 
 
 def test_build_view_header_status(tmp_path):
@@ -637,6 +861,7 @@ def test_mock_stream_covers_all_event_types(tmp_path):
     )
     assert out == sorted([
         "token", "tool_call", "tool_result", "clarification_required",
+        "form_required",
         "confirmation_required", "confirmation_updated", "approval_required",
         "approval_updated", "safety_rejected", "handoff_created",
         "handoff_resolved", "error", "done",
@@ -1010,7 +1235,7 @@ def test_mock_send_message_events_spaced_by_delay(tmp_path):
         "({n:times.length,gap:times[1]-times[0]})",
         tmp_path,
     )
-    assert out["n"] == 12  # mockStream 13 种事件去掉 handoff_resolved
+    assert out["n"] == 13  # mockStream 14 种事件去掉 handoff_resolved
     assert out["gap"] >= 25
 
 def test_api_create_session_sends_user_id(tmp_path):

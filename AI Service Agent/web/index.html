@@ -428,7 +428,27 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     'confirmation_required', 'confirmation_updated', 'approval_required',
     'approval_updated', 'safety_rejected', 'handoff_created',
     'handoff_resolved', 'error', 'done',
+    'form_required', 'form_rejected',
   ];
+
+  var MUTATION_FORM_FIELD_LABELS = {
+    order_id: '选择订单',
+    address: '新收货地址',
+    phone: '新手机号',
+    note: '订单备注',
+    amount: '开票金额',
+    company: '公司名称',
+    tax_no: '税号',
+    reason: '原因',
+  };
+
+  var MUTATION_FORM_TITLES = {
+    update_address: '修改收货地址',
+    update_phone: '修改联系电话',
+    update_order_note: '修改订单备注',
+    create_invoice: '申请开票',
+    create_service_ticket: '申请售后',
+  };
 
   function msgId() {
     return 'm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -557,6 +577,166 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
     return '';
   }
 
+  function _orderPickerOptions(candidates) {
+    return (candidates || []).map(function (item) {
+      var id = item.order_id || item.value || '';
+      var status = item.status_display || item.status || '订单';
+      return { value: id, label: id + ' · ' + status };
+    });
+  }
+
+  function _fieldTypeForName(name) {
+    if (name === 'phone') return 'tel';
+    if (name === 'amount') return 'number';
+    return 'text';
+  }
+
+  function buildMutationFormContent(data) {
+    var payload = data || {};
+    var tool = payload.tool || '';
+    var schema = payload.response_schema || {};
+    var props = schema.properties || {};
+    var prefills = payload.prefills || {};
+    var explicitFields = payload.fields;
+    var candidates = payload.order_candidates || [];
+    var fields = [];
+
+    // Order Picker always present (Mutation Form / CONTEXT.md); never auto-select sole order.
+    fields.push({
+      name: 'order_id',
+      label: MUTATION_FORM_FIELD_LABELS.order_id,
+      type: 'select',
+      required: true,
+      options: _orderPickerOptions(candidates),
+    });
+
+    if (Array.isArray(explicitFields) && explicitFields.length) {
+      explicitFields.forEach(function (field) {
+        if (!field || !field.name || field.name === 'order_id' || field.name === 'action' || field.name === 'request_id') {
+          return;
+        }
+        fields.push(field);
+      });
+    } else {
+      Object.keys(props).forEach(function (name) {
+        if (name === 'action' || name === 'request_id' || name === 'order_id') return;
+        fields.push({
+          name: name,
+          label: MUTATION_FORM_FIELD_LABELS[name] || name,
+          type: _fieldTypeForName(name),
+          required: true,
+        });
+      });
+    }
+
+    return {
+      kind: 'mutation_form',
+      tool: tool,
+      title: MUTATION_FORM_TITLES[tool] || (payload.summary || '请填写变更信息'),
+      summary: payload.summary || '',
+      form_session_id: payload.form_session_id || null,
+      order_candidates: candidates,
+      fields: fields,
+      prefills: prefills,
+      values: {},
+      errors: payload.errors || null,
+      response_schema: schema,
+      confirm_label: '确认',
+      cancel_label: '取消',
+    };
+  }
+
+  function formatMutationFormErrors(errors) {
+    if (!errors) return '';
+    if (typeof errors === 'string') return errors;
+    if (Array.isArray(errors)) {
+      return errors.map(function (item) {
+        if (typeof item === 'string') return item;
+        if (item && item.message) return item.message;
+        return JSON.stringify(item);
+      }).filter(Boolean).join('；');
+    }
+    if (typeof errors === 'object') {
+      return Object.keys(errors).map(function (key) {
+        var label = MUTATION_FORM_FIELD_LABELS[key] || key;
+        return label + '：' + errors[key];
+      }).join('；');
+    }
+    return String(errors);
+  }
+
+  function findMutationFormIndex(messages, formSessionId) {
+    if (!formSessionId) return -1;
+    for (var i = messages.length - 1; i >= 0; i--) {
+      var msg = messages[i];
+      if (msg.kind === 'mutation_form' && msg.content && msg.content.form_session_id === formSessionId) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  function applyMutationFormEvent(store, event) {
+    var data = event.data || {};
+    var content = buildMutationFormContent(data);
+    var idx = findMutationFormIndex(store.messages, content.form_session_id);
+    if (idx >= 0) {
+      var prev = store.messages[idx];
+      content.values = prev.content.values || {};
+      // Keep draft values over empty prefills when form_rejected overlays the same session.
+      store.messages[idx] = {
+        id: prev.id,
+        role: 'assistant',
+        kind: 'mutation_form',
+        content: content,
+        meta: { status: 'pending' },
+      };
+    } else {
+      store.messages.push({
+        id: msgId(),
+        role: 'assistant',
+        kind: 'mutation_form',
+        content: content,
+        meta: { status: 'pending' },
+      });
+    }
+    store.pendingAction = {
+      kind: 'mutation_form',
+      form_session_id: content.form_session_id,
+      status: 'pending',
+    };
+    return store;
+  }
+
+  function applyFormResumeResult(store, result, formSessionId) {
+    var next = JSON.parse(JSON.stringify(store));
+    var events = result.events || [];
+    var sawFormRejected = false;
+    events.forEach(function (event) {
+      if (event.type === 'tool_call' || event.type === 'tool_result') return;
+      if (event.type === 'form_rejected') sawFormRejected = true;
+      next = applyEvent(next, event);
+    });
+    var idx = findMutationFormIndex(next.messages, formSessionId);
+    if (idx >= 0 && !sawFormRejected) {
+      var status = (result.action === 'cancel' || result.action === 'canceled') ? 'canceled' : 'completed';
+      next.messages[idx].meta.status = status;
+      if (next.pendingAction && next.pendingAction.kind === 'mutation_form' &&
+          next.pendingAction.form_session_id === formSessionId) {
+        next.pendingAction = null;
+      }
+    }
+    if (result.final && typeof result.final === 'string') {
+      var last = next.messages[next.messages.length - 1];
+      var already = last && last.kind === 'text' && last.role === 'assistant' && last.content === result.final;
+      if (!already) {
+        next.messages.push({ id: msgId(), role: 'assistant', kind: 'text', content: result.final, meta: {} });
+      }
+    }
+    next.conn.status = 'idle';
+    return next;
+  }
+
   function applyConfirmedAction(store, result) {
     var next = JSON.parse(JSON.stringify(store));
     var hasFinal = false;
@@ -658,6 +838,9 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         }
         break;
       }
+      case 'form_required':
+      case 'form_rejected':
+        return applyMutationFormEvent(s, event);
       case 'confirmation_required':
         s.pendingAction = { kind: 'confirm', status: 'pending', summary: data.summary || '' };
         s.messages.push({ id: msgId(), role: 'assistant', kind: 'confirm',
@@ -713,6 +896,8 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         if (typeof data.final === 'string' && data.final) {
           var last = s.messages[s.messages.length - 1];
           if (last && last.kind === 'form' && last.meta.status === 'pending') return s;
+          if (last && last.kind === 'mutation_form' &&
+              (last.meta.status === 'pending' || last.meta.status === 'submitting')) return s;
           var alreadyShown = last && last.kind === 'text' && last.role === 'assistant' &&
             last.content === data.final;
           if (!alreadyShown) {
@@ -792,6 +977,88 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
             { tag: 'button', attrs: buttonAttrs, children: [m.content.submit_label] },
           ] },
         ] };
+      }
+      case 'mutation_form': {
+        var draft = m.content.values || {};
+        var prefills = m.content.prefills || {};
+        var mutFields = (m.content.fields || []).map(function (field) {
+          var current = draft[field.name];
+          if (current == null || current === '') current = prefills[field.name];
+          var attrs = {
+            name: field.name,
+            type: field.type || 'text',
+            'data-form-field': field.name,
+            'aria-label': field.label,
+          };
+          if (field.required) attrs.required = 'required';
+          if (field.type === 'select') {
+            delete attrs.type;
+            var options = [{ tag: 'option', attrs: { value: '' }, children: ['请选择订单'] }].concat(
+              (field.options || []).map(function (option) {
+                var optAttrs = { value: option.value };
+                if (String(current || '') === String(option.value)) optAttrs.selected = 'selected';
+                return { tag: 'option', attrs: optAttrs, children: [option.label] };
+              })
+            );
+            return { tag: 'div', children: [
+              { tag: 'label', children: [field.label] },
+              { tag: 'select', attrs: attrs, children: options },
+            ] };
+          }
+          if (current != null && current !== '') attrs.value = String(current);
+          return { tag: 'div', children: [
+            { tag: 'label', children: [field.label] },
+            { tag: 'input', attrs: attrs },
+          ] };
+        });
+        var errorText = formatMutationFormErrors(m.content.errors);
+        var interactive = m.meta.status === 'pending';
+        var confirmAttrs = {
+          class: 'btn primary',
+          'data-action': 'mutation-form-confirm',
+          'data-form-id': m.id,
+        };
+        var cancelAttrs = {
+          class: 'btn ghost',
+          'data-action': 'mutation-form-cancel',
+          'data-form-id': m.id,
+        };
+        if (!interactive) {
+          confirmAttrs.disabled = 'disabled';
+          cancelAttrs.disabled = 'disabled';
+        }
+        var mutKids = [
+          { tag: 'h4', children: [m.content.title || '请填写变更信息'] },
+        ];
+        if (m.content.summary) {
+          mutKids.push({ tag: 'p', children: [m.content.summary] });
+        }
+        mutKids.push({ tag: 'div', children: mutFields });
+        mutKids.push({
+          tag: 'div',
+          attrs: { class: 'form-error', style: errorText ? 'display:block' : 'display:none' },
+          children: [errorText || ''],
+        });
+        if (interactive || m.meta.status === 'submitting') {
+          mutKids.push({ tag: 'div', attrs: { class: 'row' }, children: [
+            { tag: 'button', attrs: confirmAttrs, children: [m.content.confirm_label || '确认'] },
+            { tag: 'button', attrs: cancelAttrs, children: [m.content.cancel_label || '取消'] },
+          ] });
+        } else {
+          mutKids.push({
+            tag: 'p',
+            children: [m.meta.status === 'canceled' ? '已取消' : '已提交'],
+          });
+        }
+        return {
+          tag: 'div',
+          attrs: {
+            class: 'card form-card mutation-form-card',
+            'data-form-id': m.id,
+            'data-form-session-id': m.content.form_session_id || '',
+          },
+          children: mutKids,
+        };
       }
       case 'clarify':
         var missing = m.content.missing || [];
@@ -950,10 +1217,17 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       return { ok: true };
     }
 
-    async function confirm(conversationId, action) {
+    async function confirm(conversationId, action, options) {
+      var body = { conversation_id: conversationId, action: action };
+      var opts = options || {};
+      // Form Resume Confirm carries structured fields + Order Picker order_id.
+      if (action === 'confirm' || action === 'confirmed') {
+        if (opts.order_id != null) body.order_id = opts.order_id;
+        if (opts.fields && typeof opts.fields === 'object') body.fields = opts.fields;
+      }
       var r = await fetchImpl(base + '/actions/confirm', {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ conversation_id: conversationId, action: action }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) throw apiError('CONFIRM_FAILED', r);
       return await r.json();
@@ -1041,7 +1315,27 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
         }
         return { ok: true };
       },
-      async confirm() { return { ok: true }; },
+      async confirm(conversationId, action, options) {
+        var opts = options || {};
+        if (action === 'confirm' || action === 'confirmed') {
+          return {
+            ok: true,
+            action: 'confirm',
+            final: '（mock）变更已提交',
+            events: [
+              { type: 'tool_call', data: { name: 'update_address', args: opts.fields || {} } },
+              { type: 'tool_result', data: { name: 'update_address', ok: true, summary: 'ok' } },
+              { type: 'done', data: { final: '（mock）变更已提交' } },
+            ],
+          };
+        }
+        return {
+          ok: true,
+          action: 'cancel',
+          final: '（mock）已取消本次修改',
+          events: [{ type: 'done', data: { final: '（mock）已取消本次修改' } }],
+        };
+      },
       async approve() { return { ok: true }; },
       async clarify() { return { ok: true }; },
     };
@@ -1053,6 +1347,23 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       { type: 'tool_call', data: { name: 'order_lookup', args: { order_id: 'A1001' } } },
       { type: 'tool_result', data: { name: 'order_lookup', ok: true, summary: '订单 A1001：已发货，预计明天送达。' } },
       { type: 'clarification_required', data: { missing: ['order_id'] } },
+      { type: 'form_required', data: {
+        tool: 'update_address',
+        form_session_id: 'mock-fs-1',
+        summary: '修改订单收货地址',
+        order_candidates: [
+          { order_id: 'ORD-PAID-1', status_display: '已付款' },
+          { order_id: 'ORD-REFUND-1', status_display: '已付款' },
+        ],
+        response_schema: {
+          type: 'object',
+          properties: {
+            action: { enum: ['confirm', 'cancel'] },
+            order_id: { type: 'string' },
+            address: { type: 'string' },
+          },
+        },
+      } },
       { type: 'confirmation_required', data: { summary: '修改订单 A1001 收货地址为：北京市朝阳区 xx 路 1 号' } },
       { type: 'confirmation_updated', data: { action: 'confirmed' } },
       { type: 'approval_required', data: { approval_id: 'ap-1', summary: '取消订单 A1001（金额 ¥1,299.00）', expires_at: '2026-09-17T23:59:59Z' } },
@@ -1138,6 +1449,9 @@ html[data-theme="dark"] .login-wrap::before{background:linear-gradient(90deg,tra
       buildFormContent: buildFormContent,
       validateFormValues: validateFormValues,
       formatFormSubmission: formatFormSubmission,
+      buildMutationFormContent: buildMutationFormContent,
+      formatMutationFormErrors: formatMutationFormErrors,
+      applyFormResumeResult: applyFormResumeResult,
       applyConfirmedAction: applyConfirmedAction,
       buildView: buildView,
       createApi: createApi,
@@ -1521,6 +1835,67 @@ function showFormError(formElement, message) {
     var btn = ev.target.closest('button[data-action]');
     if (!btn) return;
     var action = btn.getAttribute('data-action');
+    if (action === 'mutation-form-confirm' || action === 'mutation-form-cancel') {
+      var formElement = btn.closest('.mutation-form-card');
+      var formId = btn.getAttribute('data-form-id');
+      if (!formElement || !formId) return;
+      if (store.conn.status === 'streaming' || store.conn.status === 'reconnecting') return;
+      var formMessage = null;
+      for (var mi = 0; mi < store.messages.length; mi++) {
+        if (store.messages[mi].id === formId) {
+          formMessage = store.messages[mi];
+          break;
+        }
+      }
+      if (!formMessage || formMessage.kind !== 'mutation_form' || formMessage.meta.status !== 'pending') return;
+
+      var sessionId = formMessage.content.form_session_id;
+      var resumeAction = action === 'mutation-form-confirm' ? 'confirm' : 'cancel';
+      var confirmOpts = {};
+      if (resumeAction === 'confirm') {
+        var values = collectFormValues(formElement);
+        formMessage.content.values = values;
+        if (!values.order_id) {
+          showFormError(formElement, '请选择订单');
+          return;
+        }
+        var missingLabel = '';
+        (formMessage.content.fields || []).forEach(function (field) {
+          if (field.name === 'order_id') return;
+          if (field.required && !String(values[field.name] || '').trim()) {
+            missingLabel = field.label;
+          }
+        });
+        if (missingLabel) {
+          showFormError(formElement, '请填写' + missingLabel);
+          return;
+        }
+        showFormError(formElement, '');
+        confirmOpts.order_id = values.order_id;
+        confirmOpts.fields = values;
+      }
+
+      formMessage.meta.status = 'submitting';
+      store.conn.status = 'streaming';
+      applyView();
+      api.confirm(store.conversation.conversation_id, resumeAction, confirmOpts)
+        .then(function (result) {
+          store = applyFormResumeResult(store, result, sessionId);
+          applyView();
+        })
+        .catch(function (e) {
+          for (var ri = 0; ri < store.messages.length; ri++) {
+            if (store.messages[ri].id === formId && store.messages[ri].kind === 'mutation_form') {
+              store.messages[ri].meta.status = 'pending';
+              break;
+            }
+          }
+          store.conn.status = 'idle';
+          store = applyEvent(store, { type: 'error', data: { code: 'E_CONFIRM', message: e.message } });
+          applyView();
+        });
+      return;
+    }
     if (action === 'form-submit') {
       var formElement = btn.closest('.form-card');
       var formId = btn.getAttribute('data-form-id');
