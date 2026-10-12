@@ -20,7 +20,7 @@
 | `safety_rejected` | `{rule, reason}` | 安全预检拒绝（见 safety-spec.md） |
 | `approval_required` | `{approval_id, summary, expires_at}` | HighRisk interrupt（见 approval-spec.md） |
 | `approval_updated` | `{approval_id, status}` | 审批状态变更 |
-| `clarification_required` | `{missing: [...], reason?: "tier_mismatch", candidates?: [...]}` | select 参数不完整 / 低档工具档不匹配（tier_mismatch）→ clarify 节点（普通轮、非 interrupt，D1/B2b，见 graph-spec.md §6.2/§6.3）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
+| `clarification_required` | `{missing: [...], reason?: "tier_mismatch" \| "operation_unclear", candidates?: [...]}` | select 参数不完整 / 低档工具档不匹配（tier_mismatch）→ clarify 节点（普通轮、非 interrupt，D1/B2b，见 graph-spec.md §6.2/§6.3）；**Operation Clarify**（mutation tool 未定、进 MutationGraph 之前的聊天问清，`reason:"operation_unclear"`，不发 `form_required`）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
 | `confirmation_required` | `{summary}` | Mutation interrupt（等待用户确认，见 graph-spec.md §6.2）。**Mutation Form 主路径将由 `form_required` 取代**（见 §2.2）；在 Form Interrupt 落地前仍为当前写路径事件 |
 | `confirmation_updated` | `{action}` | 用户确认结果（confirm / cancel） |
 | `form_required` | 见 §2.2 | Mutation **Form Interrupt** 首次挂起的 SSE 投影（权威挂起态仍是 checkpointer `__interrupt__`，见 `mutation-form-interrupt-spec.md` / `CONTEXT.md`） |

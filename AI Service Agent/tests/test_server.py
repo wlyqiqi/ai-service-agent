@@ -840,6 +840,91 @@ def test_confirm_precheck_failure_reissues_form_rejected_same_session(tmp_path, 
     assert list(asyncio.run(pending_interrupts())) == []
 
 
+def test_vague_mutation_operation_clarify_then_form_interrupt(tmp_path, monkeypatch):
+    """Vague mutation-like intent uses Operation Clarify outside MutationGraph.
+
+    Seam: Conversation Runtime /chat + /actions/confirm (issue #21).
+    Turn 1: chat asks operation type — no form_required / Mutation Form.
+    Turn 2: concrete update_address intent opens Form Interrupt; Confirm writes.
+    """
+    business_db = tmp_path / "mock_ecommerce.db"
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+
+    def customer_address() -> str:
+        conn = sqlite3.connect(business_db)
+        try:
+            row = conn.execute(
+                "SELECT address FROM customers WHERE customer_id = ?", ("u1",)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    original_address = customer_address()
+    form_address = "北京市朝阳区望京 Operation Clarify 路 1 号"
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order_mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
+        select_json_message(
+            "update_address",
+            {"order_id": "ORD-PAID-1", "address": "select预填勿写入"},
+        ),
+    ])
+    db = str(tmp_path / "operation-clarify.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+
+    with client.stream(
+        "POST", "/chat", json={"session_id": session_id, "message": "我要改一下订单"},
+    ) as resp:
+        clarify_events = _parse_sse("".join(resp.iter_text()))
+
+    clarify_types = [event.get("type") for event in clarify_events]
+    assert "form_required" not in clarify_types
+    assert "form_rejected" not in clarify_types
+    assert "tool_call" not in clarify_types
+    assert "clarification_required" in clarify_types
+    clarify = next(e for e in clarify_events if e.get("type") == "clarification_required")
+    assert clarify["data"].get("reason") == "operation_unclear"
+    done1 = next(e for e in clarify_events if e.get("type") == "done")
+    final1 = done1["data"].get("final") or ""
+    assert "地址" in final1 or "发票" in final1
+    assert customer_address() == original_address
+
+    with client.stream(
+        "POST", "/chat", json={"session_id": session_id, "message": "改收货地址"},
+    ) as resp:
+        form_events = _parse_sse("".join(resp.iter_text()))
+
+    assert any(event.get("type") == "form_required" for event in form_events)
+    form = next(e for e in form_events if e.get("type") == "form_required")["data"]
+    assert form["tool"] == "update_address"
+    assert customer_address() == original_address
+
+    confirmed = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": session_id,
+            "action": "confirm",
+            "fields": {"order_id": "ORD-PAID-1", "address": form_address},
+        },
+    )
+    assert confirmed.status_code == 200
+    body = confirmed.json()
+    assert body["ok"] is True
+    resume_types = [event.get("type") for event in body["events"]]
+    assert resume_types[-1] == "done"
+    tool_calls = [e for e in body["events"] if e.get("type") == "tool_call"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["data"]["name"] == "update_address"
+    assert tool_calls[0]["data"]["args"]["address"] == form_address
+    assert customer_address() == form_address
+
+
 def test_plain_text_during_form_interrupt_refuses_with_guidance(tmp_path, monkeypatch):
     """Plain text while Form Interrupt is pending does not write and shows guidance.
 

@@ -28,6 +28,10 @@ from ai_service_agent.graph.workflows.fallback import make_fallback_graph
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.graph.workflows.high_risk_agent import make_high_risk_graph
 from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
+from ai_service_agent.graph.workflows.operation_clarify import (
+    make_hybrid_tool_resolve_node,
+    make_operation_clarify_node,
+)
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY, make_tool_registry
 
 
@@ -56,9 +60,14 @@ def _route_target(state: dict) -> str:
 
 
 def _guard_aware_target(state: dict) -> str:
-    """Guard fail -> 安全收尾（Router 并行结果不消费）；否则 Policy 映射（graph-spec §2/§5）。"""
+    """Guard fail -> 安全收尾；mutation 且 tool 未定 -> Operation Clarify（进子图前）。"""
     if state.get("guard_status") == "fail":
         return "safety_final"
+    if (
+        state.get("target_graph") == "mutation_graph"
+        and state.get("context", {}).get("operation_clarify")
+    ):
+        return "operation_clarify"
     return _route_target(state)
 
 
@@ -176,6 +185,8 @@ def build_graph(
     )
     builder.add_node("guard", guard)
     builder.add_node("policy_gate", _policy_gate)
+    builder.add_node("hybrid_tool_resolve", make_hybrid_tool_resolve_node())
+    builder.add_node("operation_clarify", make_operation_clarify_node())
     builder.add_node("safety_final", _safety_final)
     builder.add_node("router_join", _router_join)
     builder.add_node("read_graph", read_graph)
@@ -199,14 +210,24 @@ def build_graph(
             "policy_gate": "policy_gate",
         },
     )
+    builder.add_edge("policy_gate", "hybrid_tool_resolve")
     builder.add_conditional_edges(
-        "policy_gate", _guard_aware_target,
-        {"safety_final": "safety_final", "read_graph": "read_graph", "fallback": "fallback", "mutation_graph": "mutation_graph", "high_risk_graph": "high_risk_graph"},
+        "hybrid_tool_resolve",
+        _guard_aware_target,
+        {
+            "safety_final": "safety_final",
+            "operation_clarify": "operation_clarify",
+            "read_graph": "read_graph",
+            "fallback": "fallback",
+            "mutation_graph": "mutation_graph",
+            "high_risk_graph": "high_risk_graph",
+        },
     )
     builder.add_edge("read_graph", "final")
     builder.add_edge("mutation_graph", "final")
     builder.add_edge("high_risk_graph", "final")
     builder.add_edge("fallback", "final")
+    builder.add_edge("operation_clarify", "final")
     builder.add_edge("safety_final", "final")
     builder.add_edge("final", END)
     return builder.compile(checkpointer=checkpointer)

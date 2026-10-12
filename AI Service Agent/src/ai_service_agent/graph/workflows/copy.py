@@ -62,6 +62,15 @@ def clarify_tier_text() -> str:
     return "您的请求涉及较高风险操作，但我无法确定具体要执行哪一项（如：申请退款、取消订单），麻烦您明确说明一下。"
 
 
+def operation_clarify_text() -> str:
+    """Operation Clarify：tool 未定前用聊天问清操作类型（不用表单做操作类型菜单）。"""
+    return (
+        "好的，您是想修改订单相关信息。请问具体要办理哪一项呢？"
+        "例如：收货地址、联系电话、订单备注、开发票，或申请售后工单。"
+        "直接告诉我即可～"
+    )
+
+
 def clarify_fallback_text() -> str:
     return "抱歉，我没有完全理解您的需求。您可以换个说法，或者输入「转人工」由人工客服为您处理。"
 
