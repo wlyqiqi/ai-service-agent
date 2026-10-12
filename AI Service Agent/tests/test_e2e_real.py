@@ -253,7 +253,15 @@ class TestCoreScenarios:
         assert confirm, f"expected form_required, got {types1}"
         assert done1 is not None
 
-        confirmed = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
+        confirmed = client.post(
+            "/actions/confirm",
+            json={
+                "conversation_id": sid,
+                "action": "confirm",
+                "order_id": "ORD-PAID-1",
+                "fields": {"address": "北京市朝阳区望京SOHO"},
+            },
+        )
         assert confirmed.status_code == 200
         body = confirmed.json()
         calls, results = count_tool_events(body["events"], "update_address")
@@ -506,7 +514,15 @@ class TestRealFaultToleranceE2E:
         assert code1 == 200
         assert any(e.get("type") == "form_required" for e in events1)
 
-        confirmed = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
+        confirmed = client.post(
+            "/actions/confirm",
+            json={
+                "conversation_id": sid,
+                "action": "confirm",
+                "order_id": "ORD-PAID-1",
+                "fields": {"address": "北京市朝阳区望京SOHO"},
+            },
+        )
         assert confirmed.status_code == 502
         messages = open_messages(str(tmp_path / "mutation-error.db"), sid)
         assert messages[-1]["role"] == "assistant"

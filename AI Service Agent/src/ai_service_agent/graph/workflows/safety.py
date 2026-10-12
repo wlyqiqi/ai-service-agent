@@ -196,7 +196,8 @@ def make_recheck_node(
     order_repository: OrderRepository | None = None,
 ) -> Callable[[dict], dict]:
     """恢复后、执行前最小不变量 recheck（D6/D7）：request_id 存在、工具仍在档、schema 仍有效。
-    参数未变 / context 非陈旧：pending_tool 由本 turn select 写入并随 checkpoint 恢复，resume 不改写；
+    Mutation Confirm 会先用 Form Resume 字段值改写 pending_tool.args（系统 request_id 保留）；
+    版本冲突只比较同一 order_id。换了一笔 Order Picker 订单时按新订单重做业务预检。
     完整语义校验见 safety-spec 后续增量。"""
     def recheck(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
         ctx = state.get("context", {})
@@ -219,12 +220,12 @@ def make_recheck_node(
                 else:
                     fresh_data = snapshot.to_precheck_data()
                     previous = ctx.get("precheck_data")
-                    if (
-                        isinstance(previous, dict)
-                        and previous.get("version")
-                        and snapshot.version != previous.get("version")
-                    ):
-                        reason = "order_state_changed"
+                    current_order_id = (pending.get("args") or {}).get("order_id")
+                    if isinstance(previous, dict) and previous.get("version"):
+                        previous_order_id = previous.get("order_id")
+                        version_applies = previous_order_id in (None, current_order_id)
+                        if version_applies and snapshot.version != previous.get("version"):
+                            reason = "order_state_changed"
                     if reason is None:
                         reason = _apply_business_rules(pending, fresh_data, state.get("user_id", ""))
                     if reason is None:

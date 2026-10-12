@@ -4,11 +4,11 @@ import hmac
 import json
 import logging
 import sqlite3
+from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pathlib import Path
-
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 
@@ -75,6 +75,8 @@ class ChatBody(BaseModel):
 class ConfirmBody(BaseModel):
     conversation_id: str
     action: str
+    order_id: str | None = None
+    fields: dict[str, Any] | None = None
 
 
 class LoginBody(BaseModel):
@@ -551,8 +553,15 @@ def create_app(
                 final: str | None = None
                 message_id: str | None = None
                 failed = False
+                resume_payload: dict[str, Any] = {"action": normalized}
+                if normalized == "confirm":
+                    for key, value in (body.fields or {}).items():
+                        if key not in ("action", "request_id"):
+                            resume_payload[key] = value
+                    if body.order_id is not None:
+                        resume_payload["order_id"] = body.order_id
                 async for event in event_stream(
-                    graph, cfg, [], resume_payload={"action": normalized},
+                    graph, cfg, [], resume_payload=resume_payload,
                 ):
                     if event.get("type") == "done":
                         final = event.get("data", {}).get("final")

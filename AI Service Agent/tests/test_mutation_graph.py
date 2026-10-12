@@ -62,6 +62,11 @@ def _mutation_model():
     ])
 
 
+def _confirm_address(order_id: str = "ORD-PAID-1", address: str = "北京市朝阳区") -> dict:
+    """Form Resume for update_address: Order Picker order_id plus the address field."""
+    return {"action": "confirm", "order_id": order_id, "address": address}
+
+
 def _invoke(graph, text, thread_id, resume=None, user_id="u1"):
     kwargs = {"configurable": {"thread_id": thread_id}}
     if resume is not None:
@@ -87,7 +92,7 @@ def test_mutation_confirm_executes_tool(seed, monkeypatch):
     _use_db(monkeypatch, seed[1])
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     _invoke(graph, "改一下收货地址", "m2")
-    out = _invoke(graph, "确认", "m2", resume={"action": "confirm"})
+    out = _invoke(graph, "确认", "m2", resume=_confirm_address())
     assert out["execution_status"] == "completed"
     tool_msgs = [m for m in out["messages"] if getattr(m, "type", "") == "tool"]
     assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "update_address"
@@ -104,7 +109,7 @@ def test_mutation_tool_exception_uses_local_finalize_failed(seed, monkeypatch):
 
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     _invoke(graph, "改一下收货地址", "mutation-failure-1")
-    output = _invoke(graph, "确认", "mutation-failure-1", resume={"action": "confirm"})
+    output = _invoke(graph, "确认", "mutation-failure-1", resume=_confirm_address())
 
     assert output["execution_status"] == "failed"
     assert output["messages"][-1].content == RUNTIME_ERROR_TEXT
@@ -123,7 +128,7 @@ def test_mutation_tool_error_result_not_rewritten_as_success(seed, monkeypatch):
 
     graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
     _invoke(graph, "改一下收货地址", "mutation-tool-error-1")
-    output = _invoke(graph, "确认", "mutation-tool-error-1", resume={"action": "confirm"})
+    output = _invoke(graph, "确认", "mutation-tool-error-1", resume=_confirm_address())
 
     assert output["execution_status"] == "failed"
     last = output["messages"][-1].content
@@ -259,7 +264,7 @@ def test_mutation_multi_turn_clarify_then_confirm_executes(seed, monkeypatch):
     assert any(item["order_id"] == "ORD-PAID-1" for item in form.value["order_candidates"])
 
     # 轮3：confirm -> recheck -> execute -> 工具只执行一次
-    t3 = _build(complete_model).invoke(Command(resume={"action": "confirm"}), {"configurable": {"thread_id": tid}})
+    t3 = _build(complete_model).invoke(Command(resume=_confirm_address()), {"configurable": {"thread_id": tid}})
     assert t3["execution_status"] == "completed"
     tool_msgs = [m for m in t3["messages"] if getattr(m, "type", "") == "tool"]
     assert len(tool_msgs) == 1 and getattr(tool_msgs[0], "name", "") == "update_address"

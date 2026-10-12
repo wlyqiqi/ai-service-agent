@@ -233,7 +233,11 @@ def test_mutation_graph_runs_tool_hooks(hook_seed, monkeypatch):
         {"messages": [HumanMessage(content="订单 ORD-PAID-1 Update delivery address")], "user_id": "u1", "session_id": "t-hook-m", "context": {}},
         config,
     )
-    out = ainvoke_graph(graph, Command(resume={"action": "confirm"}), config)
+    out = ainvoke_graph(
+        graph,
+        Command(resume={"action": "confirm", "order_id": "ORD-PAID-1", "address": "Beijing Chaoyang"}),
+        config,
+    )
     assert out["execution_status"] == "completed"
     afters = [event for event in recorder.events if event[0] == "after"]
     assert afters

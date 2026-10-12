@@ -466,7 +466,15 @@ def test_actions_confirm_resumes_pending_confirmation(tmp_path, monkeypatch):
         stream_text = "".join(resp.iter_text())
     assert '"form_required"' in stream_text
 
-    r = client.post("/actions/confirm", json={"conversation_id": session_id, "action": "confirmed"})
+    r = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": session_id,
+            "action": "confirmed",
+            "order_id": "ORD-PAID-1",
+            "fields": {"address": "北京市朝阳区测试路 99 号"},
+        },
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True and body["action"] == "confirm"
@@ -586,6 +594,125 @@ def test_known_tool_mutation_form_cancel_resume_does_not_write(tmp_path, monkeyp
 
     cleared = asyncio.run(pending_interrupts())
     assert list(cleared) == []
+
+
+def test_confirm_form_resume_writes_order_picker_selection_once(tmp_path, monkeypatch):
+    """Confirm Form Resume writes the Order Picker selection once through ToolNode.
+
+    Seam: Conversation Runtime /chat + /actions/confirm (issue #17).
+    Select may stash different args on pending_tool; the write uses Form Resume
+    field values (Form-Only Write), then the Form Interrupt ends.
+    """
+    import asyncio
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from ai_service_agent.domain.orders import SQLiteOrderRepository
+    from ai_service_agent.harness.graph import make_ai_graph
+
+    business_db = tmp_path / "mock_ecommerce.db"
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+
+    select_order_id = "ORD-PAID-1"
+    select_address = "SELECT-SHOULD-NOT-WRITE"
+    picked_order_id = "ORD-REFUND-1"
+    form_address = "表单确认的新地址 88 号"
+
+    def customer_address() -> str:
+        conn = sqlite3.connect(business_db)
+        try:
+            row = conn.execute(
+                "SELECT address FROM customers WHERE customer_id = ?", ("u1",)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    original_address = customer_address()
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message(
+            "update_address",
+            {"order_id": select_order_id, "address": select_address},
+        ),
+    ])
+    db = str(tmp_path / "form-confirm.db")
+    client = TestClient(create_app(db, model=model))
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+
+    form_events = [event for event in events if event.get("type") == "form_required"]
+    assert len(form_events) == 1
+    form = form_events[0]["data"]
+    candidate_ids = [item.get("order_id") for item in form["order_candidates"]]
+    assert select_order_id in candidate_ids
+    assert picked_order_id in candidate_ids
+    schema_props = form["response_schema"]["properties"]
+    assert schema_props["action"]["enum"] == ["confirm", "cancel"]
+    assert "order_id" in schema_props
+    assert "address" in schema_props
+    assert "request_id" not in schema_props
+    assert "tool_call" not in {event.get("type") for event in events}
+    assert customer_address() == original_address
+
+    confirmed = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": session_id,
+            "action": "confirm",
+            "fields": {
+                "order_id": picked_order_id,
+                "address": form_address,
+                "request_id": "client-forged",
+            },
+        },
+    )
+    assert confirmed.status_code == 200
+    body = confirmed.json()
+    assert body["ok"] is True and body["action"] == "confirm"
+    resume_events = body["events"]
+    types = [event.get("type") for event in resume_events]
+    assert types[-1] == "done"
+    tool_calls = [event for event in resume_events if event.get("type") == "tool_call"]
+    tool_results = [event for event in resume_events if event.get("type") == "tool_result"]
+    assert len(tool_calls) == 1
+    assert len(tool_results) == 1
+    assert types.index("tool_call") < types.index("tool_result") < types.index("done")
+    assert "form_required" not in types
+    assert "form_rejected" not in types
+    call = tool_calls[0]["data"]
+    assert call["name"] == "update_address"
+    assert call["args"]["order_id"] == picked_order_id
+    assert call["args"]["address"] == form_address
+    assert call["args"].get("request_id") not in (None, "", "client-forged")
+    assert tool_results[0]["data"]["name"] == "update_address"
+    assert tool_results[0]["data"]["ok"] is True
+    assert picked_order_id in body["final"]
+    assert form_address in body["final"]
+    assert select_address not in body["final"]
+    assert customer_address() == form_address
+
+    conn = sqlite3.connect(db)
+    thread_id = conn.execute(
+        "SELECT thread_id FROM conversation_status WHERE conversation_id = ?",
+        (session_id,),
+    ).fetchone()[0]
+    conn.close()
+
+    async def pending_interrupts():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(
+                model, saver, order_repository=SQLiteOrderRepository(str(business_db)),
+            )
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return state.interrupts
+
+    assert list(asyncio.run(pending_interrupts())) == []
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
