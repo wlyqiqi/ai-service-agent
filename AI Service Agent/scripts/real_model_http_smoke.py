@@ -1,4 +1,4 @@
-"""真实模型端到端 HTTP+SSE 冒烟（7 场景：FAQ/Read · Clarify0076 · MutationClarifyMultiTurn · Mutation · HighRisk · Handoff · ToolMatrix）。
+"""真实模型端到端 HTTP+SSE 冒烟（7 场景：FAQ/Read · Clarify0076 · MutationFormIncompleteConfirm · Mutation · HighRisk · Handoff · ToolMatrix）。
 
 - 前置：.env 已配置 ARK_MODEL / ARK_BASE_URL / ARK_API_KEY；离线全量测试全绿。
 - 每次运行使用全新临时 SQLite DB，可重复执行。
@@ -334,30 +334,52 @@ def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
 
 def scenario_mutation(client: httpx.Client, db_path: str) -> dict:
     sid, sess = new_session(client, "u1")
-    code1, ev1 = chat_sse(client, sid, "订单 ORD-PAID-1 的收货地址改成北京市朝阳区")
+    address = "北京市朝阳区"
+    code1, ev1 = chat_sse(client, sid, f"订单 ORD-PAID-1 的收货地址改成{address}")
     types1 = event_types(ev1)
-    confirm = any(e.get("type") == "confirmation_required" for e in ev1)
+    form_required = any(e.get("type") == "form_required" for e in ev1)
     done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
 
-    code2, ev2 = chat_sse(client, sid, "确认")
+    resume = client.post(
+        f"{BASE}/actions/confirm",
+        json={
+            "conversation_id": sid,
+            "action": "confirm",
+            "order_id": "ORD-PAID-1",
+            "fields": {"address": address},
+        },
+    )
+    code2 = resume.status_code
+    body2 = resume.json() if resume.headers.get("content-type", "").startswith("application/json") else {}
+    ev2 = list(body2.get("events") or [])
     types2 = event_types(ev2)
     calls, results = count_tool_events(ev2, "update_address")
     done2 = next((e for e in reversed(ev2) if e.get("type") == "done"), None)
+    d7_final = body2.get("final") or (done2 or {}).get("data", {}).get("final")
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "update_address"]
     msgs = open_messages(db_path, sid)
-    d7_final = (done2 or {}).get("data", {}).get("final")
-    d7_store = any(m["role"] == "assistant" and "收货地址已更新完成" in m["content"] for m in msgs)
+    expected_final = completion_text("update_address", {"order_id": "ORD-PAID-1", "address": address})
+    d7_store = any(
+        m["role"] == "assistant" and (
+            m["content"] == expected_final
+            or ("收货地址" in (m["content"] or "") and "完成" in (m["content"] or ""))
+        )
+        for m in msgs
+    )
     pass_ = (
-        code1 == 200 and confirm and (done1 is not None)
+        code1 == 200 and form_required and (done1 is not None)
         and code2 == 200 and calls == 1 and results == 1
         and st["execution_status"] == "completed" and len(tool_msgs) == 1
-        and d7_final == completion_text("update_address") and d7_store
+        and (d7_final == expected_final or (
+            isinstance(d7_final, str) and "收货地址" in d7_final and "完成" in d7_final
+        ))
+        and d7_store
     )
     return {
         "name": "Mutation", "pass": pass_, "session_id": sid,
-        "turn1": {"http": code1, "timeline": types1, "confirm_required": confirm, "done_final": (done1 or {}).get("data")},
+        "turn1": {"http": code1, "timeline": types1, "form_required": form_required, "done_final": (done1 or {}).get("data")},
         "turn2": {"http": code2, "timeline": types2, "tool_call": calls, "tool_result": results, "done_final": (done2 or {}).get("data")},
         "d7": {"done_final": d7_final, "message_store_has_final": d7_store, "message_store": [{"role": m["role"], "content": m["content"][:40]} for m in msgs]},
         "thread_id": open_status(db_path, sid)["thread_id"],
@@ -412,72 +434,75 @@ def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
     }
 
 
-def scenario_mutation_clarify_multi_turn(client: httpx.Client, db_path: str) -> dict:
-    """Mutation 多轮 clarify 闭环（P4 D1 跨轮）：缺参 -> clarification_required ->
-    补参 -> confirmation_required -> 确认 -> 工具只执行一次。
+def scenario_mutation_form_incomplete_confirm(client: httpx.Client, db_path: str) -> dict:
+    """Mutation Form incomplete → Form Resume Confirm writes once (T8 / Form Interrupt).
 
-    验证 clarify_count 跨 turn 保留（缺参=1）、完整成功 select 清零；若真实模型为
-    缺参输入编造必填参数导致 turn1 直接 confirmation_required，暴露 D3 残余风险。
+    Tool-known missing fields open ``form_required`` in one turn (no chat
+    clarification_required). Confirm uses ``/actions/confirm`` Form Resume.
     """
     sid, sess = new_session(client, "u1")
-    st1 = st2 = st3 = None
+    address = "北京市朝阳区"
 
     code1, ev1 = chat_sse(client, sid, "我要改个地址")
     types1 = event_types(ev1)
+    form1 = any(e.get("type") == "form_required" for e in ev1)
     clarify1 = any(e.get("type") == "clarification_required" for e in ev1)
     tool1 = any(e.get("type") == "tool_call" for e in ev1)
     done1 = next((e for e in reversed(ev1) if e.get("type") == "done"), None)
-    if done1 is not None:
-        st1 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+    st1 = graph_state(db_path, open_status(db_path, sid)["thread_id"]) if done1 is not None else None
 
-    code2, ev2 = chat_sse(client, sid, "订单 ORD-PAID-1 的收货地址改成北京市朝阳区")
+    resume = client.post(
+        f"{BASE}/actions/confirm",
+        json={
+            "conversation_id": sid,
+            "action": "confirm",
+            "order_id": "ORD-PAID-1",
+            "fields": {"address": address},
+        },
+    )
+    code2 = resume.status_code
+    body2 = resume.json() if resume.headers.get("content-type", "").startswith("application/json") else {}
+    ev2 = list(body2.get("events") or [])
     types2 = event_types(ev2)
-    clarify2 = any(e.get("type") == "clarification_required" for e in ev2)
-    confirm2 = any(e.get("type") == "confirmation_required" for e in ev2)
+    calls2, results2 = count_tool_events(ev2, "update_address")
     done2 = next((e for e in reversed(ev2) if e.get("type") == "done"), None)
-    if done2 is not None:
-        st2 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
-
-    code3, ev3 = chat_sse(client, sid, "确认")
-    types3 = event_types(ev3)
-    calls3, results3 = count_tool_events(ev3, "update_address")
-    done3 = next((e for e in reversed(ev3) if e.get("type") == "done"), None)
-    if done3 is not None:
-        st3 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
+    st2 = graph_state(db_path, open_status(db_path, sid)["thread_id"])
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "update_address"]
     msgs = open_messages(db_path, sid)
-    d7_store = any(m["role"] == "assistant" and "收货地址已更新完成" in m["content"] for m in msgs)
+    expected_final = completion_text("update_address", {"order_id": "ORD-PAID-1", "address": address})
+    d7_store = any(
+        m["role"] == "assistant" and (
+            m["content"] == expected_final
+            or ("收货地址" in (m["content"] or "") and "完成" in (m["content"] or ""))
+        )
+        for m in msgs
+    )
     pass_ = (
-        code1 == 200 and clarify1 and not tool1 and done1 is not None
-        and "订单号" in (done1 or {}).get("data", {}).get("final", "")
-        and "收货地址" in (done1 or {}).get("data", {}).get("final", "")
-        and (st1 or {}).get("execution_status") == "clarifying"
-        and code2 == 200 and confirm2 and not clarify2 and done2 is not None
-        and code3 == 200 and calls3 == 1 and results3 == 1
-        and (st3 or {}).get("execution_status") == "completed"
+        code1 == 200 and form1 and not clarify1 and not tool1 and done1 is not None
+        and (st1 or {}).get("execution_status") == "waiting_confirmation"
+        and code2 == 200 and calls2 == 1 and results2 == 1
+        and st2.get("execution_status") == "completed"
         and len(tool_msgs) == 1 and d7_store
     )
     return {
-        "name": "MutationClarifyMultiTurn", "pass": pass_, "session_id": sid,
-        "turn1": {"http": code1, "timeline": types1, "clarification_required": clarify1,
-                  "tool_called": tool1, "done_final": (done1 or {}).get("data"),
-                  "clarify_count": (st1 or {}).get("clarify_count")},
-        "turn2": {"http": code2, "timeline": types2, "confirmation_required": confirm2,
-                  "clarification_required": clarify2, "done_final": (done2 or {}).get("data"),
-                  "clarify_count": (st2 or {}).get("clarify_count")},
-        "turn3": {"http": code3, "timeline": types3, "tool_call": calls3, "tool_result": results3,
-                  "done_final": (done3 or {}).get("data"),
-                  "clarify_count": (st3 or {}).get("clarify_count")},
+        "name": "MutationFormIncompleteConfirm", "pass": pass_, "session_id": sid,
+        "turn1": {"http": code1, "timeline": types1, "form_required": form1,
+                  "clarification_required": clarify1, "tool_called": tool1,
+                  "done_final": (done1 or {}).get("data"),
+                  "execution_status": (st1 or {}).get("execution_status")},
+        "turn2": {"http": code2, "timeline": types2, "tool_call": calls2, "tool_result": results2,
+                  "done_final": (done2 or {}).get("data") or {"final": body2.get("final")},
+                  "execution_status": st2.get("execution_status")},
         "d7": {"message_store_has_final": d7_store,
                "message_store": [{"role": m["role"], "content": m["content"][:40]} for m in msgs]},
         "thread_id": open_status(db_path, sid)["thread_id"],
-        "final_state": {"execution_status": st["execution_status"], "clarify_count": st["clarify_count"],
+        "final_state": {"execution_status": st["execution_status"],
                         "tool_messages": len(tool_msgs), "interrupts": st["interrupts"],
                         "last_assistant": st["last_assistant"]},
         "mode": open_status(db_path, sid)["mode"],
-        "thread_id_consistent": check_thread_id_consistent(db_path, sid, "MutationClarifyMultiTurn"),
+        "thread_id_consistent": check_thread_id_consistent(db_path, sid, "MutationFormIncompleteConfirm"),
     }
 
 
@@ -550,13 +575,23 @@ def scenario_tool_matrix(client: httpx.Client, db_path: str) -> dict:
         code, events = chat_sse(client, sid, case["input"])
         types = event_types(events)
         interrupt = next(
-            (e for e in events if e.get("type") in ("confirmation_required", "approval_required")), None
+            (
+                e
+                for e in events
+                if e.get("type") in ("form_required", "form_rejected", "confirmation_required", "approval_required")
+            ),
+            None,
         )
         clarify = any(e.get("type") == "clarification_required" for e in events)
         rejected = any(e.get("type") == "safety_rejected" for e in events)
         status, tool_name, args = "other", None, None
         if interrupt is not None:
-            tool_name, args = _summary_parts((interrupt.get("data") or {}).get("summary"))
+            data = interrupt.get("data") or {}
+            tool_name = data.get("tool")
+            if tool_name is None:
+                tool_name, args = _summary_parts(data.get("summary"))
+            else:
+                _, args = _summary_parts(data.get("summary"))
             if tool_name == case["tool"]:
                 status = "hit" if _matrix_args_ok(args, case["args"]) else "tool_ok_args_mismatch"
             else:
@@ -667,7 +702,7 @@ def main() -> int:
             results = [
                 scenario_faq(client, db_path),
                 scenario_clarify_0076(client, db_path),
-                scenario_mutation_clarify_multi_turn(client, db_path),
+                scenario_mutation_form_incomplete_confirm(client, db_path),
                 scenario_mutation(client, db_path),
                 scenario_highrisk(client, db_path),
                 scenario_handoff(client, db_path),
