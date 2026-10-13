@@ -2,7 +2,7 @@
 
 基于 LangGraph 的 AI 客服系统：**确定性工作流 + 智能体混合架构**，按操作风险分层（Read / Mutation / HighRisk），配套完整 harness（FastAPI 网关、审批、事件、会话、观测）。
 
-> 里程碑：`v0.1.0`（P0–P5 全量落地）· 当前 144 tests passed · `langgraph validate` valid · 真机冒烟通过
+> 里程碑：`v0.1.0`（P0–P5 全量落地）· 当前 693 passed / 2 skipped（`pytest tests --ignore=tests/evals`）· `langgraph validate` valid · 真机冒烟通过
 
 ## 架构概览
 

@@ -48,6 +48,7 @@ class LightRagClient:
             base_url=self.base_url,
             timeout=self.timeout,
             transport=transport,
+            trust_env=False,  # LightRAG 默认本机基础设施，不走环境代理
         )
 
     def query_context(self, query: str) -> dict:
