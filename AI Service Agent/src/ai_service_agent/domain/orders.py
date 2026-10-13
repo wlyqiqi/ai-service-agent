@@ -64,6 +64,16 @@ class OrderRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_user_profile(self, user_id: str) -> dict | None:
+        """Customer profile for Transport presentation. None when the user is unknown."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_user_orders(self, user_id: str, *, address_editable: bool = False) -> list[dict] | None:
+        """Orders for Transport forms. None when the user is unknown; empty list when none match."""
+        raise NotImplementedError
+
+    @abstractmethod
     def cancel_order(
         self,
         order_id: str,
@@ -94,6 +104,18 @@ _STATUS_MAP = {
     "refunded": "refunded",
     "cancelled": "cancelled",
 }
+ORDER_DISPLAY_STATUS = {
+    "paid": "已付款",
+    "shipped": "已发货",
+    "signed": "已发货",
+    "delivered": "已送达",
+    "completed": "已完成",
+    "refunding": "退款中",
+    "refunded": "已退款",
+    "cancelled": "已取消",
+}
+# Raw DB statuses eligible for address edits (pre-fulfillment).
+ADDRESS_EDITABLE_STATUSES = frozenset({"paid"})
 # Shared with safety precheck (single source — avoid A/B/safety drift).
 REFUND_WINDOW_DAYS = 7
 _CUMULATIVE_REFUND_STATUSES = ("paid", "signed", "refunding")
@@ -200,6 +222,67 @@ class SQLiteOrderRepository(OrderRepository):
         if not user_id or not statuses:
             return []
         return self._list_orders_for_customer(user_id, statuses)
+
+    def get_user_profile(self, user_id: str) -> dict | None:
+        if not user_id:
+            return None
+        try:
+            conn = self._connect()
+        except (sqlite3.Error, OSError) as exc:
+            raise OrderRepositoryUnavailable(str(exc)) from exc
+        try:
+            row = conn.execute(
+                "SELECT phone, address FROM customers WHERE customer_id = ?",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise OrderRepositoryUnavailable(str(exc)) from exc
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return {"user_id": user_id, "phone": row[0], "address": row[1]}
+
+    def list_user_orders(self, user_id: str, *, address_editable: bool = False) -> list[dict] | None:
+        if not user_id:
+            return None
+        try:
+            conn = self._connect()
+        except (sqlite3.Error, OSError) as exc:
+            raise OrderRepositoryUnavailable(str(exc)) from exc
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM customers WHERE customer_id = ?",
+                (user_id,),
+            ).fetchone()
+            if exists is None:
+                return None
+            sql = (
+                "SELECT order_id, status, ordered_at, total_amount, currency "
+                "FROM orders WHERE customer_id = ?"
+            )
+            params: list = [user_id]
+            if address_editable:
+                editable = tuple(sorted(ADDRESS_EDITABLE_STATUSES))
+                placeholders = ",".join("?" for _ in editable)
+                sql += f" AND status IN ({placeholders})"
+                params.extend(editable)
+            sql += " ORDER BY ordered_at DESC LIMIT 20"
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            raise OrderRepositoryUnavailable(str(exc)) from exc
+        finally:
+            conn.close()
+        return [
+            {
+                "order_id": row[0],
+                "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1]),
+                "ordered_at": row[2],
+                "amount": row[3],
+                "currency": row[4],
+            }
+            for row in rows
+        ]
 
     def _list_orders_for_customer(self, user_id: str, statuses: tuple[str, ...]) -> list[dict]:
         if not user_id:
