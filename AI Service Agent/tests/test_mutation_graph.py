@@ -410,3 +410,16 @@ def test_create_invoice_rejected_when_cancelled(seed, monkeypatch):
     facts = {"order_id": "ORD-X", "user_id": "u1", "status": "cancelled",
              "total_amount": 100.0, "invoiced_amount": 0.0}
     assert _apply_business_rules(pending, facts, "u1") == "invoice_not_allowed"
+
+
+def test_mutation_graph_declares_graph_context_schema():
+    """MutationGraph must declare context_schema=GraphContext (same as HighRiskGraph)."""
+    from ai_service_agent.graph.runtime_context import GraphContext
+    from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
+
+    graph = make_mutation_graph(
+        ToolCallingFakeModel(responses=[]),
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    assert graph.context_schema is GraphContext
