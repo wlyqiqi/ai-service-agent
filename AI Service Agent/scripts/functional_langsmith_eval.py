@@ -17,7 +17,7 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.evals.p0_evaluators import P0_EVALUATORS
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATASET_NAME = "ai-cs-functional-scenarios-v1"
+DEFAULT_DATASET_NAME = "ai-cs-functional-scenarios-v2"
 SCRIPTS = ROOT / "scripts"
 
 

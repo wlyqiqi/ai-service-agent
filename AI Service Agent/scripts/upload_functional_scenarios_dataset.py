@@ -12,7 +12,7 @@ from ai_service_agent.config import get_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET = ROOT / "tests" / "evals" / "functional_scenarios" / "master.jsonl"
-DEFAULT_NAME = "ai-cs-functional-scenarios-v1"
+DEFAULT_NAME = "ai-cs-functional-scenarios-v2"
 
 INPUT_KEYS = {
     "id", "suite", "split", "user_id", "turns", "require_done",
@@ -26,8 +26,8 @@ OUTPUT_KEYS = {
 
 def load_cases(path: Path) -> list[dict]:
     cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(cases) < 52:
-        raise ValueError(f"expected >=52 cases, got {len(cases)}")
+    if len(cases) != 60:
+        raise ValueError(f"expected exactly 60 v2 cases, got {len(cases)}")
     if len({c["id"] for c in cases}) != len(cases):
         raise ValueError("duplicate ids")
     return cases
