@@ -10,6 +10,7 @@ E2E_MODEL=fake  使用离线 fake model（默认，确定性，CI 可跑）
 
 import json
 import os
+import re
 import socket
 import sqlite3
 import tempfile
@@ -31,6 +32,48 @@ from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 
+# 不用 \\b：中文与 ORD 相邻时 Python \\w 含汉字，边界断言会失败。
+_ORDER_ID_RE = re.compile(r"ORD-[A-Z0-9-]+")
+# 模块级共享 DB 下，写路径用例各自使用独立订单，避免 ORD-PAID-1 被先跑用例改脏。
+_E2E_EXTRA_PAID_ORDERS = (
+    "ORD-E2E-A1",
+    "ORD-E2E-A2",
+    "ORD-E2E-R1",
+    "ORD-E2E-R2",
+    "ORD-E2E-R3",
+    "ORD-E2E-R4",
+    "ORD-E2E-R5",
+)
+
+
+def _order_id_from_user(user: str, default: str = "ORD-PAID-1") -> str:
+    match = _ORDER_ID_RE.search(user or "")
+    return match.group(0) if match else default
+
+
+def _ensure_e2e_paid_orders(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        template = conn.execute(
+            "SELECT customer_id, status, ordered_at, signed_at, cancelled_at,"
+            " total_amount, currency, channel, market"
+            " FROM orders WHERE order_id = ?",
+            ("ORD-PAID-1",),
+        ).fetchone()
+        if template is None:
+            return
+        for order_id in _E2E_EXTRA_PAID_ORDERS:
+            conn.execute(
+                "INSERT OR IGNORE INTO orders("
+                "order_id, customer_id, status, ordered_at, signed_at, cancelled_at,"
+                " total_amount, currency, channel, market"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (order_id, *template),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def _seed_business_db(path: str):
     spec = importlib.util.spec_from_file_location(
@@ -39,6 +82,9 @@ def _seed_business_db(path: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.build_database(path)
+    _ensure_e2e_paid_orders(path)
+
+
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
 
@@ -84,15 +130,31 @@ class E2EFakeModel(ToolCallingFakeModel):
         return '{"route_intent": "faq", "confidence": 0.9}'
 
     def _select(self, user: str) -> str:
+        order_id = _order_id_from_user(user)
         if "退款" in user or "退了吧" in user:
-            return '{"tool": "refund_apply", "args": {"order_id": "ORD-PAID-1", "amount": 99.0}}'
+            return json.dumps(
+                {"tool": "refund_apply", "args": {"order_id": order_id, "amount": 99.0}},
+                ensure_ascii=False,
+            )
         if "取消订单" in user:
-            return '{"tool": "cancel_order", "args": {"order_id": "ORD-PAID-1", "reason": "不想要了"}}'
+            return json.dumps(
+                {
+                    "tool": "cancel_order",
+                    "args": {"order_id": order_id, "reason": "不想要了"},
+                },
+                ensure_ascii=False,
+            )
         if "我要改个地址" in user:
             return '{"tool": "update_address", "args": {}}'
         if "备注" in user:
             return '{"tool": "update_order_note", "args": {"note": "放驿站就行"}}'
-        return '{"tool": "update_address", "args": {"order_id": "ORD-PAID-1", "address": "北京市朝阳区望京SOHO"}}'
+        return json.dumps(
+            {
+                "tool": "update_address",
+                "args": {"order_id": order_id, "address": "北京市朝阳区望京SOHO"},
+            },
+            ensure_ascii=False,
+        )
 
 
 def _make_model():
@@ -125,9 +187,15 @@ def server():
     seed_module = importlib.util.module_from_spec(seed_spec)
     seed_spec.loader.exec_module(seed_module)
     seed_module.build_database(db_path)
+    _ensure_e2e_paid_orders(db_path)
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
-    app = create_app(db_path, model=_make_model(), order_repository=SQLiteOrderRepository(db_path))
+    app = create_app(
+        db_path,
+        model=_make_model(),
+        order_repository=SQLiteOrderRepository(db_path),
+        auth_enabled=False,
+    )
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
@@ -142,9 +210,14 @@ def server():
     thread.join(timeout=10)
 
 
+def _e2e_http_client(base_url: str) -> httpx.Client:
+    """真实 uvicorn 客户端：禁用环境代理（HTTP_PROXY 会把 127.0.0.1 送进代理导致后续请求 404）。"""
+    return httpx.Client(timeout=120.0, base_url=base_url, trust_env=False)
+
+
 @pytest.fixture(scope="module")
 def client(server):
-    return httpx.Client(timeout=120.0, base_url=server["base"])
+    return _e2e_http_client(server["base"])
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +290,21 @@ def count_tool_events(events: list[dict], tool: str) -> tuple[int, int]:
     return calls, results
 
 
+def test_e2e_http_client_disables_env_proxy():
+    """回归：带 HTTP_PROXY 时 localhost 不得走代理（否则 keep-alive 复用后易 404）。"""
+    with _e2e_http_client("http://127.0.0.1:9") as c:
+        assert c.trust_env is False
+
+
+def test_e2e_module_client_disables_env_proxy(client):
+    assert client.trust_env is False
+
+
+def test_order_id_from_user_handles_chinese_prefix():
+    assert _order_id_from_user("订单ORD-E2E-R1申请退款") == "ORD-E2E-R1"
+    assert _order_id_from_user("你好") == "ORD-PAID-1"
+
+
 # ---------------------------------------------------------------------------
 # P1: Core scenarios
 # ---------------------------------------------------------------------------
@@ -275,7 +363,7 @@ class TestCoreScenarios:
     def test_highrisk_approve(self, client, server):
         """HighRisk approve：退款 -> approval_required -> approve -> refund_apply 执行。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-E2E-R1申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
 
@@ -293,7 +381,7 @@ class TestCoreScenarios:
     def test_highrisk_reject(self, client, server):
         """HighRisk reject：退款 -> approval_required -> reject -> 工具不执行。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-E2E-R2申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
 
@@ -349,7 +437,7 @@ class TestApprovalExpired:
     def test_highrisk_expired_approve_rejected(self, client, server):
         """过期审批：改 expires_at 为过去时间 -> approve -> expired，不执行工具。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-E2E-R3申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
         assert approval_id
@@ -372,7 +460,7 @@ class TestApprovalExpired:
     def test_highrisk_expired_reject_rejected(self, client, server):
         """过期审批 reject 同样被前置有效性检查拦截。"""
         sid = new_session(client)
-        code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
+        code1, ev1 = chat_sse(client, sid, "订单ORD-E2E-R4申请退款")
         approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
         approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
         assert approval_id
@@ -474,7 +562,7 @@ class TestRealFaultToleranceE2E:
         else:
             model = FlakyRouterFakeModel(responses=[])
         model.router_calls.clear()
-        app = create_app(str(tmp_path / "router-retry.db"), model=model)
+        app = create_app(str(tmp_path / "router-retry.db"), model=model, auth_enabled=False)
         client = TestClient(app)
 
         sid = new_session(client)
@@ -505,12 +593,13 @@ class TestRealFaultToleranceE2E:
             str(tmp_path / "mutation-error.db"),
             model=_make_model(),
             order_repository=SQLiteOrderRepository(str(tmp_path / "mutation-seed.db")),
+            auth_enabled=False,
         )
         _seed_business_db(str(tmp_path / "mutation-seed.db"))
         client = TestClient(app)
 
         sid = new_session(client)
-        code1, events1 = chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
+        code1, events1 = chat_sse(client, sid, "订单ORD-E2E-A2的收货地址改成北京市朝阳区")
         assert code1 == 200
         assert any(e.get("type") == "form_required" for e in events1)
 
@@ -519,7 +608,7 @@ class TestRealFaultToleranceE2E:
             json={
                 "conversation_id": sid,
                 "action": "confirm",
-                "order_id": "ORD-PAID-1",
+                "order_id": "ORD-E2E-A2",
                 "fields": {"address": "北京市朝阳区望京SOHO"},
             },
         )
@@ -639,7 +728,12 @@ class TestCheckpointerRecovery:
         def _start():
             port = _free_port()
             state["port"] = port
-            app = create_app(db_path, model=_make_model(), order_repository=SQLiteOrderRepository(db_path))
+            app = create_app(
+                db_path,
+                model=_make_model(),
+                order_repository=SQLiteOrderRepository(db_path),
+                auth_enabled=False,
+            )
             srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
             thread = threading.Thread(target=srv.run, daemon=True)
             thread.start()
@@ -670,9 +764,9 @@ class TestCheckpointerRecovery:
         db_path = state["db_path"]
 
         # Phase 1: 发起 HighRisk 请求，拿到 approval_id
-        with httpx.Client(timeout=120.0, base_url=base) as client:
+        with _e2e_http_client(base) as client:
             sid = new_session(client)
-            code1, ev1 = chat_sse(client, sid, "订单ORD-PAID-1申请退款")
+            code1, ev1 = chat_sse(client, sid, "订单ORD-E2E-R5申请退款")
             approval_ev = next((e for e in ev1 if e.get("type") == "approval_required"), None)
             approval_id = (approval_ev or {}).get("data", {}).get("approval_id")
 
@@ -690,7 +784,7 @@ class TestCheckpointerRecovery:
         state["start"]()
         base2 = f"http://127.0.0.1:{state['port']}"
 
-        with httpx.Client(timeout=120.0, base_url=base2) as client2:
+        with _e2e_http_client(base2) as client2:
             # 重启后审批仍可查到
             r_get = client2.get(f"/approvals/{approval_id}")
             assert r_get.status_code == 200, "approval should survive server restart"
@@ -721,9 +815,17 @@ class TestFrontendApiContract:
     def test_confirm_action_endpoint(self, client, server):
         """POST /actions/confirm：Mutation 确认按钮调用的接口。"""
         sid = new_session(client)
-        chat_sse(client, sid, "订单ORD-PAID-1的收货地址改成北京市朝阳区")
+        chat_sse(client, sid, "订单ORD-E2E-A1的收货地址改成北京市朝阳区")
 
-        r = client.post("/actions/confirm", json={"conversation_id": sid, "action": "confirm"})
+        r = client.post(
+            "/actions/confirm",
+            json={
+                "conversation_id": sid,
+                "action": "confirm",
+                "order_id": "ORD-E2E-A1",
+                "fields": {"address": "北京市朝阳区望京SOHO"},
+            },
+        )
         assert r.status_code == 200
 
     def test_confirm_action_invalid_action_422(self, client, server):

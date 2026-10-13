@@ -203,3 +203,9 @@ def test_get_lightrag_client_is_singleton():
     b = get_lightrag_client()
     assert a is b
     reset_lightrag_client()
+
+
+def test_lightrag_client_disables_env_proxy():
+    """本机 LightRAG 与 Chatwoot 同约定：不走 HTTP_PROXY。"""
+    client = LightRagClient(base_url="http://localhost:9621")
+    assert client._client.trust_env is False
