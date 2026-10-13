@@ -66,9 +66,6 @@ class RefundApplyArgs(BaseModel):
     request_id: str
 
 
-_WRITE_STORE: dict[str, dict] = {}
-
-
 def _write_connect() -> sqlite3.Connection:
     path = get_settings().mock_ecommerce_db_path
     conn = sqlite3.connect(Path(path).resolve(), timeout=2)
@@ -130,15 +127,6 @@ def _own_order(conn: sqlite3.Connection, order_id: str, user_id: str) -> dict | 
     if row[0] != user_id:
         return {"error": "data_boundary", "order_id": order_id}
     return None
-
-
-def _run_idempotent(key: str, produce) -> dict:
-    """幂等键（tool-spec §2）：同 request_id 返回既有结果，防重放。"""
-    if key in _WRITE_STORE:
-        return {"ok": True, "replayed": True, "result": _WRITE_STORE[key]}
-    result = produce()
-    _WRITE_STORE[key] = result
-    return {"ok": True, "replayed": False, "result": result}
 
 
 @tool
