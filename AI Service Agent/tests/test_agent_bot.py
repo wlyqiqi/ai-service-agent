@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import sqlite3
 
@@ -69,6 +70,40 @@ async def test_agent_bot_invokes_graph():
     assert result is not None
     assert result["response"] is not None
     chatwoot.send_bot_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_forwards_runtime_context(monkeypatch):
+    """GraphContext must reach event_stream (PR #33 wiring must not stop at the public API)."""
+    captured: dict = {}
+
+    async def fake_event_stream(*_args, **kwargs):
+        captured["context"] = kwargs.get("context")
+        yield {"type": "done", "data": {"final": "ctx-ok", "message_id": "m-ctx"}}
+
+    monkeypatch.setattr(
+        "ai_service_agent.harness.agent_bot.event_stream", fake_event_stream
+    )
+    payload = {
+        "event": "message_created",
+        "id": "102-ctx",
+        "content": "你好",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 44},
+        "contact": {"id": 3, "name": "ctx-user"},
+    }
+    chatwoot = AsyncMock()
+    graph = SimpleNamespace(checkpointer=None)
+    sentinel = MagicMock(name="GraphContext")
+
+    result = await handle_agent_bot_message(
+        payload, chatwoot, graph=graph, context=sentinel
+    )
+
+    assert result is not None
+    assert result["response"] == "ctx-ok"
+    assert captured["context"] is sentinel
 
 
 @pytest.mark.asyncio
