@@ -45,6 +45,7 @@ async def event_stream(
     on_interrupt: Callable | None = None,
     resume_payload: dict | None = None,
     extra_state: dict | None = None,
+    context=None,
 ) -> AsyncGenerator[dict, None]:
     """graph.astream -> SSE 归一化事件（event-spec.md）。
 
@@ -60,6 +61,7 @@ async def event_stream(
     不回落历史文本（避免重复落库）。
     done 的 message_id = 本 turn 最后一条 assistant 消息的 langchain id，
     供 Message Store 对账持久化（handoff-spec.md §5.2）。
+    context：LangGraph Runtime 依赖（GraphContext）；透传 astream(..., context=...)。
     """
     # 非 resume 首轮：messages 之外按需补业务初始 state（如 user_id，供安全预检消费）；
     # resume 轮 user_id 已随 checkpoint 恢复，仅注入 messages。
@@ -76,7 +78,11 @@ async def event_stream(
     before_ids: set = await snapshot_assistant_ids(graph, config)
     try:
         async for _ns, mode, payload in graph.astream(
-            invocation, config=config, stream_mode=["messages", "updates", "custom"], subgraphs=True
+            invocation,
+            config=config,
+            context=context,
+            stream_mode=["messages", "updates", "custom"],
+            subgraphs=True,
         ):
             if mode == "custom":
                 if isinstance(payload, dict) and "type" in payload:

@@ -17,6 +17,7 @@ from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.domain.orders import SQLiteOrderRepository
+from ai_service_agent.graph.runtime_context import GraphContext
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
@@ -192,6 +193,13 @@ def create_app(
     widget_hmac_secret = chatwoot_hmac_secret or settings_chatwoot.chatwoot_hmac_secret
     agent_bot_secret = chatwoot_agent_bot_secret or settings_chatwoot.chatwoot_agent_bot_secret
     approvals = ApprovalService(conn, simulate_approval=sim)
+
+    def _runtime_context(user_id: str = "") -> GraphContext:
+        return GraphContext(
+            order_repository=resolved_order_repository,
+            approval_service=approvals,
+            user_id=user_id or "",
+        )
 
     app = FastAPI()
 
@@ -503,10 +511,12 @@ def create_app(
                             return
                         else:
                             resume_payload = resolve_resume_payload(it, body.message)
+                    user_id = status.get_user_id(conv_id) or ""
                     async for ev in event_stream(
                         graph, cfg, history, on_interrupt=cb,
                         resume_payload=resume_payload,
-                        extra_state={"user_id": status.get_user_id(conv_id) or ""},
+                        extra_state={"user_id": user_id},
+                        context=_runtime_context(user_id),
                     ):
                         if ev["type"] == "handoff_created":
                             # 外层文案（D3）：复用统一 side-effect path（落 NOTICE + Chatwoot ensure + 事件流）
@@ -566,7 +576,11 @@ def create_app(
                     if body.order_id is not None:
                         resume_payload["order_id"] = body.order_id
                 async for event in event_stream(
-                    graph, cfg, [], resume_payload=resume_payload,
+                    graph,
+                    cfg,
+                    [],
+                    resume_payload=resume_payload,
+                    context=_runtime_context(status.get_user_id(conv_id) or ""),
                 ):
                     if event.get("type") == "done":
                         final = event.get("data", {}).get("final")
@@ -625,6 +639,7 @@ def create_app(
                         await graph.ainvoke(
                             Command(resume={"action": HANDOFF_RESUME_ACTION}, update={"messages": history}),
                             config=cfg,
+                            context=_runtime_context(status.get_user_id(conv_id) or ""),
                         )
                     except Exception:
                         # 降级（D2）：中断保留，下一用户消息经入口 resume 调度兜底
@@ -656,7 +671,11 @@ def create_app(
                 graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
                 before_ids = await snapshot_assistant_ids(graph, cfg)  # D7：resume 前快照
-                await graph.ainvoke(Command(resume=resume_payload), cfg)
+                await graph.ainvoke(
+                    Command(resume=resume_payload),
+                    cfg,
+                    context=_runtime_context(status.get_user_id(conv_id) or ""),
+                )
                 # D7：diff 取本轮新增 assistant 文本 -> Message Store（唯一真相源）
                 final, final_message_id = await new_assistant_text_and_id(graph, cfg, before_ids)
                 if final is not None:
@@ -779,6 +798,7 @@ def create_app(
                     thread_lock_factory=_thread_lock,
                     chatwoot_lock_factory=_thread_lock,
                     callbacks_factory=_agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store),
+                    context=_runtime_context(),
                 )
         return {"ok": True}
     if _web_dir.exists():
