@@ -234,7 +234,7 @@ def make_mutation_graph(
         # Closed MutationGraph: same form session re-interrupt (form_rejected), not abort.
         return "form_interrupt" if state.get("context", {}).get("recheck_reason") else "execute"
 
-    builder = StateGraph(CustomerServiceState).set_node_defaults(
+    builder = StateGraph(CustomerServiceState, context_schema=GraphContext).set_node_defaults(
         error_handler=make_subgraph_error_handler("finalize_failed"),
     )
     builder.add_node(
