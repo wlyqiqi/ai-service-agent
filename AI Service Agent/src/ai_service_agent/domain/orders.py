@@ -136,7 +136,7 @@ class SQLiteOrderRepository(OrderRepository):
             row = conn.execute(
                 """
                 SELECT order_id, customer_id, status, signed_at, cancelled_at,
-                       total_amount, cancelled_at, rowid
+                       total_amount, rowid
                   FROM orders WHERE order_id = ?
                 """,
                 (order_id,),
@@ -183,7 +183,7 @@ class SQLiteOrderRepository(OrderRepository):
                 "、".join(f"{name} ×{quantity}" for name, quantity in items)
                 or "商品信息不可用"
             ),
-            version=f"{row[7]}:{row[2]}:{row[3] or ''}:{row[4] or ''}",
+            version=f"{row[6]}:{row[2]}:{row[3] or ''}:{row[4] or ''}",
         )
 
     def list_actionable_orders(self, user_id: str, action: str) -> list[dict]:
