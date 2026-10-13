@@ -95,30 +95,7 @@ async def handle_agent_bot_message(
     else:
         conversation_lock = None
 
-    if conversation_lock is not None:
-        async with conversation_lock:
-            return await _handle_locked_agent_bot_message(
-                payload=payload,
-                chatwoot=chatwoot,
-                graph=graph,
-                status=status,
-                messages_store=messages_store,
-                mapping=mapping,
-                profile_loader=profile_loader,
-                orders_loader=orders_loader,
-                on_interrupt=on_interrupt,
-                thread_lock_factory=thread_lock_factory,
-                callbacks_factory=callbacks_factory,
-                on_handoff_created=on_handoff_created,
-                on_approval_pending=on_approval_pending,
-                conversation=conversation,
-                cw_conv_id=cw_conv_id,
-                contact=contact,
-                contact_id=contact_id,
-                content=content.strip(),
-                submitted_values=submitted_values,
-            )
-    return await _handle_locked_agent_bot_message(
+    locked_kwargs = dict(
         payload=payload,
         chatwoot=chatwoot,
         graph=graph,
@@ -129,8 +106,10 @@ async def handle_agent_bot_message(
         orders_loader=orders_loader,
         on_interrupt=on_interrupt,
         thread_lock_factory=thread_lock_factory,
+        callbacks_factory=callbacks_factory,
         on_handoff_created=on_handoff_created,
         on_approval_pending=on_approval_pending,
+        context=context,
         conversation=conversation,
         cw_conv_id=cw_conv_id,
         contact=contact,
@@ -138,6 +117,10 @@ async def handle_agent_bot_message(
         content=content.strip(),
         submitted_values=submitted_values,
     )
+    if conversation_lock is not None:
+        async with conversation_lock:
+            return await _handle_locked_agent_bot_message(**locked_kwargs)
+    return await _handle_locked_agent_bot_message(**locked_kwargs)
 
 
 async def _handle_locked_agent_bot_message(
@@ -155,6 +138,7 @@ async def _handle_locked_agent_bot_message(
     callbacks_factory=None,
     on_handoff_created=None,
     on_approval_pending=None,
+    context=None,
     conversation: dict[str, Any],
     cw_conv_id: int,
     contact: dict[str, Any],
