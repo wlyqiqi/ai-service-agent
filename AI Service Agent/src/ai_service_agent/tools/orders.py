@@ -8,6 +8,7 @@ from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, ConfigDict
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.domain.orders import ADDRESS_EDITABLE_STATUSES, ORDER_DISPLAY_STATUS
 
 
 class OrderLookupArgs(BaseModel):
@@ -66,19 +67,13 @@ _DB_MACHINE_STATUS = {
     "refunded": "refunded",
     "cancelled": "cancelled",
 }
-_DISPLAY_STATUS = {
-    "paid": "已付款", "shipped": "已发货", "signed": "已发货",
-    "delivered": "已送达", "completed": "已完成",
-    "refunding": "退款中", "refunded": "已退款", "cancelled": "已取消",
-}
+_DISPLAY_STATUS = ORDER_DISPLAY_STATUS
 _SHIPMENT_DISPLAY = {
     "pending": "待发货",
     "in_transit": "运输中",
     "delivered": "已签收",
 }
 _ORDER_STATUS_FILTERS = set(_DISPLAY_STATUS) - {"signed"}
-ORDER_DISPLAY_STATUS = _DISPLAY_STATUS
-ADDRESS_EDITABLE_STATUSES = {"paid"}
 
 
 def is_address_editable_status(status: str | None) -> bool:

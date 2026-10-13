@@ -16,7 +16,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.domain.orders import SQLiteOrderRepository
+from ai_service_agent.domain.orders import OrderRepositoryUnavailable, SQLiteOrderRepository
 from ai_service_agent.graph.runtime_context import GraphContext
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
@@ -48,7 +48,6 @@ from ai_service_agent.harness.resume import (
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.harness.streaming import event_stream, new_assistant_text_and_id, snapshot_assistant_ids
 from ai_service_agent.testing import make_fake_model
-from ai_service_agent.tools.orders import ADDRESS_EDITABLE_STATUSES, ORDER_DISPLAY_STATUS
 
 logger = logging.getLogger("ai_service_agent")
 
@@ -206,39 +205,25 @@ def create_app(
     def _profile_for_agent_bot(user_id: str | None):
         if not user_id:
             return None
-        profile_path = Path(resolved_profile_db_path)
-        if not profile_path.exists():
-            return None
         try:
-            conn = sqlite3.connect(profile_path)
-            row = conn.execute(
-                "SELECT phone, address FROM customers WHERE customer_id = ?", (user_id,)
-            ).fetchone()
-            conn.close()
-        except sqlite3.Error:
+            return resolved_order_repository.get_user_profile(user_id)
+        except OrderRepositoryUnavailable:
             return None
-        return {"user_id": user_id, "phone": row[0], "address": row[1]} if row else None
 
     def _address_editable_orders_for_agent_bot(user_id: str | None):
         if not user_id:
             return []
-        profile_path = Path(resolved_profile_db_path)
-        if not profile_path.exists():
-            return []
         try:
-            conn = sqlite3.connect(profile_path)
-            placeholders = ",".join("?" for _ in ADDRESS_EDITABLE_STATUSES)
-            rows = conn.execute(
-                "SELECT order_id, status FROM orders WHERE customer_id = ? "
-                f"AND status IN ({placeholders}) ORDER BY ordered_at DESC LIMIT 20",
-                (user_id, *sorted(ADDRESS_EDITABLE_STATUSES)),
-            ).fetchall()
-            conn.close()
-        except sqlite3.Error:
+            orders = resolved_order_repository.list_user_orders(
+                user_id, address_editable=True
+            )
+        except OrderRepositoryUnavailable:
+            return []
+        if orders is None:
             return []
         return [
-            {"order_id": row[0], "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1])}
-            for row in rows
+            {"order_id": row["order_id"], "status_display": row["status_display"]}
+            for row in orders
         ]
 
     def _auth_user(request: Request):
@@ -347,73 +332,26 @@ def create_app(
     def me_profile(request: Request):
         """Read-only presentation data for frontend form old-info display."""
         user_id = _require_auth_user(request)
-        profile_path = Path(resolved_profile_db_path)
-        if not profile_path.exists():
-            raise HTTPException(status_code=503, detail="profile data source unavailable")
-
-        conn = None
         try:
-            conn = sqlite3.connect(profile_path)
-            row = conn.execute(
-                "SELECT phone, address FROM customers WHERE customer_id = ?",
-                (user_id,),
-            ).fetchone()
-        except sqlite3.Error as exc:
+            profile = resolved_order_repository.get_user_profile(user_id)
+        except OrderRepositoryUnavailable as exc:
             raise HTTPException(status_code=503, detail="profile data source unavailable") from exc
-        finally:
-            if conn is not None:
-                conn.close()
-
-        if row is None:
+        if profile is None:
             raise HTTPException(status_code=404, detail="profile not found")
-
-        return {"user_id": user_id, "phone": row[0], "address": row[1]}
+        return profile
 
     @app.get("/me/orders")
     def me_orders(request: Request, address_editable: bool = False):
         """Read-only order options for frontend forms."""
         user_id = _require_auth_user(request)
-        profile_path = Path(resolved_profile_db_path)
-        if not profile_path.exists():
-            raise HTTPException(status_code=503, detail="profile data source unavailable")
-
-        conn = None
         try:
-            conn = sqlite3.connect(profile_path)
-            exists = conn.execute(
-                "SELECT 1 FROM customers WHERE customer_id = ?",
-                (user_id,),
-            ).fetchone()
-            if exists is None:
-                raise HTTPException(status_code=404, detail="profile not found")
-
-            sql = (
-                "SELECT order_id, status, ordered_at, total_amount, currency "
-                "FROM orders WHERE customer_id = ?"
+            orders = resolved_order_repository.list_user_orders(
+                user_id, address_editable=address_editable
             )
-            params: list = [user_id]
-            if address_editable:
-                placeholders = ",".join("?" for _ in ADDRESS_EDITABLE_STATUSES)
-                sql += f" AND status IN ({placeholders})"
-                params.extend(sorted(ADDRESS_EDITABLE_STATUSES))
-            sql += " ORDER BY ordered_at DESC LIMIT 20"
-            rows = conn.execute(sql, params).fetchall()
-        except sqlite3.Error as exc:
+        except OrderRepositoryUnavailable as exc:
             raise HTTPException(status_code=503, detail="profile data source unavailable") from exc
-        finally:
-            if conn is not None:
-                conn.close()
-
-        orders = [
-            {
-                "order_id": row[0],
-                "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1]),
-                "ordered_at": row[2],
-                "amount": row[3],
-                "currency": row[4],
-            }
-            for row in rows
-        ]
+        if orders is None:
+            raise HTTPException(status_code=404, detail="profile not found")
         return {
             "user_id": user_id,
             "address_editable": address_editable,
