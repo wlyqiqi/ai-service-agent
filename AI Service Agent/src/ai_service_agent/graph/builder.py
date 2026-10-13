@@ -32,7 +32,7 @@ from ai_service_agent.graph.workflows.operation_clarify import (
     make_hybrid_tool_resolve_node,
     make_operation_clarify_node,
 )
-from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY, make_tool_registry
+from ai_service_agent.tools import make_tool_registry
 
 
 _PROFILE_UPDATE_PATTERN = re.compile(

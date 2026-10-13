@@ -14,7 +14,11 @@ from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 
-from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
+from ai_service_agent.domain.orders import (
+    REFUND_WINDOW_DAYS,
+    OrderRepository,
+    OrderRepositoryUnavailable,
+)
 from ai_service_agent.tools.orders import is_address_editable_status
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.graph.runtime_context import GraphContext
@@ -22,8 +26,6 @@ from ai_service_agent.graph.workflows.copy import precheck_reject_text
 
 RISK_ORDER = {"read": 0, "mutation": 1, "high_risk": 2}
 from datetime import datetime, timezone
-
-REFUND_WINDOW_DAYS = 7  # 无理由退款签收窗口（D3，CTRL-0086）
 
 
 def _apply_business_rules(pending: dict, precheck_data: dict | None, user_id: str = "") -> str | None:

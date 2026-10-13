@@ -17,7 +17,7 @@ from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.harness.streaming import event_stream
 from conftest import ainvoke_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
-from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY, make_tool_registry
 from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools import orders as orders_mod
 from ai_service_agent.tools import write as write_mod
@@ -361,11 +361,12 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
     assert first["context"].get("cancellation_candidates", []) == []
     assert "订单号" in first["messages"][-1].content
 
+    high_risk_reg = make_tool_registry(MagicMock())
     select_node = make_select_node(
         ToolCallingFakeModel(responses=[select_json_message("refund_apply", {})]),
         "high_risk",
-        DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk"),
-        DEFAULT_TOOL_REGISTRY,
+        high_risk_reg.for_risk_level("high_risk"),
+        high_risk_reg,
     )
     selected = asyncio.run(select_node({**first, "messages": [HumanMessage(content="帮我申请退款")]}))
     assert "cancellation_candidates" not in selected["context"]

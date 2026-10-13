@@ -16,12 +16,10 @@ from ai_service_agent.tools.write import (
     UpdateAddressArgs,
     UpdateOrderNoteArgs,
     UpdatePhoneArgs,
-    cancel_order,
     create_invoice,
     create_service_ticket,
     make_cancel_order_tool,
     make_refund_apply_tool,
-    refund_apply,
     update_address,
     update_order_note,
     update_phone,
@@ -29,7 +27,9 @@ from ai_service_agent.tools.write import (
 
 # 默认注册表（tool-spec.md §4 v1 清单 + P5 工具集定案）：
 # read 档：kb_search / order_lookup / my_orders / shipment_query；mutation 档：+ update_address / update_phone / update_order_note /
-# create_invoice / create_service_ticket；high_risk 档：+ cancel_order（原 order_cancel）/ refund_apply。
+# create_invoice / create_service_ticket。
+# high_risk（cancel_order / refund_apply）不在此注册——必须经 make_tool_registry(order_repository)
+# 走 OrderRepository（ADR 2026-10-10）。
 DEFAULT_TOOL_REGISTRY = ToolRegistry()
 DEFAULT_TOOL_REGISTRY.register(
     ToolMeta("kb_search", "知识库检索", "read", schema=KbSearchArgs), kb_search,
@@ -59,22 +59,21 @@ DEFAULT_TOOL_REGISTRY.register(
 DEFAULT_TOOL_REGISTRY.register(
     ToolMeta("create_service_ticket", "创建售后工单", "mutation", schema=CreateServiceTicketArgs, idempotent=True), create_service_ticket,
 )
-# high_risk 档：cancel_order（原 order_cancel 重命名）+ refund_apply
-DEFAULT_TOOL_REGISTRY.register(
-    ToolMeta("cancel_order", "取消订单", "high_risk", schema=CancelOrderArgs, idempotent=True), cancel_order,
+
+_CANCEL_META = ToolMeta(
+    "cancel_order", "取消订单", "high_risk", schema=CancelOrderArgs, idempotent=True,
 )
-DEFAULT_TOOL_REGISTRY.register(
-    ToolMeta("refund_apply", "退款申请", "high_risk", schema=RefundApplyArgs, idempotent=True), refund_apply,
+_REFUND_META = ToolMeta(
+    "refund_apply", "退款申请", "high_risk", schema=RefundApplyArgs, idempotent=True,
 )
 
 
 def make_tool_registry(order_repository=None) -> ToolRegistry:
-    """Create a registry; high-risk commands use the supplied repository when present."""
+    """Create a registry; high-risk commands require an OrderRepository."""
     registry = ToolRegistry()
     for meta, tool_fn in DEFAULT_TOOL_REGISTRY._tools.values():
-        if meta.name == "cancel_order" and order_repository is not None:
-            tool_fn = make_cancel_order_tool(order_repository)
-        elif meta.name == "refund_apply" and order_repository is not None:
-            tool_fn = make_refund_apply_tool(order_repository)
         registry.register(meta, tool_fn)
+    if order_repository is not None:
+        registry.register(_CANCEL_META, make_cancel_order_tool(order_repository))
+        registry.register(_REFUND_META, make_refund_apply_tool(order_repository))
     return registry

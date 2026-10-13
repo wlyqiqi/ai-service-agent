@@ -94,7 +94,8 @@ _STATUS_MAP = {
     "refunded": "refunded",
     "cancelled": "cancelled",
 }
-_REFUND_WINDOW_DAYS = 7
+# Shared with safety precheck (single source — avoid A/B/safety drift).
+REFUND_WINDOW_DAYS = 7
 _CUMULATIVE_REFUND_STATUSES = ("paid", "signed", "refunding")
 # Raw orders.status values. Address edits stay pre-fulfillment; other mutation
 # tools list orders that are not cancelled or in a refund terminal state.
@@ -375,7 +376,7 @@ class SQLiteOrderRepository(OrderRepository):
                 if signed_time.tzinfo is None:
                     signed_time = signed_time.replace(tzinfo=timezone.utc)
                 age = (datetime.now(timezone.utc) - signed_time).total_seconds()
-                if age > _REFUND_WINDOW_DAYS * 86400:
+                if age > REFUND_WINDOW_DAYS * 86400:
                     return {"error": "refund_window_expired", "order_id": order_id}
             occupied = float(conn.execute(
                 "SELECT COALESCE(SUM(amount), 0) FROM refunds"

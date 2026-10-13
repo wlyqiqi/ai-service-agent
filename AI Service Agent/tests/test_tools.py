@@ -1,6 +1,10 @@
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
-from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
+import pytest
+from pydantic import ValidationError
+
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY, make_tool_registry
 from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools.orders import lookup_order_state, order_lookup
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
@@ -12,10 +16,10 @@ from ai_service_agent.tools.write import (
     UpdateAddressArgs,
     UpdateOrderNoteArgs,
     UpdatePhoneArgs,
-    cancel_order,
     create_invoice,
     create_service_ticket,
-    refund_apply,
+    make_cancel_order_tool,
+    make_refund_apply_tool,
     update_address,
     update_order_note,
     update_phone,
@@ -24,6 +28,7 @@ from ai_service_agent.tools.write import (
 
 def test_registry_injects_by_risk_level():
     reg = ToolRegistry()
+    repo = MagicMock()
     reg.register(ToolMeta("kb_search", "检索", "read"), kb_search)
     reg.register(ToolMeta("order_lookup", "查订单", "read"), order_lookup)
     reg.register(ToolMeta("update_address", "改地址", "mutation", schema=None, idempotent=True), update_address)
@@ -31,8 +36,14 @@ def test_registry_injects_by_risk_level():
     reg.register(ToolMeta("update_order_note", "改备注", "mutation", schema=None, idempotent=True), update_order_note)
     reg.register(ToolMeta("create_invoice", "开发票", "mutation", schema=None, idempotent=True), create_invoice)
     reg.register(ToolMeta("create_service_ticket", "售后工单", "mutation", schema=None, idempotent=True), create_service_ticket)
-    reg.register(ToolMeta("cancel_order", "取消订单", "high_risk", schema=None, idempotent=True), cancel_order)
-    reg.register(ToolMeta("refund_apply", "退款", "high_risk", schema=None, idempotent=True), refund_apply)
+    reg.register(
+        ToolMeta("cancel_order", "取消订单", "high_risk", schema=None, idempotent=True),
+        make_cancel_order_tool(repo),
+    )
+    reg.register(
+        ToolMeta("refund_apply", "退款", "high_risk", schema=None, idempotent=True),
+        make_refund_apply_tool(repo),
+    )
     assert {t.name for t in reg.for_risk_level("read")} == {"kb_search", "order_lookup"}
     assert {t.name for t in reg.for_risk_level("mutation")} == {
         "kb_search", "order_lookup", "update_address", "update_phone", "update_order_note",
@@ -49,16 +60,34 @@ def test_stub_tools_return_values():
     assert order_lookup.invoke({"order_id": "ORD-1", "user_id": "u1"})["order_id"] == "ORD-1"
 
 
-def test_default_registry_tiered():
+def test_default_registry_excludes_high_risk_tools():
+    """DEFAULT has read+mutation only; high-risk requires make_tool_registry(repo)."""
     read_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("read")}
     mutation_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")}
     high_risk_tools = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk")}
     assert read_tools == {"kb_search", "order_lookup", "my_orders", "shipment_query"}
-    assert mutation_tools == read_tools | {"update_address", "update_phone", "update_order_note",
-                                           "create_invoice", "create_service_ticket"}
-    assert high_risk_tools == mutation_tools | {"cancel_order", "refund_apply"}
+    assert mutation_tools == read_tools | {
+        "update_address", "update_phone", "update_order_note",
+        "create_invoice", "create_service_ticket",
+    }
+    assert high_risk_tools == mutation_tools
+    assert DEFAULT_TOOL_REGISTRY.meta_for("cancel_order") is None
+    assert DEFAULT_TOOL_REGISTRY.meta_for("refund_apply") is None
     assert "account_update" not in mutation_tools
     assert "order_cancel" not in high_risk_tools
+
+
+def test_make_tool_registry_adds_high_risk_via_repository():
+    repo = MagicMock()
+    reg = make_tool_registry(repo)
+    assert reg.meta_for("cancel_order") is not None
+    assert reg.meta_for("cancel_order").min_risk_level == "high_risk"
+    assert reg.meta_for("refund_apply") is not None
+    high = {t.name for t in reg.for_risk_level("high_risk")}
+    assert {"cancel_order", "refund_apply"} <= high
+    cancel = next(t for t in reg.for_risk_level("high_risk") if t.name == "cancel_order")
+    cancel.invoke({"order_id": "ORD-1", "request_id": "r1", "user_id": "u1"})
+    repo.cancel_order.assert_called_once_with("ORD-1", "u1", None, "r1")
 
 
 def test_tool_meta_carries_schema_field():
@@ -84,14 +113,11 @@ def test_write_tool_schemas():
     assert RefundApplyArgs(order_id="10086", amount=99.0, request_id="rq").amount == 99.0
 
 
-def test_registry_meta_for():
-    meta = DEFAULT_TOOL_REGISTRY.meta_for("cancel_order")
+def test_registry_meta_for_high_risk_via_factory():
+    reg = make_tool_registry(MagicMock())
+    meta = reg.meta_for("cancel_order")
     assert meta is not None and meta.min_risk_level == "high_risk" and meta.idempotent is True
-    assert DEFAULT_TOOL_REGISTRY.meta_for("nope") is None
-
-
-import pytest
-from pydantic import ValidationError
+    assert reg.meta_for("nope") is None
 
 
 def test_write_schemas_forbid_unknown_fields():
@@ -107,18 +133,21 @@ def test_write_schemas_forbid_unknown_fields():
 
 
 def test_registry_risk_sets_v2():
-    """新工具集定案：mutation 5 工具 + high_risk 2 工具（2026-09-17）。"""
-    read = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("read")}
-    mutation = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")}
-    high = {t.name for t in DEFAULT_TOOL_REGISTRY.for_risk_level("high_risk")}
+    """新工具集定案：mutation 5 工具 + high_risk 2 工具（经 make_tool_registry）。"""
+    reg = make_tool_registry(MagicMock())
+    read = {t.name for t in reg.for_risk_level("read")}
+    mutation = {t.name for t in reg.for_risk_level("mutation")}
+    high = {t.name for t in reg.for_risk_level("high_risk")}
     assert read == {"kb_search", "order_lookup", "my_orders", "shipment_query"}
-    assert mutation == read | {"update_address", "update_phone", "update_order_note",
-                               "create_invoice", "create_service_ticket"}
+    assert mutation == read | {
+        "update_address", "update_phone", "update_order_note",
+        "create_invoice", "create_service_ticket",
+    }
     assert high == mutation | {"cancel_order", "refund_apply"}
 
 
 def test_cancel_order_meta_is_high_risk():
-    meta = DEFAULT_TOOL_REGISTRY.meta_for("cancel_order")
+    meta = make_tool_registry(MagicMock()).meta_for("cancel_order")
     assert meta is not None and meta.min_risk_level == "high_risk" and meta.idempotent
 
 
@@ -162,5 +191,4 @@ def test_read_tool_schema_contracts():
 
     assert "text" in KbSearchArgs.model_fields
     assert "request_id" in KbSearchArgs.model_fields
-    assert KbSearchArgs.model_validate({"text": "退款", "request_id": "r1"}).text == "退款"
-
+    assert KbSearchArgs.model_validate({"text": "退货", "request_id": "r1"}).text == "退货"

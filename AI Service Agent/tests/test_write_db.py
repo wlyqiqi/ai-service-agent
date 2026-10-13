@@ -12,11 +12,21 @@ from langchain_core.messages import HumanMessage
 from ai_service_agent.graph.builder import build_graph
 from conftest import ainvoke_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.tools import orders as orders_mod
 from ai_service_agent.tools import write as write_mod
+from ai_service_agent.tools.write import make_cancel_order_tool, make_refund_apply_tool
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _cancel_tool(db_path: Path):
+    return make_cancel_order_tool(SQLiteOrderRepository(str(db_path)))
+
+
+def _refund_tool(db_path: Path):
+    return make_refund_apply_tool(SQLiteOrderRepository(str(db_path)))
 
 
 def _load_seed_module():
@@ -265,7 +275,7 @@ def test_cancel_order_success_replay_and_business_rejection(monkeypatch, seed):
         conn.close()
 
     before = _snapshot(db_path)
-    first = write_mod.cancel_order.invoke(
+    first = _cancel_tool(db_path).invoke(
         {
             "order_id": paid_order,
             "reason": "不想要了",
@@ -277,7 +287,7 @@ def test_cancel_order_success_replay_and_business_rejection(monkeypatch, seed):
     assert first["result"]["status"] == "cancelled"
     assert first["result"]["cancelled_at"]
 
-    replay = write_mod.cancel_order.invoke(
+    replay = _cancel_tool(db_path).invoke(
         {
             "order_id": paid_order,
             "reason": "换一个理由",
@@ -292,7 +302,7 @@ def test_cancel_order_success_replay_and_business_rejection(monkeypatch, seed):
     assert after_cancel["orders"] != before["orders"]
     assert after_cancel["idempotency"] != before["idempotency"]
 
-    already = write_mod.cancel_order.invoke(
+    already = _cancel_tool(db_path).invoke(
         {
             "order_id": cancelled_order,
             "request_id": "cancel-already",
@@ -301,7 +311,7 @@ def test_cancel_order_success_replay_and_business_rejection(monkeypatch, seed):
     )
     assert already == {"error": "order_already_cancelled", "order_id": cancelled_order}
 
-    not_allowed = write_mod.cancel_order.invoke(
+    not_allowed = _cancel_tool(db_path).invoke(
         {
             "order_id": shipped_order,
             "request_id": "cancel-not-allowed",
@@ -328,7 +338,7 @@ def test_cancel_order_replay_is_bound_to_requester(monkeypatch, seed):
     finally:
         conn.close()
 
-    first = write_mod.cancel_order.invoke(
+    first = _cancel_tool(db_path).invoke(
         {
             "order_id": order_id,
             "reason": "owner cancel",
@@ -347,7 +357,7 @@ def test_cancel_order_replay_is_bound_to_requester(monkeypatch, seed):
     finally:
         conn.close()
 
-    replay = write_mod.cancel_order.invoke(
+    replay = _cancel_tool(db_path).invoke(
         {
             "order_id": order_id,
             "reason": "attacker replay",
@@ -380,7 +390,7 @@ def test_cancel_order_blocks_cross_user_without_pollution(monkeypatch, seed):
     finally:
         conn.close()
 
-    denied = write_mod.cancel_order.invoke(
+    denied = _cancel_tool(db_path).invoke(
         {
             "order_id": order_id,
             "reason": "越权取消",
@@ -413,7 +423,7 @@ def test_refund_apply_full_amount_writes_and_replays(monkeypatch, seed):
         ).fetchone()
     finally:
         conn.close()
-    first = write_mod.refund_apply.invoke(
+    first = _refund_tool(db_path).invoke(
         {"order_id": order_id, "request_id": "ref-1", "user_id": owner}
     )
     assert first["replayed"] is False
@@ -431,7 +441,7 @@ def test_refund_apply_full_amount_writes_and_replays(monkeypatch, seed):
     assert refund[0] == total
     assert refund[1] == "refunding"
     assert len(idem) == 1
-    replay = write_mod.refund_apply.invoke(
+    replay = _refund_tool(db_path).invoke(
         {"order_id": order_id, "request_id": "ref-1", "user_id": owner}
     )
     assert replay["replayed"] is True
@@ -449,15 +459,15 @@ def test_refund_apply_partial_amount_tracks_cumulative(monkeypatch, seed):
     finally:
         conn.close()
     half = round(total / 2, 2)
-    first = write_mod.refund_apply.invoke(
+    first = _refund_tool(db_path).invoke(
         {"order_id": order_id, "amount": half, "request_id": "ref-p1", "user_id": owner}
     )
     assert first["replayed"] is False
-    second = write_mod.refund_apply.invoke(
+    second = _refund_tool(db_path).invoke(
         {"order_id": order_id, "amount": half, "request_id": "ref-p2", "user_id": owner}
     )
     assert second["replayed"] is False
-    third = write_mod.refund_apply.invoke(
+    third = _refund_tool(db_path).invoke(
         {"order_id": order_id, "amount": 0.01, "request_id": "ref-p3", "user_id": owner}
     )
     assert third == {"error": "refund_amount_exceeds", "order_id": order_id}
@@ -477,11 +487,11 @@ def test_refund_apply_blocks_wrong_status_and_cross_user(monkeypatch, seed):
         ).fetchone()
     finally:
         conn.close()
-    result = write_mod.refund_apply.invoke(
+    result = _refund_tool(db_path).invoke(
         {"order_id": shipped_order, "request_id": "ref-s1", "user_id": shipped_owner}
     )
     assert result == {"error": "refund_not_allowed", "order_id": shipped_order, "status": "shipped"}
-    cross = write_mod.refund_apply.invoke(
+    cross = _refund_tool(db_path).invoke(
         {"order_id": other_order, "request_id": "ref-x1", "user_id": "nobody"}
     )
     assert cross == {"error": "data_boundary", "order_id": other_order}
@@ -504,7 +514,7 @@ def test_refund_cross_user_blocked_without_pollution(monkeypatch, seed):
     finally:
         conn.close()
 
-    denied = write_mod.refund_apply.invoke(
+    denied = _refund_tool(db_path).invoke(
         {
             "order_id": order_id,
             "amount": 1.0,
