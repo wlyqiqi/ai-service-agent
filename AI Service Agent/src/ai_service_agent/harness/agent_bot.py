@@ -43,6 +43,7 @@ async def handle_agent_bot_message(
     callbacks_factory=None,
     on_handoff_created=None,
     on_approval_pending=None,
+    context=None,
 ) -> dict[str, Any] | None:
     """处理 AgentBot incoming 消息，并回写 outgoing 消息。"""
     event = payload.get("event")
@@ -252,6 +253,7 @@ async def _handle_locked_agent_bot_message(
                     on_interrupt=on_interrupt,
                     resume_payload=resume_payload,
                     extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
+                    context=context,
                 ):
                     if event.get("type") == "done":
                         final_text = event.get("data", {}).get("final")

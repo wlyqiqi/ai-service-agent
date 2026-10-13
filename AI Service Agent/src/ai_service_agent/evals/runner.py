@@ -7,8 +7,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.route_policy import resolve_route_policy
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.graph import make_ai_graph
@@ -180,7 +182,8 @@ async def _run_case_graph(case: dict, responses: list, user_id: str) -> dict:
     os.environ["JEV_ENABLED"] = "false"
     get_settings.cache_clear()
     model = ToolCallingFakeModel(responses=responses)
-    graph = make_ai_graph(model, MemorySaver())
+    order_repository = SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
+    graph = make_ai_graph(model, MemorySaver(), order_repository=order_repository)
     thread_id = f"eval-{case['id']}"
     custom: list[dict] = []
     interrupts: list[dict] = []
@@ -188,6 +191,7 @@ async def _run_case_graph(case: dict, responses: list, user_id: str) -> dict:
     async for _ns, mode, payload in graph.astream(
         {"messages": [HumanMessage(content=case["input"])], "user_id": user_id, "session_id": thread_id, "context": {}},
         {"configurable": {"thread_id": thread_id}},
+        context=GraphContext(order_repository=order_repository, user_id=user_id),
         stream_mode=["messages", "updates", "custom"], subgraphs=True,
     ):
         if mode == "custom" and isinstance(payload, dict):

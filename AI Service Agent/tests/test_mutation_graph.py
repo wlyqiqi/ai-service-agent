@@ -423,3 +423,44 @@ def test_mutation_graph_declares_graph_context_schema():
         DEFAULT_TOOL_REGISTRY,
     )
     assert graph.context_schema is GraphContext
+
+
+def test_event_stream_prefers_runtime_order_repository(seed, monkeypatch):
+    """Runtime GraphContext.order_repository must win over build-time closure."""
+    from ai_service_agent.graph.runtime_context import GraphContext
+    from ai_service_agent.harness.streaming import event_stream
+
+    class RuntimeOnlyRepo(SQLiteOrderRepository):
+        def list_order_picker_candidates(self, user_id: str, tool: str) -> list[dict]:
+            return [
+                {"order_id": "ORD-FROM-RUNTIME", "status": "paid", "product_summary": "runtime"},
+            ]
+
+    _use_db(monkeypatch, seed[1])
+    closure_repo = SQLiteOrderRepository(str(seed[1]))
+    runtime_repo = RuntimeOnlyRepo(str(seed[1]))
+    graph = build_graph(
+        _mutation_model(),
+        tools=[kb_search],
+        checkpointer=MemorySaver(),
+        order_repository=closure_repo,
+    )
+    events = asyncio.run(
+        _acollect_events(
+            event_stream(
+                graph,
+                {"configurable": {"thread_id": "runtime-ctx-1"}},
+                [HumanMessage(content="改一下收货地址")],
+                extra_state={"user_id": "u1", "session_id": "runtime-ctx-1"},
+                context=GraphContext(order_repository=runtime_repo, user_id="u1"),
+            )
+        )
+    )
+    form = next(event for event in events if event["type"] == "form_required")
+    candidates = [item["order_id"] for item in form["data"]["order_candidates"]]
+    assert candidates == ["ORD-FROM-RUNTIME"]
+    assert "ORD-PAID-1" not in candidates
+
+
+async def _acollect_events(gen):
+    return [event async for event in gen]

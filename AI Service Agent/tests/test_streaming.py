@@ -41,6 +41,37 @@ def test_stream_emits_token_and_done():
     assert events[-1]["data"]["final"] == "FAQ 回答。"
 
 
+def test_event_stream_forwards_context_to_astream():
+    """event_stream must pass GraphContext into astream (Runtime DI, graph-spec §1)."""
+    from ai_service_agent.graph.runtime_context import GraphContext
+
+    captured: dict = {}
+
+    class SpyGraph:
+        async def aget_state(self, config):
+            class _State:
+                values = {"messages": []}
+
+            return _State()
+
+        async def astream(self, invocation, config=None, **kwargs):
+            captured["context"] = kwargs.get("context")
+            if False:
+                yield (), "updates", {}
+
+    ctx = GraphContext(user_id="u-spy")
+    events = _collect(
+        event_stream(
+            SpyGraph(),
+            {"configurable": {"thread_id": "ctx-forward"}},
+            [HumanMessage(content="hi")],
+            context=ctx,
+        )
+    )
+    assert events[-1]["type"] == "done"
+    assert captured.get("context") is ctx
+
+
 def test_stream_emits_error_then_done():
     class Boom(Exception):
         pass
