@@ -22,3 +22,5 @@
 - Postgres, HTTP APIs, or ERP adapters can be added without changing graph business logic.
 - TOCTOU failures are converted to deterministic `safety_rejected`; only runtime failures become `error`.
 - The eval harness can isolate mutation/high-risk state per case by restoring a clean SQLite snapshot.
+- Production high-risk tools are built via `make_tool_registry(order_repository)` → `make_cancel_order_tool` / `make_refund_apply_tool` (no module-level SQL `@tool` for cancel/refund). `DEFAULT_TOOL_REGISTRY` holds read+mutation only.
+- `REFUND_WINDOW_DAYS` is owned by `domain/orders.py` and shared with safety precheck.

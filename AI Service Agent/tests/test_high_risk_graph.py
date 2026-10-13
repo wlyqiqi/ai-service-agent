@@ -19,9 +19,12 @@ from ai_service_agent.graph.workflows import high_risk_agent as high_risk_agent_
 from ai_service_agent.graph.workflows import safety as safety_mod
 from ai_service_agent.graph.workflows.safety import _apply_business_rules, _check, make_precheck_fetch_node, make_recheck_node, make_safety_check_node
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable, SQLiteOrderRepository
-from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
-from ai_service_agent.tools import write as write_mod
+from ai_service_agent.tools import make_tool_registry
+from ai_service_agent.tools.write import make_cancel_order_tool, make_refund_apply_tool
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
+
+# Meta + tool schemas for safety_check; high-risk tools require a repository.
+_TOOL_REG = make_tool_registry(MagicMock())
 
 
 def _hr_model():
@@ -92,8 +95,8 @@ def test_high_risk_tool_exception_uses_local_finalize_failed(monkeypatch, tmp_pa
         conn.close()
 
     monkeypatch.setattr(
-        type(write_mod.refund_apply),
-        "invoke",
+        SQLiteOrderRepository,
+        "refund_apply",
         MagicMock(side_effect=RuntimeError("database unavailable")),
     )
     model = ToolCallingFakeModel(responses=[
@@ -156,14 +159,14 @@ def _safety_mini_graph(node):
 
 def test_check_rule_required_identifier_nonempty():
     """纯函数 _check：空必填标识符 -> invalid_args；非空放行；request_id 豁免。"""
-    assert _check({"tool": "refund_apply", "args": {"request_id": "r1", "order_id": ""}}, "high_risk", DEFAULT_TOOL_REGISTRY, "u1") == "invalid_args"
-    assert _check({"tool": "refund_apply", "args": {"request_id": "r1", "order_id": "10086"}}, "high_risk", DEFAULT_TOOL_REGISTRY, "u1") is None
-    assert _check({"tool": "refund_apply", "args": {"request_id": "", "order_id": "10086"}}, "high_risk", DEFAULT_TOOL_REGISTRY, "u1") is None
+    assert _check({"tool": "refund_apply", "args": {"request_id": "r1", "order_id": ""}}, "high_risk", _TOOL_REG, "u1") == "invalid_args"
+    assert _check({"tool": "refund_apply", "args": {"request_id": "r1", "order_id": "10086"}}, "high_risk", _TOOL_REG, "u1") is None
+    assert _check({"tool": "refund_apply", "args": {"request_id": "", "order_id": "10086"}}, "high_risk", _TOOL_REG, "u1") is None
 
 
 def test_safety_check_node_empty_required_backstop():
     """safety_check 节点（图上下文）：空必填标识符 -> invalid_args 拒绝，无 interrupt。"""
-    graph = _safety_mini_graph(make_safety_check_node("high_risk", DEFAULT_TOOL_REGISTRY))
+    graph = _safety_mini_graph(make_safety_check_node("high_risk", _TOOL_REG))
     out = ainvoke_graph(graph, {
         "messages": [],
         "user_id": "u1",
@@ -176,7 +179,7 @@ def test_safety_check_node_empty_required_backstop():
 
 
 def test_safety_check_clears_stale_precheck_reason():
-    graph = _safety_mini_graph(make_safety_check_node("mutation", DEFAULT_TOOL_REGISTRY))
+    graph = _safety_mini_graph(make_safety_check_node("mutation", _TOOL_REG))
     out = ainvoke_graph(graph, {
         "messages": [],
         "user_id": "u1",
@@ -192,7 +195,7 @@ def test_safety_check_clears_stale_precheck_reason():
 
 def test_recheck_node_empty_required_backstop():
     """recheck（resume 路径）同样兜底：空必填标识符 -> recheck_reason=invalid_args。"""
-    graph = _safety_mini_graph(make_recheck_node("high_risk", DEFAULT_TOOL_REGISTRY))
+    graph = _safety_mini_graph(make_recheck_node("high_risk", _TOOL_REG))
     out = ainvoke_graph(graph, {
         "messages": [],
         "user_id": "u1",
@@ -204,7 +207,7 @@ def test_recheck_node_empty_required_backstop():
 
 
 def test_recheck_clears_stale_recheck_reason():
-    graph = _safety_mini_graph(make_recheck_node("mutation", DEFAULT_TOOL_REGISTRY))
+    graph = _safety_mini_graph(make_recheck_node("mutation", _TOOL_REG))
     out = ainvoke_graph(graph, {
         "messages": [],
         "user_id": "u1",
@@ -812,10 +815,9 @@ def _invoke_cancel(graph, owner, thread_id):
 
 
 def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
-    from ai_service_agent.tools.write import cancel_order
-
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "approved")
     _use_cancel_db(monkeypatch, db_path)
+    cancel_order = make_cancel_order_tool(SQLiteOrderRepository(str(db_path)))
     graph = _cancel_graph(order_id, "cancel-approved")
     thread_id = "cancel-approved"
     request_id = "cancel-approved"
@@ -892,10 +894,9 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
 
 
 def test_refund_order_approved_writes_db_once(monkeypatch, tmp_path):
-    from ai_service_agent.tools.write import refund_apply
-
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-approved")
     _use_cancel_db(monkeypatch, db_path)
+    refund_apply = make_refund_apply_tool(SQLiteOrderRepository(str(db_path)))
     graph = _refund_graph(order_id, "refund-approved")
     thread_id = "refund-approved"
     request_id = "refund-approved"
@@ -1130,12 +1131,11 @@ def test_refund_order_expired_does_not_write_db(monkeypatch, tmp_path):
 
 
 def test_refund_order_replay_binds_to_requester(monkeypatch, tmp_path):
-    from ai_service_agent.tools.write import refund_apply
-
     _, db_path, owner, order_id, _ = _load_cancel_seed(
         tmp_path, "refund-replay-boundary"
     )
     _use_cancel_db(monkeypatch, db_path)
+    refund_apply = make_refund_apply_tool(SQLiteOrderRepository(str(db_path)))
     conn = sqlite3.connect(db_path)
     try:
         different_order = conn.execute(

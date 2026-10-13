@@ -151,7 +151,7 @@ agent.py                  # 删除或保留为兼容别名
 - LangGraph 版本：1.2.10；LangGraph API/Studio：0.12.0。
 - 顶层图 / Mutation / HighRisk 均使用 `context_schema=GraphContext` 与 `Runtime` 依赖注入。
 - 订单事实与高风险命令统一走 `OrderRepository`；SQLite 仅保留在 `SQLiteOrderRepository` adapter。
-- 高风险写工具由 repository 工厂构造；审批后 recheck 重新校验订单快照与版本。
+- `make_ai_graph` / Studio 经 `make_tool_registry(order_repository)` 装配 high-risk 工具；`DEFAULT_TOOL_REGISTRY` 仅含 read+mutation。审批后 recheck 重新校验订单快照与版本。
 - 40 例真实模型 baseline 为 38 通过 / 2 个复跑通过的非稳定项；全量 pytest 为 624 passed / 2 skipped。
 
 ---
