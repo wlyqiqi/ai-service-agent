@@ -555,8 +555,36 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
     address_field = next(item for item in items if item["name"] == "address")
     assert address_field["type"] == "text"
     assert address_field["default"] == "北京市朝阳区预填路 1 号"
+    assert all(item["name"] not in ("action", "request_id") for item in items)
     profile_loader.assert_not_called()
     orders_loader.assert_not_called()
+
+
+def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
+    """#44 AC: Chatwoot items can be derived from interrupt ``fields`` + prefills."""
+    from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
+
+    items = mutation_form_items_from_form_data(
+        {
+            "order_candidates": [{"order_id": "ORD-1", "product_summary": "鞋 x1"}],
+            "prefills": {"note": "工作日配送"},
+            "fields": [
+                {"name": "note", "label": "订单备注", "type": "text"},
+                {"name": "action", "type": "select", "options": [{"label": "确认", "value": "confirm"}]},
+            ],
+            "response_schema": {
+                "properties": {
+                    "address": {"type": "string"},
+                    "action": {"enum": ["confirm", "cancel"]},
+                },
+            },
+        }
+    )
+
+    assert [item["name"] for item in items] == ["order_id", "note"]
+    assert items[0]["options"] == [{"label": "ORD-1 · 鞋 x1", "value": "ORD-1"}]
+    assert items[1]["default"] == "工作日配送"
+    assert items[1]["label"] == "订单备注"
 
 
 @pytest.mark.asyncio
