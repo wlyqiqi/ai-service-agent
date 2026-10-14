@@ -32,6 +32,7 @@
 | 会话/记忆持久化 | `architecture.md`（持久化章节）+ `state-spec.md` |
 | 会话入口 / conversation_mode 判断 | `handoff-spec.md` + `architecture.md` + `event-spec.md` |
 | C 端 Widget / AgentBot Form | `docs/adr/0001-widget-agentbot-form-contract.md` + `event-spec.md` + `mutation-form-interrupt-spec.md` |
+| Chatwoot 控制台接线 / `.env` | `docs/ops/chatwoot-widget-agentbot-setup.md`（官方文档引用 + `CHATWOOT_*` 映射） |
 
 - 决策记录见 `docs/decisions/`（架构决策留痕）。
 
