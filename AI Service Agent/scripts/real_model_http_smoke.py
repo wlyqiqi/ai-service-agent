@@ -24,6 +24,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from ai_service_agent.testing import ToolCallingFakeModel
 
 from ai_service_agent.config import make_model
+from ai_service_agent.evals.lane_criteria import mutation_form_incomplete_pass
 from ai_service_agent.graph.workflows.copy import _TOOL_ACTION_LABELS as TOOL_ACTION_LABELS, completion_text
 from ai_service_agent.harness.server import create_app
 
@@ -479,9 +480,18 @@ def scenario_mutation_form_incomplete_confirm(client: httpx.Client, db_path: str
         )
         for m in msgs
     )
+    hang_ok = mutation_form_incomplete_pass(
+        http_ok=code1 == 200,
+        form_required=form1,
+        clarification_required=clarify1,
+        confirmation_required=False,
+        write_tool_count=1 if tool1 else 0,
+        done=done1 is not None,
+        interrupts=(st1 or {}).get("interrupts") or [],
+        thread_id_ok=True,
+    )
     pass_ = (
-        code1 == 200 and form1 and not clarify1 and not tool1 and done1 is not None
-        and (st1 or {}).get("execution_status") == "waiting_confirmation"
+        hang_ok
         and code2 == 200 and calls2 == 1 and results2 == 1
         and st2.get("execution_status") == "completed"
         and len(tool_msgs) == 1 and d7_store
