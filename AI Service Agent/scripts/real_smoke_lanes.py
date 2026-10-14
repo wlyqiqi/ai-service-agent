@@ -30,6 +30,7 @@ os.environ.setdefault("CHATWOOT_ENABLED", "false")
 os.environ.setdefault("LANGSMITH_TRACING", "false")
 
 from ai_service_agent.config import make_model
+from ai_service_agent.evals.lane_criteria import mutation_form_incomplete_pass
 from ai_service_agent.graph.workflows.copy import (
     approval_approved_text,
     completion_text,
@@ -372,15 +373,15 @@ def lane_l3_mutation_form_incomplete(client: httpx.Client, db_path: str) -> dict
     ]
     done = next((e for e in reversed(events) if e.get("type") == "done"), None)
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
-    passed = (
-        code == 200
-        and form_required
-        and not clarify
-        and not confirm
-        and not write_tools
-        and done is not None
-        and st["execution_status"] == "waiting_confirmation"
-        and thread_id_consistent(db_path, sid)
+    passed = mutation_form_incomplete_pass(
+        http_ok=code == 200,
+        form_required=form_required,
+        clarification_required=clarify,
+        confirmation_required=confirm,
+        write_tool_count=len(write_tools),
+        done=done is not None,
+        interrupts=st["interrupts"],
+        thread_id_ok=thread_id_consistent(db_path, sid),
     )
     return {
         "id": "L3",

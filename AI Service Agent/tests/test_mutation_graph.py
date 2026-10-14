@@ -231,6 +231,9 @@ def test_mutation_incomplete_args_open_form_interrupt(seed, monkeypatch):
     assert pending[0].value["tool"] == "update_address"
     assert "clarify_missing" not in out.get("context", {})
     assert out["execution_status"] != "clarifying"
+    # Subgraph interrupt does not merge waiting_confirmation into the parent checkpoint.
+    assert out["execution_status"] == "routing"
+    assert out["execution_status"] != "waiting_confirmation"
     assert any(item["order_id"] == "ORD-PAID-1" for item in pending[0].value["order_candidates"])
 
 
