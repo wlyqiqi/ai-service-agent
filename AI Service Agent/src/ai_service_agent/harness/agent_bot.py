@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage
 
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.workflows.copy import FIELD_LABELS, form_plain_text_refuse_text
-from ai_service_agent.harness.form_events import is_form_interrupt
+from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -343,8 +343,11 @@ async def _handle_locked_agent_bot_message(
                     elif action in ("canceled", "cancel"):
                         resume_payload = {"action": "cancel"}
                     else:
-                        # 纯文本不是 Form Resume：友好引导，不写库、不新起 run
+                        # 纯文本 / 并发写意图不是 Form Resume：单挂 tip + 重推当前表单，不跑图。
                         final_text = form_plain_text_refuse_text()
+                        projected = project_form_interrupt(state.interrupts[0])
+                        if projected:
+                            mutation_form_data = projected.get("data") or {}
                 else:
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 

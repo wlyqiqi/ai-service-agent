@@ -75,6 +75,7 @@ def test_form_plain_text_refuse_text():
 
     text = form_plain_text_refuse_text()
     assert "表单" in text and ("纯文本" in text or "不会改" in text)
+    assert "完成" in text and "取消" in text
 
 
 def test_operation_cancelled_text():
