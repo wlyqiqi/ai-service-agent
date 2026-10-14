@@ -78,10 +78,17 @@ def test_functional_operation_clarify_and_highrisk_clarify_unchanged():
 
 def test_functional_form_rejected_case_present():
     cases = {c["id"]: c for c in _load_jsonl(FUNCTIONAL)}
-    events = cases["F28"]["expected_events"]
+    f28 = cases["F28"]
+    events = f28["expected_events"]
     assert "form_required" in events
     assert "form_rejected" in events
-    assert "tool_call" in cases["F28"].get("forbidden_events", [])
+    assert "tool_call" in f28.get("forbidden_events", [])
+    # Must confirm a non-editable order so recheck can emit form_rejected
+    # (ORD-PAID-1 is address-editable and would execute the write instead).
+    confirm = next(t for t in f28["turns"] if t.get("action") == "confirm")
+    assert confirm.get("order_id") == "ORD-1"
+    assert f28["turns"][0].get("message") == "我要改个地址"
+    assert any(t.get("action") == "cancel" for t in f28["turns"])
 
 
 def test_watched_events_include_form_interrupt_projections():
