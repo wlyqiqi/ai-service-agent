@@ -111,6 +111,11 @@ def form_plain_text_refuse_text() -> str:
     )
 
 
+def human_mode_tip_text() -> str:
+    """conversation_mode=human 时 AgentBot / Widget 固定 tip（不跑 Graph）。"""
+    return "当前由人工客服接待，坐席正在处理您的问题，请稍候。"
+
+
 def approval_approved_text(tool: str) -> str:
     return f"您的{_label(tool)}申请已通过审核并执行完成，相关结果可以在订单详情中查看。"
 
