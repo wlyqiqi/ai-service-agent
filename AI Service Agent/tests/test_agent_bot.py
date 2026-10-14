@@ -595,6 +595,37 @@ def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
     ]
 
 
+def test_mutation_form_projects_form_rejected_errors_into_chatwoot_copy():
+    """#47: form_rejected errors appear in Chatwoot title/items (no native error field)."""
+    from ai_service_agent.harness.agent_bot import (
+        mutation_form_items_from_form_data,
+        mutation_form_title_from_form_data,
+    )
+
+    data = {
+        "summary": "您即将进行「收货地址修改」操作",
+        "order_candidates": [{"order_id": "ORD-PAID-1", "product_summary": "鞋 x1"}],
+        "errors": {
+            "order_id": "抱歉，该订单已取消，无需修改地址。",
+            "address": "请填写有效地址",
+        },
+        "response_schema": {
+            "properties": {
+                "order_id": {"type": "string"},
+                "address": {"type": "string"},
+                "action": {"enum": ["confirm", "cancel"]},
+            },
+        },
+    }
+    title = mutation_form_title_from_form_data(data)
+    items = mutation_form_items_from_form_data(data)
+    assert "抱歉，该订单已取消，无需修改地址。" in title
+    order_picker = next(item for item in items if item["name"] == "order_id")
+    assert "抱歉，该订单已取消，无需修改地址。" in order_picker["label"]
+    address = next(item for item in items if item["name"] == "address")
+    assert address["placeholder"] == "请填写有效地址"
+
+
 @pytest.mark.asyncio
 async def test_operation_clarify_stays_chat_text_without_mutation_form(monkeypatch, tmp_path):
     """#44: Operation Clarify is chat text only — must not open a Mutation Form."""
@@ -1071,3 +1102,130 @@ async def test_pending_form_single_hang_tips_without_second_mutation_form(
     assert len(still.interrupts) == 1
     assert still.interrupts[0].value["form_session_id"] == form_session_id
     assert still.interrupts[0].value["tool"] == "update_address"
+
+
+@pytest.mark.asyncio
+async def test_form_rejected_repushes_same_session_with_errors_then_fix_writes_once(
+    tmp_path, monkeypatch
+):
+    """#47: Failed Confirm → form_rejected same form_session_id with errors; fix writes once.
+
+    Seam: handle_agent_bot_message + Fake Graph/MemorySaver + mock Chatwoot.
+    Assert outbound Chatwoot form (errors visible in items/copy) and single write.
+    """
+    import ai_service_agent.harness.agent_bot as agent_bot_mod
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph, repo = _agent_bot_mutation_form_graph(
+        tmp_path, monkeypatch, db_name="agentbot-form-rejected"
+    )
+    contact = {"id": 27, "identifier": "u1", "name": "郑军"}
+    cw_conv_id = 9470
+
+    open_result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="form-reject-open",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="我要改个地址",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    assert open_result is not None
+    chatwoot.send_interactive_message.assert_awaited_once()
+    thread_id = status.get_thread_id(open_result["conversation_id"])
+    pending = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert pending.interrupts
+    form_session_id = pending.interrupts[0].value["form_session_id"]
+    before = repo.get_user_profile("u1")["address"]
+
+    captured: dict = {}
+    real_send_mutation_form = agent_bot_mod.send_mutation_form
+
+    async def capturing_send_mutation_form(cw, conversation_id, form_data):
+        captured.setdefault("forms", []).append(form_data)
+        await real_send_mutation_form(cw, conversation_id, form_data)
+
+    monkeypatch.setattr(agent_bot_mod, "send_mutation_form", capturing_send_mutation_form)
+    chatwoot.reset_mock()
+
+    bad_address = "不可写的新地址"
+    reject_result = await handle_agent_bot_message(
+        _form_submit_payload(
+            message_id="form-reject-confirm-bad",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            submitted_values={
+                "action": "confirm",
+                "order_id": "ORD-CANCEL-1",
+                "address": bad_address,
+            },
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+
+    assert reject_result is not None
+    assert repo.get_user_profile("u1")["address"] == before
+    assert len(captured.get("forms", [])) == 1
+    rejected_form = captured["forms"][0]
+    assert rejected_form["form_session_id"] == form_session_id
+    assert rejected_form["tool"] == "update_address"
+    assert rejected_form.get("errors")
+    chatwoot.send_interactive_message.assert_awaited_once()
+    reject_args = chatwoot.send_interactive_message.await_args.args
+    assert reject_args[2] == "form"
+    reject_title = reject_args[1]
+    reject_items = reject_args[3]["items"]
+    error_blob = " ".join(
+        [
+            reject_title,
+            *(str(item.get("label", "")) for item in reject_items),
+            *(str(item.get("placeholder", "")) for item in reject_items),
+        ]
+    )
+    assert any(str(msg) in error_blob for msg in rejected_form["errors"].values())
+    still = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert still.interrupts
+    assert still.interrupts[0].value["form_session_id"] == form_session_id
+    assert still.interrupts[0].value.get("errors")
+
+    chatwoot.reset_mock()
+    good_address = "修正后的表单地址 66 号"
+    fix_result = await handle_agent_bot_message(
+        _form_submit_payload(
+            message_id="form-reject-confirm-fix",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            submitted_values={
+                "action": "confirm",
+                "order_id": "ORD-PAID-1",
+                "address": good_address,
+            },
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+
+    assert fix_result is not None
+    assert repo.get_user_profile("u1")["address"] == good_address
+    done = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert not done.interrupts
+    write_tools = [
+        m
+        for m in done.values.get("messages", [])
+        if getattr(m, "type", "") == "tool" and getattr(m, "name", "") == "update_address"
+    ]
+    assert len(write_tools) == 1
+    assert fix_result["response"]
+    assert "已更新完成" in fix_result["response"] or "收货地址" in fix_result["response"]
+    # Reject re-push already counted; fix path must not open another rejected form.
+    assert len(captured["forms"]) == 1

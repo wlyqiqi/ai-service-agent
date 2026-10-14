@@ -26,13 +26,72 @@ _MUTATION_FORM_ACTION_ITEM: dict[str, Any] = {
 }
 
 
+def _form_errors_map(data: dict[str, Any]) -> dict[str, str]:
+    """Normalize ``form_rejected`` errors for Chatwoot copy (no native error field)."""
+    raw = data.get("errors")
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    return {str(key): str(value) for key, value in raw.items() if value not in (None, "", [], {})}
+
+
+def mutation_form_title_from_form_data(data: dict[str, Any]) -> str:
+    """Chatwoot form ``content``: summary plus form-level / leftover error copy."""
+    title = data.get("summary") or "请填写表单"
+    errors = _form_errors_map(data)
+    if not errors:
+        return title
+    # Field errors are also painted onto matching items; ``_form`` and any
+    # unmatched keys still need a visible place in the message copy.
+    item_names = {"order_id", "action"}
+    explicit = data.get("fields")
+    if isinstance(explicit, list):
+        for field in explicit:
+            if isinstance(field, dict) and field.get("name"):
+                item_names.add(str(field["name"]))
+    schema = data.get("response_schema") if isinstance(data.get("response_schema"), dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    item_names.update(str(name) for name in properties)
+    leftover = [
+        message
+        for key, message in errors.items()
+        if key == "_form" or key not in item_names
+    ]
+    if not leftover:
+        # Still surface the first field error in the title — Chatwoot select
+        # widgets have no placeholder, and long labels may truncate.
+        leftover = [next(iter(errors.values()))]
+    return f"{title}\n{'；'.join(leftover)}"
+
+
+def _apply_errors_to_mutation_form_items(
+    items: list[dict[str, Any]],
+    errors: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Paint field errors onto Chatwoot items (label/placeholder — no error API)."""
+    if not errors:
+        return items
+    for item in items:
+        name = item.get("name")
+        if not name or name not in errors:
+            continue
+        message = errors[name]
+        if item.get("type") == "select":
+            base = item.get("label") or str(name)
+            item["label"] = f"{base}（{message}）"
+        else:
+            item["placeholder"] = message
+    return items
+
+
 def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build Chatwoot ``form`` items from a ``form_required`` event payload.
+    """Build Chatwoot ``form`` items from a ``form_required`` / ``form_rejected`` payload.
 
     Source of truth matches the former SSE Mutation Form: Order Picker from
     ``order_candidates``, remaining fields from ``fields`` or ``response_schema``,
     prefills applied as item ``default`` values. Always ends with Confirm/Cancel
     ``action`` select so Form Cancel resume is possible from Widget.
+    ``form_rejected`` ``errors`` are projected into item label/placeholder and
+    title copy within what Chatwoot native forms allow.
     """
     prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
     items: list[dict[str, Any]] = []
@@ -103,7 +162,7 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
             items.append(item)
 
     items.append(dict(_MUTATION_FORM_ACTION_ITEM))
-    return items
+    return _apply_errors_to_mutation_form_items(items, _form_errors_map(data))
 
 
 def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
@@ -366,8 +425,9 @@ async def _handle_locked_agent_bot_message(
                     if event.get("type") == "done":
                         final_text = event.get("data", {}).get("final")
                         final_message_id = event.get("data", {}).get("message_id")
-                    elif event.get("type") == "form_required":
-                        # form_rejected (#47) is out of scope for open projection
+                    elif event.get("type") in ("form_required", "form_rejected"):
+                        # form_rejected: same Form Interrupt session with errors
+                        # (Closed MutationGraph); Adapter only projects Transport.
                         mutation_form_data = event.get("data") or {}
                     elif event.get("type") == "clarification_required":
                         clarification_data = event.get("data") or {}
@@ -413,8 +473,8 @@ async def send_mutation_form(
     conversation_id: str,
     form_data: dict[str, Any],
 ) -> None:
-    """Project Form Interrupt ``form_required`` data to a Chatwoot native ``form``."""
-    title = form_data.get("summary") or "请填写表单"
+    """Project Form Interrupt ``form_required`` / ``form_rejected`` to Chatwoot ``form``."""
+    title = mutation_form_title_from_form_data(form_data)
     items = mutation_form_items_from_form_data(form_data)
     await chatwoot.send_interactive_message(
         conversation_id,
