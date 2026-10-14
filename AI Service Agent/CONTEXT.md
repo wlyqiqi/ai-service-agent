@@ -41,9 +41,21 @@ _Avoid_: 写路径 ReAct
 _Avoid_: 子图内部业务转交；失败后新开无关表单会话
 
 **Form Cancel**:
-表单显式取消 → `Command(resume={"action":"cancel", ...})`（或约定 cancel 哨兵），图内收尾不写库并结束 Form Interrupt。
-_Avoid_: 仅靠打字「取消」作为主路径
+表单上的显式 Cancel 控件（如按钮）→ `Command(resume={"action":"cancel", ...})`，图内收尾不写库并结束 Form Interrupt。
+_Avoid_: 仅靠打字「取消」作为主路径；无 resume 的「口头取消」
 
 **ToolNode**:
 写工具执行使用 `langgraph.prebuilt.ToolNode`（或等价官方工具执行积木）；execute 节点只构造受控单次 tool_call。
 _Avoid_: 在 Mutation 主路径让 LLM 自由循环选工具
+
+**Chatwoot Widget**:
+C 端唯一对话壳：Website Channel 气泡与 Chatwoot native 消息类型（文本 / `form` / `input_select` 等）；不持有业务挂起真相。
+_Avoid_: 自建 SSE 聊天气泡作为主入口；在 Widget 侧另建 Form Pending 状态库
+
+**AgentBot Adapter**:
+Runtime 上的 Transport：把 Graph/`__interrupt__` 与事件投影适配为 Chatwoot 出站消息，并把用户提交适配为 `Command(resume=...)` 或新 turn；Mutation 写路径必须遵守 Form Interrupt / Form-Only Write。
+_Avoid_: 把 AgentBot 当成业务编排层；表单提交改写成自然语言再进 Router
+
+**Contact-first Binding**:
+Website Channel 会话为入口；以登录 `user_id` + Identity HMAC 标识 contact，AgentBot 首次触达时懒建 Runtime `conversation_id`/`thread_id` 并写入 mapping。
+_Avoid_: 强制先调自建 `/sessions` 再建 Widget；匿名与登录会话无规则合并
