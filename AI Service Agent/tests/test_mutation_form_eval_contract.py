@@ -1,4 +1,4 @@
-"""T8 contract: offline eval / functional fixtures expect Form Interrupt, not old confirm.
+"""T8 / v2 contract: functional fixtures expect Form Interrupt, not old confirm.
 
 Seam: fixture + harness helpers (scripts/functional_scenario_eval.py, dataset builder).
 Does not re-test MutationGraph product path (covered by T1–T7).
@@ -28,9 +28,30 @@ def _load_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def test_functional_v2_has_sixty_cases_and_target_distribution():
+    cases = _load_jsonl(FUNCTIONAL)
+    assert len(cases) == 60
+    assert {c["id"] for c in cases} == {f"F{i:02d}" for i in range(1, 61)}
+    by_suite: dict[str, int] = {}
+    for c in cases:
+        by_suite[c["suite"]] = by_suite.get(c["suite"], 0) + 1
+        assert c.get("dataset_version") == "v2"
+    assert by_suite == {
+        "guard": 5,
+        "read": 10,
+        "mutation": 14,
+        "high_risk": 10,
+        "fallback": 4,
+        "handoff": 8,
+        "multiturn": 5,
+        "context": 4,
+    }
+    assert sum(1 for c in cases if c["split"] == "smoke") == 16
+
+
 def test_functional_mutation_happy_path_expects_form_required_not_confirmation():
     cases = {c["id"]: c for c in _load_jsonl(FUNCTIONAL) if c["suite"] == "mutation"}
-    for case_id in ("S15", "S16", "S17", "S18", "S19", "S20", "S24"):
+    for case_id in ("F16", "F17", "F18", "F19", "F20", "F21", "F25"):
         events = cases[case_id]["expected_events"]
         assert "form_required" in events, case_id
         assert "confirmation_required" not in events, case_id
@@ -38,7 +59,7 @@ def test_functional_mutation_happy_path_expects_form_required_not_confirmation()
 
 def test_functional_tool_known_missing_fields_open_form_not_chat_clarify():
     cases = {c["id"]: c for c in _load_jsonl(FUNCTIONAL)}
-    for case_id in ("S21", "S22", "S23", "S54"):
+    for case_id in ("F22", "F23", "F24", "F58"):
         case = cases[case_id]
         assert "form_required" in case["expected_events"], case_id
         assert "clarification_required" not in case["expected_events"], case_id
@@ -47,12 +68,27 @@ def test_functional_tool_known_missing_fields_open_form_not_chat_clarify():
 
 def test_functional_operation_clarify_and_highrisk_clarify_unchanged():
     cases = {c["id"]: c for c in _load_jsonl(FUNCTIONAL)}
-    assert cases["S25"]["turns"][0]["message"] == "我要改一下订单"
-    assert cases["S25"]["expected_events"] == ["clarification_required", "done"]
-    assert "form_required" in cases["S25"]["forbidden_events"]
-    for case_id in ("S32", "S33"):
+    assert cases["F26"]["turns"][0]["message"] == "我要改一下订单"
+    assert cases["F26"]["expected_events"] == ["clarification_required", "done"]
+    assert "form_required" in cases["F26"]["forbidden_events"]
+    for case_id in ("F35", "F36"):
         assert "clarification_required" in cases[case_id]["expected_events"]
         assert cases[case_id]["suite"] == "high_risk"
+
+
+def test_functional_form_rejected_case_present():
+    cases = {c["id"]: c for c in _load_jsonl(FUNCTIONAL)}
+    f28 = cases["F28"]
+    events = f28["expected_events"]
+    assert "form_required" in events
+    assert "form_rejected" in events
+    assert "tool_call" in f28.get("forbidden_events", [])
+    # Must confirm a non-editable order so recheck can emit form_rejected
+    # (ORD-PAID-1 is address-editable and would execute the write instead).
+    confirm = next(t for t in f28["turns"] if t.get("action") == "confirm")
+    assert confirm.get("order_id") == "ORD-1"
+    assert f28["turns"][0].get("message") == "我要改个地址"
+    assert any(t.get("action") == "cancel" for t in f28["turns"])
 
 
 def test_watched_events_include_form_interrupt_projections():
