@@ -11,6 +11,87 @@ from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
+# Form Resume schema keys that are not Mutation Form input widgets.
+_FORM_SCHEMA_SKIP_FIELDS = frozenset({"action", "request_id"})
+
+
+def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build Chatwoot ``form`` items from a ``form_required`` event payload.
+
+    Source of truth matches the former SSE Mutation Form: Order Picker from
+    ``order_candidates``, remaining fields from ``fields`` or ``response_schema``,
+    prefills applied as item ``default`` values.
+    """
+    prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
+    items: list[dict[str, Any]] = []
+
+    options: list[dict[str, str]] = []
+    for candidate in data.get("order_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        order_id = candidate.get("order_id")
+        if not order_id:
+            continue
+        detail = candidate.get("product_summary") or candidate.get("status_display") or ""
+        label = f"{order_id} · {detail}" if detail else str(order_id)
+        options.append({"label": label, "value": str(order_id)})
+    order_item: dict[str, Any] = {
+        "name": "order_id",
+        "label": "选择订单",
+        "type": "select",
+        "options": options,
+    }
+    if prefills.get("order_id") is not None:
+        order_item["default"] = prefills["order_id"]
+    items.append(order_item)
+
+    explicit_fields = data.get("fields")
+    if isinstance(explicit_fields, list) and explicit_fields:
+        for field in explicit_fields:
+            if not isinstance(field, dict):
+                continue
+            name = field.get("name")
+            if not name or name in _FORM_SCHEMA_SKIP_FIELDS or name == "order_id":
+                continue
+            item = {
+                "name": str(name),
+                "label": field.get("label") or FIELD_LABELS.get(str(name), str(name)),
+                "type": field.get("type") or "text",
+            }
+            if field.get("placeholder") is not None:
+                item["placeholder"] = field["placeholder"]
+            if field.get("options") is not None:
+                item["options"] = field["options"]
+            if prefills.get(name) is not None:
+                item["default"] = prefills[name]
+            elif field.get("default") is not None:
+                item["default"] = field["default"]
+            items.append(item)
+        return items
+
+    schema = data.get("response_schema") if isinstance(data.get("response_schema"), dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    for name, prop in properties.items():
+        if name in _FORM_SCHEMA_SKIP_FIELDS or name == "order_id":
+            continue
+        label = FIELD_LABELS.get(name, name)
+        item: dict[str, Any] = {
+            "name": name,
+            "label": label,
+            "type": "text",
+            "placeholder": f"请输入{label}",
+        }
+        if isinstance(prop, dict) and prop.get("enum"):
+            item["type"] = "select"
+            item["options"] = [
+                {"label": str(value), "value": value} for value in prop["enum"]
+            ]
+            item.pop("placeholder", None)
+        if prefills.get(name) is not None:
+            item["default"] = prefills[name]
+        items.append(item)
+    return items
+
 
 def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
     """兼容 Chatwoot form 提交的 object 与 widget/agent-bot 的 [{name, value}] 数组。"""
@@ -196,6 +277,7 @@ async def _handle_locked_agent_bot_message(
 
     clarification_data = None
     confirmation_summary = None
+    mutation_form_data = None
     final_message_id = None
 
     if graph is None:
@@ -246,7 +328,7 @@ async def _handle_locked_agent_bot_message(
 
         if final_text is None:
             async def run_graph():
-                nonlocal final_text, clarification_data, confirmation_summary
+                nonlocal final_text, clarification_data, confirmation_summary, mutation_form_data
                 async for event in event_stream(
                     graph,
                     config,
@@ -259,6 +341,9 @@ async def _handle_locked_agent_bot_message(
                     if event.get("type") == "done":
                         final_text = event.get("data", {}).get("final")
                         final_message_id = event.get("data", {}).get("message_id")
+                    elif event.get("type") == "form_required":
+                        # form_rejected (#47) is out of scope for open projection
+                        mutation_form_data = event.get("data") or {}
                     elif event.get("type") == "clarification_required":
                         clarification_data = event.get("data") or {}
                     elif event.get("type") == "confirmation_required":
@@ -277,7 +362,10 @@ async def _handle_locked_agent_bot_message(
         if messages_store is not None:
             messages_store.append(conversation_id, "assistant", final_text, message_id=final_message_id)
 
-    if clarification_data is not None:
+    if mutation_form_data is not None:
+        await send_mutation_form(chatwoot, conversation_id, mutation_form_data)
+    elif clarification_data is not None and clarification_data.get("reason") != "operation_unclear":
+        # Operation Clarify stays chat text (no Mutation Form / legacy empty clarify-form).
         await send_clarify_form(
             chatwoot,
             conversation_id,
@@ -293,6 +381,22 @@ async def _handle_locked_agent_bot_message(
         "chatwoot_conversation_id": cw_conv_id,
         "response": final_text,
     }
+
+
+async def send_mutation_form(
+    chatwoot: ChatwootClient,
+    conversation_id: str,
+    form_data: dict[str, Any],
+) -> None:
+    """Project Form Interrupt ``form_required`` data to a Chatwoot native ``form``."""
+    title = form_data.get("summary") or "请填写表单"
+    items = mutation_form_items_from_form_data(form_data)
+    await chatwoot.send_interactive_message(
+        conversation_id,
+        title,
+        "form",
+        {"items": items},
+    )
 
 
 async def send_clarify_form(
