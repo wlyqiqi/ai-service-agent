@@ -23,6 +23,7 @@ from ai_service_agent.evals.route_intent import build_messages
 from langchain_core.messages import AIMessage, HumanMessage
 from ai_service_agent.graph.route_policy import resolve_route_policy
 from ai_service_agent.graph.router import make_deepseek_router, make_jev_router
+from ai_service_agent.harness.approvals import APPROVER_USER_HEADER
 from ai_service_agent.harness.server import create_app
 
 
@@ -281,7 +282,10 @@ def evaluate_graph(client: httpx.Client, db_path: str, case: dict) -> dict:
     )
     approval = None
     if approval_id and case.get("approve"):
-        response = client.post(f"{BASE}/approvals/{approval_id}/approve")
+        response = client.post(
+            f"{BASE}/approvals/{approval_id}/approve",
+            headers={APPROVER_USER_HEADER: "approver"},
+        )
         approval = {"http_status": response.status_code, "body": response.json()}
         if response.status_code != 200:
             status_code = response.status_code

@@ -108,6 +108,60 @@ async def test_agent_bot_forwards_runtime_context(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_agent_bot_injects_contact_user_id_into_graph_context(monkeypatch, tmp_path):
+    """Contact identifier is the session user_id and must land on GraphContext."""
+    from ai_service_agent.graph.runtime_context import GraphContext
+    from ai_service_agent.harness.session import ConversationStatusStore
+
+    captured: dict = {}
+
+    async def fake_event_stream(*_args, **kwargs):
+        captured["context"] = kwargs.get("context")
+        captured["extra_state"] = kwargs.get("extra_state")
+        yield {"type": "done", "data": {"final": "bound", "message_id": "m-bound"}}
+
+    monkeypatch.setattr(
+        "ai_service_agent.harness.agent_bot.event_stream", fake_event_stream
+    )
+    payload = {
+        "event": "message_created",
+        "id": "102-bind",
+        "content": "查订单",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 45},
+        "contact": {"id": 4, "identifier": "u-ctx", "name": "ctx-user"},
+    }
+    chatwoot = AsyncMock()
+    graph = SimpleNamespace(checkpointer=None)
+    approvals = object()
+    supplied = GraphContext(
+        order_repository=None,
+        approval_service=approvals,
+        user_id="",
+    )
+    conn = sqlite3.connect(tmp_path / "agent-bot.db")
+    status = ConversationStatusStore(conn)
+
+    result = await handle_agent_bot_message(
+        payload, chatwoot, graph=graph, context=supplied, status=status
+    )
+
+    assert result is not None
+    assert result["response"] == "bound"
+    session_user_id = status.get_user_id(result["conversation_id"])
+    conn.close()
+    assert session_user_id == "u-ctx"
+    bound = captured["context"]
+    assert isinstance(bound, GraphContext)
+    assert bound.user_id == session_user_id
+    assert bound.order_repository is None
+    assert bound.approval_service is approvals
+    assert captured["extra_state"]["user_id"] == session_user_id
+    assert supplied.user_id == ""
+
+
+@pytest.mark.asyncio
 async def test_send_clarify_form_address():
     from ai_service_agent.harness.agent_bot import send_clarify_form
 

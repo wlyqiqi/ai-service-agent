@@ -33,6 +33,9 @@ uv sync --group dev
 
 # 2) 配置环境变量
 copy .env.example .env   # 填入 ARK_API_KEY / ARK_BASE_URL / ARK_MODEL
+# 认证默认开启（AUTH_ENABLED=true）。业务与审批接口需要 JWT，须设置 JWT_SECRET。
+# 仅本地调试可在 .env 写 AUTH_ENABLED=false。关闭后，审批通过/拒绝仍要带
+# 与申请人不同的请求头 X-Approver-User-Id；空身份或 anonymous 不能审批。
 
 # 3) 启动服务（127.0.0.1:8000；配置 fake_model=true 时使用离线 fake model）
 uv run ai-service-agent

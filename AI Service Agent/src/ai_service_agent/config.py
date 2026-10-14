@@ -113,7 +113,9 @@ class Settings(BaseSettings):
     lightrag_enable_rerank: bool = False
     lightrag_max_chunk_chars: int = Field(default=1200, ge=1)
     lightrag_max_context_chars: int = Field(default=4000, ge=1)
-    auth_enabled: bool = Field(default=False, validation_alias="AUTH_ENABLED")
+    # 生产默认开启。未设置 AUTH_ENABLED 时业务/审批 API 需要 JWT，且缺少 JWT_SECRET 会拒绝启动。
+    # 本地与测试必须显式 AUTH_ENABLED=false（pytest：tests/conftest.py）。
+    auth_enabled: bool = Field(default=True, validation_alias="AUTH_ENABLED")
     jwt_secret: str | None = Field(default=None, validation_alias="JWT_SECRET")
     jwt_expires_minutes: int = Field(default=60, validation_alias="JWT_EXPIRES_MINUTES")
     # LangSmith 观测（architecture.md §8.1 tracing → LangSmith；SDK 只认 os.environ，

@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
 
+from ai_service_agent.harness.approvals import APPROVER_USER_HEADER
 from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.domain.orders import SQLiteOrderRepository
@@ -371,7 +372,10 @@ class TestCoreScenarios:
         assert approval_ev is not None, "expected approval_required"
         assert approval_id
 
-        r = client.post(f"/approvals/{approval_id}/approve")
+        r = client.post(
+            f"/approvals/{approval_id}/approve",
+            headers={APPROVER_USER_HEADER: "approver"},
+        )
         assert r.status_code == 200
         assert r.json().get("status") == "approved"
 
@@ -387,7 +391,11 @@ class TestCoreScenarios:
 
         assert approval_id
 
-        r = client.post(f"/approvals/{approval_id}/reject", json={"note": "不想退了"})
+        r = client.post(
+            f"/approvals/{approval_id}/reject",
+            json={"note": "不想退了"},
+            headers={APPROVER_USER_HEADER: "approver"},
+        )
         assert r.status_code == 200
 
         approvals = open_approvals(server["db_path"], sid)
@@ -791,7 +799,10 @@ class TestCheckpointerRecovery:
             assert r_get.json()["status"] == "pending"
 
             # approve -> 图从 Checkpointer 恢复并执行
-            r_approve = client2.post(f"/approvals/{approval_id}/approve")
+            r_approve = client2.post(
+                f"/approvals/{approval_id}/approve",
+                headers={APPROVER_USER_HEADER: "approver"},
+            )
             assert r_approve.status_code == 200
             assert r_approve.json().get("status") == "approved"
 

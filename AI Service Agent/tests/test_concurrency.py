@@ -135,9 +135,10 @@ def test_approval_double_resume_no_double_execution(tmp_path):
     async def race():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            headers = {"X-Approver-User-Id": "approver"}
             r1, r2 = await asyncio.gather(
-                c.post(f"/approvals/{approval_id}/approve"),
-                c.post(f"/approvals/{approval_id}/approve"),
+                c.post(f"/approvals/{approval_id}/approve", headers=headers),
+                c.post(f"/approvals/{approval_id}/approve", headers=headers),
             )
             return sorted([r1.status_code, r2.status_code])
 

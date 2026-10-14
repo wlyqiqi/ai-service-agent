@@ -70,6 +70,33 @@ def test_protected_endpoint_requires_bearer(tmp_path):
     assert client.post("/sessions", json={"user_id": "u1"}).status_code == 401
 
 
+def test_auth_enabled_defaults_to_true(monkeypatch):
+    monkeypatch.delenv("AUTH_ENABLED", raising=False)
+    from ai_service_agent.config import Settings
+
+    assert Settings(_env_file=None).auth_enabled is True
+
+
+def test_auth_enabled_can_be_disabled_explicitly(monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    from ai_service_agent.config import Settings
+
+    assert Settings(_env_file=None).auth_enabled is False
+
+
+def test_create_app_requires_jwt_when_auth_defaults_on(monkeypatch, tmp_path):
+    monkeypatch.delenv("AUTH_ENABLED", raising=False)
+    monkeypatch.setenv("JWT_SECRET", "")
+    from ai_service_agent.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="JWT_SECRET"):
+            create_app(str(tmp_path / "default-auth.db"), model="fake")
+    finally:
+        get_settings.cache_clear()
+
+
 def test_missing_secret_is_rejected_when_auth_enabled(tmp_path):
     with pytest.raises(ValueError, match="JWT_SECRET"):
         create_app(str(tmp_path / "s.db"), model="fake", auth_enabled=True)
@@ -150,7 +177,8 @@ def test_conversation_endpoints_reject_other_users(tmp_path):
     assert client.get("/handoffs", params={"conversation_id": conversation}, headers=headers).status_code == 403
 
 
-def test_approval_endpoints_reject_other_users(tmp_path):
+def test_approval_reads_reject_other_users(tmp_path):
+    """GET stays requester-scoped. Approve/reject SoD is covered in test_approvals.py."""
     def seed(conn):
         approvals = ApprovalService(conn)
         approvals.insert_if_absent(
@@ -164,5 +192,3 @@ def test_approval_endpoints_reject_other_users(tmp_path):
 
     assert client.get("/approvals/A-other", headers=headers).status_code == 403
     assert client.get("/approvals", headers=headers).json() == {"items": []}
-    assert client.post("/approvals/A-other/approve", headers=headers).status_code == 403
-    assert client.post("/approvals/A-other/reject", json={"note": "no"}, headers=headers).status_code == 403

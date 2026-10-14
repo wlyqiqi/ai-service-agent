@@ -147,7 +147,13 @@ AgentBot 回写与坐席同步依赖 Chatwoot Application API。
 
 ## 5. `.env` 清单（与 `Settings` 1:1）
 
+Runtime 认证默认开启。Widget 登录拿 JWT 之前必须配置 `JWT_SECRET`。只有本机调试才显式写 `AUTH_ENABLED=false`（见 `.env.example`）。
+
 ```env
+# --- Runtime 认证（代码默认开启）---
+AUTH_ENABLED=true
+JWT_SECRET=                           # AUTH_ENABLED=true 时必填，32+ 字节随机串
+
 # --- Widget / AgentBot（C 端主路径）---
 CHATWOOT_BASE_URL=https://your-chatwoot.example
 CHATWOOT_WEBSITE_TOKEN=               # Inbox website_token
@@ -169,7 +175,7 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 
 最小顺序（与 `web/landing-auth-widget.js` 一致）：
 
-1. 用户登录 Runtime → 持 JWT  
+1. 用户登录 Runtime（`AUTH_ENABLED=true` + `JWT_SECRET`）→ 持 JWT  
 2. `GET /config` 取 `chatwoot_website_token` + `chatwoot_base_url`  
 3. `GET /me/chatwoot_identity` 取 `identifier` + `identifier_hash`  
 4. `chatwootSDK.run({ websiteToken, baseUrl })`  

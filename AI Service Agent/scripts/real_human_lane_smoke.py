@@ -23,6 +23,10 @@ from pathlib import Path
 import httpx
 import uvicorn
 
+# Local smoke. Production auth defaults on; this harness opts out unless the
+# environment already set AUTH_ENABLED. Session calls below do not send a JWT.
+os.environ.setdefault("AUTH_ENABLED", "false")
+
 from ai_service_agent.config import make_model, get_settings
 from ai_service_agent.harness.server import create_app
 

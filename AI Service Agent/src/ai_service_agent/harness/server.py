@@ -22,9 +22,11 @@ from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
 from ai_service_agent.harness.approvals import (
+    APPROVER_USER_HEADER,
     ApprovalAlreadyProcessed,
     ApprovalExpired,
     ApprovalNotFound,
+    ApprovalSeparationOfDuties,
     ApprovalService,
 )
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
@@ -242,8 +244,25 @@ def create_app(
             raise HTTPException(status_code=403, detail="conversation forbidden")
 
     def _ensure_approval_owner(auth_user: str | None, record: dict):
+        """Read path only: the requester may view their own approval.
+
+        Approve/reject must not use this check. Separation of duties requires a
+        different actor (see ``_decision_actor``).
+        """
         if auth_user is not None and record["requester_user_id"] != auth_user:
             raise HTTPException(status_code=403, detail="approval forbidden")
+
+    def _decision_actor(request: Request) -> str:
+        """Identity recorded as decided_by on approve/reject.
+
+        Auth on: JWT subject only. ``X-Approver-User-Id`` is ignored so the
+        requester cannot impersonate someone else.
+        Auth off (explicit local/test): that header is the actor. A missing
+        header is anonymous and fails separation of duties.
+        """
+        if required_auth:
+            return _require_auth_user(request)
+        return (request.headers.get(APPROVER_USER_HEADER) or "").strip()
 
     def _chat_ownership(request: Request, body: ChatBody):
         _ensure_conversation_owner(_auth_user(request), body.session_id)
@@ -594,7 +613,7 @@ def create_app(
         except ApprovalExpired:
             raise HTTPException(status_code=410, detail="approval expired")
 
-    async def _approval_resume(approval_id: str, resume_payload: dict, decided: str) -> dict:
+    async def _approval_resume(approval_id: str, resume_payload: dict, decided: str, decided_by: str) -> dict:
         first = approvals.get(approval_id)
         if first is None:
             raise HTTPException(status_code=404, detail="approval not found")
@@ -603,8 +622,13 @@ def create_app(
         lock = await _thread_lock(thread_id)
         async with lock:
             rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
+            # SoD after precheck so expired/processed stay 410/409. Empty or
+            # self identity never reaches the graph or a terminal status.
+            try:
+                approvals.mark_decided(approval_id, decided, decided_by=decided_by)
+            except ApprovalSeparationOfDuties:
+                raise HTTPException(status_code=403, detail="approval separation of duties")
             # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
-            approvals.mark_decided(approval_id, decided, decided_by="approver")
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
@@ -623,15 +647,17 @@ def create_app(
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
-    async def approve_approval(approval_id: str, _: None = Depends(_approval_ownership)):
-        return await _approval_resume(approval_id, {"action": "approve"}, "approved")
+    async def approve_approval(approval_id: str, request: Request):
+        return await _approval_resume(
+            approval_id, {"action": "approve"}, "approved", _decision_actor(request)
+        )
 
     @app.post("/approvals/{approval_id}/reject")
-    async def reject_approval(approval_id: str, body: RejectBody | None = None, _: None = Depends(_approval_ownership)):
+    async def reject_approval(approval_id: str, request: Request, body: RejectBody | None = None):
         resume = {"action": "reject"}
         if body is not None and body.note:
             resume["note"] = body.note
-        return await _approval_resume(approval_id, resume, "rejected")
+        return await _approval_resume(approval_id, resume, "rejected", _decision_actor(request))
 
     @app.get("/approvals/{approval_id}")
     def get_approval(approval_id: str, _: None = Depends(_approval_ownership)):

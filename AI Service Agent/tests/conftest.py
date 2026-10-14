@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 def pytest_configure(config):
     os.environ["FAKE_MODEL"] = "true"
     os.environ["JEV_ENABLED"] = "false"
+    # Explicit opt-out. Production Settings.auth_enabled defaults to True.
     os.environ["AUTH_ENABLED"] = "false"
     os.environ["CHATWOOT_ENABLED"] = "false"
     os.environ["CHATWOOT_BASE_URL"] = ""

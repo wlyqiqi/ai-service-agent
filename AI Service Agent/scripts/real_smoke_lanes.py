@@ -35,6 +35,7 @@ from ai_service_agent.graph.workflows.copy import (
     approval_approved_text,
     completion_text,
 )
+from ai_service_agent.harness.approvals import APPROVER_USER_HEADER
 from ai_service_agent.harness.server import create_app
 
 # scripts/ is not a package; load seed helper by path.
@@ -412,7 +413,10 @@ def lane_l4_highrisk_approve(client: httpx.Client, db_path: str) -> dict:
 
     approve = None
     if approval_id:
-        r = client.post(f"{BASE}/approvals/{approval_id}/approve")
+        r = client.post(
+            f"{BASE}/approvals/{approval_id}/approve",
+            headers={APPROVER_USER_HEADER: "approver"},
+        )
         approve = {"http": r.status_code, "body": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text}
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])

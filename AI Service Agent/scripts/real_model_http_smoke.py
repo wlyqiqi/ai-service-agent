@@ -18,6 +18,10 @@ from pathlib import Path
 
 import httpx
 import uvicorn
+
+# Local smoke. Production auth defaults on; this harness opts out unless the
+# environment already set AUTH_ENABLED.
+os.environ.setdefault("AUTH_ENABLED", "false")
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
@@ -26,6 +30,7 @@ from ai_service_agent.testing import ToolCallingFakeModel
 from ai_service_agent.config import make_model
 from ai_service_agent.evals.lane_criteria import mutation_form_incomplete_pass
 from ai_service_agent.graph.workflows.copy import _TOOL_ACTION_LABELS as TOOL_ACTION_LABELS, completion_text
+from ai_service_agent.harness.approvals import APPROVER_USER_HEADER
 from ai_service_agent.harness.server import create_app
 
 TOOL_MATRIX = [
@@ -405,7 +410,10 @@ def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
 
     approve = None
     if approval_id:
-        r = client.post(f"{BASE}/approvals/{approval_id}/approve")
+        r = client.post(
+            f"{BASE}/approvals/{approval_id}/approve",
+            headers={APPROVER_USER_HEADER: "approver"},
+        )
         approve = {"http": r.status_code, "body": r.json()} if r.status_code == 200 else {"http": r.status_code, "body": r.text}
 
     after = None

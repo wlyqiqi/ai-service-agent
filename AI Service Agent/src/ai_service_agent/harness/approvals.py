@@ -41,6 +41,27 @@ class ApprovalExpired(Exception):
     pass
 
 
+class ApprovalSeparationOfDuties(Exception):
+    """Approve/reject actor is missing, anonymous, or the same as the requester."""
+
+
+# Local/test only. Ignored when authentication is enabled; the JWT subject is the actor.
+APPROVER_USER_HEADER = "X-Approver-User-Id"
+_ANONYMOUS_APPROVER = "anonymous"
+
+
+def approver_is_distinct(requester_user_id: str | None, decided_by: str | None) -> bool:
+    """SoD：决策人必须是非空、非匿名身份，且不得等于申请人。
+
+    空串与 ``anonymous``（大小写不敏感）不能因为认证关闭而放行。
+    """
+    approver = (decided_by or "").strip()
+    requester = (requester_user_id or "").strip()
+    if not approver or approver.casefold() == _ANONYMOUS_APPROVER:
+        return False
+    return approver != requester
+
+
 class ApprovalService:
     def __init__(self, conn: sqlite3.Connection, simulate_approval: bool = False):
         self.conn = conn
@@ -97,8 +118,17 @@ class ApprovalService:
             )
 
     def mark_decided(self, approval_id: str, status: str, decided_by: str) -> None:
-        """幂等：仅 pending 可写（approval-spec §2，重复 decision 不覆盖）。"""
-        self._set_status(approval_id, status, decided_by)
+        """幂等：仅 pending 可写（approval-spec §2，重复 decision 不覆盖）。
+
+        approve/reject 在写入前强制职责分离。已终态的重复调用保持幂等，不再校验决策人。
+        """
+        rec = self.get(approval_id)
+        if rec is None or rec["status"] != "pending":
+            return
+        actor = (decided_by or "").strip()
+        if status in ("approved", "rejected") and not approver_is_distinct(rec.get("requester_user_id"), actor):
+            raise ApprovalSeparationOfDuties(approval_id)
+        self._set_status(approval_id, status, actor)
 
     def precheck(self, approval_id: str) -> dict:
         """前置有效性检查（approval-spec §3.2，只读 + 惰性过期）：存在 / pending / 未过期。

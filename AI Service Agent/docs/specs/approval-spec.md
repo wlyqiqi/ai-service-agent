@@ -40,8 +40,13 @@
 | GET | `/approvals?status=pending` | 人工端列表（Approval Service 只读） |
 
 - **前置有效性检查（Approval Service 只读）**：approval 存在；status 仍为 `pending`；`now <= expires_at`。任一不满足 → 直接返回错误（`not_found` / `already_processed` / `expired`），**不调用图**；重复提交同一 `approval_id` 由此天然幂等。
+- **职责分离（SoD）**：前置检查通过之后、写终态之前，approve / reject 的决策人必须是去空白后非空、且不等于 `anonymous`（大小写不敏感）的身份，并且不得等于 `requester_user_id`。不满足 → HTTP 403 `approval separation of duties`，不调用图，记录保持 `pending`。
+  - `AUTH_ENABLED` 代码默认 `true`。开启时决策人只取 JWT `sub`；缺少或无效 token 为 401。请求头 `X-Approver-User-Id` 被忽略，申请人不能伪造成他人。
+  - 本地与测试必须显式 `AUTH_ENABLED=false`（pytest 在 `tests/conftest.py`）。此模式下没有可信登录身份，决策必须带 `X-Approver-User-Id`。空头、`anonymous`、或与申请人相同一律 403，不能靠“未登录”绕过。该请求头不是认证，不得用于共享环境。
+  - GET 与列表在认证开启时仍只对申请人可见。决策路径不再要求决策人等于申请人。
+  - `simulate_approval` 使用 `decided_by=simulate`（与申请人不同），不走 HTTP 自审批。
 - **机械映射，非业务判断**：`approve → {action: "approve"}`、`reject → {action: "reject", note}` 仅是把 HTTP 动作映射为 `graph-spec.md` §3 的 resume schema；"批准后执行什么 / 拒绝后如何收尾"由图中子图决定。
-- 审批动作写审计日志：who / what / when / result（harness 观测，经 hook 挂接）。
+- 审批动作写审计日志：who / what / when / result（harness 观测，经 hook 挂接）。`decided_by` 记录实际决策人，而不是固定占位字符串。
 
 ### 3.3 恢复入口（殊途同归）
 

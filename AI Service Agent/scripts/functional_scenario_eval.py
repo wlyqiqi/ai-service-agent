@@ -34,6 +34,7 @@ os.environ.setdefault("CHATWOOT_ENABLED", "false")
 os.environ.setdefault("LANGSMITH_TRACING", "false")
 
 from ai_service_agent.config import get_settings, make_model
+from ai_service_agent.harness.approvals import APPROVER_USER_HEADER
 from ai_service_agent.harness.server import create_app
 
 _DB_PATH = ""
@@ -327,7 +328,10 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                     _problems_with_stream_errors(all_events, ["approval_id missing before approve"]),
                     started,
                 )
-            r = client.post(f"{BASE}/approvals/{approval_id}/approve")
+            r = client.post(
+                f"{BASE}/approvals/{approval_id}/approve",
+                headers={APPROVER_USER_HEADER: "approver"},
+            )
             code = r.status_code
             ev = [{"type": "approval_http", "data": r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}}]
             # approve endpoint resumes graph; capture via follow-up get state only
@@ -345,7 +349,10 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                     _problems_with_stream_errors(all_events, ["approval_id missing before reject"]),
                     started,
                 )
-            r = client.post(f"{BASE}/approvals/{approval_id}/reject")
+            r = client.post(
+                f"{BASE}/approvals/{approval_id}/reject",
+                headers={APPROVER_USER_HEADER: "approver"},
+            )
             code = r.status_code
             ev = [{"type": "approval_http", "data": r.json() if r.status_code == 200 else {"raw": r.text}}]
         elif action == "expire":

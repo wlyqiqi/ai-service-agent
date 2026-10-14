@@ -202,7 +202,7 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
     conn.close()
 
-    response = client.post(f"/approvals/{approval_id}/approve")
+    response = client.post(f"/approvals/{approval_id}/approve", headers={"X-Approver-User-Id": "approver"})
     assert response.status_code == 200
     cw.send_bot_message.assert_awaited_once()
     assert "通过审核" in cw.send_bot_message.call_args.args[1]
@@ -1158,7 +1158,7 @@ def test_approve_resume_persists_final_to_message_store(tmp_path):
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
     conn.close()
 
-    r = client.post(f"/approvals/{approval_id}/approve")
+    r = client.post(f"/approvals/{approval_id}/approve", headers={"X-Approver-User-Id": "approver"})
     assert r.status_code == 200
 
     conn = sqlite3.connect(db)

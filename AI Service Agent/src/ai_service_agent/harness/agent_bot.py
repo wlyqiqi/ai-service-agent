@@ -5,6 +5,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
+from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
@@ -183,6 +184,25 @@ def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
         if name is not None and "value" in item:
             normalized[str(name)] = item["value"]
     return normalized or None
+
+
+def bind_graph_context_user_id(context, user_id: str):
+    """Put the Contact identifier (session user_id) on GraphContext.
+
+    ``extra_state["user_id"]`` only fills graph state. Tools and nodes that read
+    runtime context keep seeing ``""`` unless this channel is set too.
+    Non-GraphContext objects are forwarded unchanged (test doubles).
+    """
+    identity = (user_id or "").strip()
+    if not identity:
+        return context
+    if isinstance(context, GraphContext):
+        if context.user_id == identity:
+            return context
+        return context.model_copy(update={"user_id": identity})
+    if context is None:
+        return GraphContext(user_id=identity)
+    return context
 
 
 def _contact_identifier(contact: dict[str, Any]) -> str | None:
@@ -369,6 +389,8 @@ async def _handle_locked_agent_bot_message(
             else f"[AgentBot] Received: {content}"
         )
     else:
+        # Contact identifier is the session user_id (create_session(user_id) above).
+        context = bind_graph_context_user_id(context, user_id)
         config = {"configurable": {"thread_id": thread_id}}
         final_text = None
         resume_payload = None
