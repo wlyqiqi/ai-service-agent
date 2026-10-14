@@ -28,6 +28,19 @@ def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
     return normalized or None
 
 
+def _contact_identifier(contact: dict[str, Any]) -> str | None:
+    """Contact-first Identity：非空 contact.identifier（Widget setUser / HMAC 绑定后的登录 user_id）。
+
+    Chatwoot 在 Website Channel 校验 Identity HMAC；AgentBot 侧只接受已落到 contact 的 identifier。
+    v1 无匿名路径（CONTEXT.md Contact-first Binding）。
+    """
+    raw = contact.get("identifier")
+    if not isinstance(raw, str):
+        return None
+    identifier = raw.strip()
+    return identifier or None
+
+
 async def handle_agent_bot_message(
     payload: dict[str, Any],
     chatwoot: ChatwootClient,
@@ -146,12 +159,16 @@ async def _handle_locked_agent_bot_message(
     content: str,
     submitted_values: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    user_id = _contact_identifier(contact)
+    if user_id is None:
+        # 无 validated Identity：拒绝建会话 / 跑图，不走匿名 chatwoot-* 回退
+        return None
+
     rec = mapping.find(cw_conv_id) if mapping is not None else None
     if rec is not None:
         conversation_id = rec["conversation_id"]
         thread_id = status.get_thread_id(conversation_id) if status is not None else conversation_id
     else:
-        user_id = contact.get("identifier") or f"chatwoot-{contact_id or contact.get('name') or cw_conv_id}"
         if status is not None:
             session = status.create_session(user_id)
             conversation_id = session["conversation_id"]
@@ -236,7 +253,7 @@ async def _handle_locked_agent_bot_message(
                     history,
                     on_interrupt=on_interrupt,
                     resume_payload=resume_payload,
-                    extra_state={"user_id": contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else "")},
+                    extra_state={"user_id": user_id},
                     context=context,
                 ):
                     if event.get("type") == "done":
@@ -261,7 +278,6 @@ async def _handle_locked_agent_bot_message(
             messages_store.append(conversation_id, "assistant", final_text, message_id=final_message_id)
 
     if clarification_data is not None:
-        user_id = contact.get("identifier") or (status.get_user_id(conversation_id) if status is not None else None)
         await send_clarify_form(
             chatwoot,
             conversation_id,

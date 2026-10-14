@@ -17,7 +17,7 @@ async def test_handle_agent_bot_message_incoming_text():
         "message_type": "incoming",
         "content_type": "text",
         "conversation": {"id": 42},
-        "contact": {"id": 1, "name": "test-user"},
+        "contact": {"id": 1, "identifier": "u-test", "name": "test-user"},
     }
     chatwoot = AsyncMock()
 
@@ -60,7 +60,7 @@ async def test_agent_bot_invokes_graph():
         "message_type": "incoming",
         "content_type": "text",
         "conversation": {"id": 43},
-        "contact": {"id": 2, "name": "test-user"},
+        "contact": {"id": 2, "identifier": "u-graph", "name": "test-user"},
     }
     chatwoot = AsyncMock()
     graph = make_ai_graph(make_fake_model(), None)
@@ -91,7 +91,7 @@ async def test_agent_bot_forwards_runtime_context(monkeypatch):
         "message_type": "incoming",
         "content_type": "text",
         "conversation": {"id": 44},
-        "contact": {"id": 3, "name": "ctx-user"},
+        "contact": {"id": 3, "identifier": "u-ctx", "name": "ctx-user"},
     }
     chatwoot = AsyncMock()
     graph = SimpleNamespace(checkpointer=None)
@@ -236,7 +236,7 @@ async def test_agent_bot_deduplicates_chatwoot_message_id(tmp_path):
         "message_type": "incoming",
         "content_type": "text",
         "conversation": {"id": 48},
-        "contact": {"id": 4, "name": "repeat-user"},
+        "contact": {"id": 4, "identifier": "u-repeat", "name": "repeat-user"},
     }
     chatwoot = AsyncMock()
     store = MessageStore(sqlite3.connect(tmp_path / "messages.db"))
@@ -321,3 +321,161 @@ async def test_message_updated_submitted_values_formats_address_turn():
 
     assert result is not None
     assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+
+
+def _contact_first_stores(tmp_path):
+    from ai_service_agent.harness.chatwoot import ChatwootMappingStore
+    from ai_service_agent.harness.session import ConversationStatusStore
+
+    conn = sqlite3.connect(tmp_path / "contact_first.db")
+    return ConversationStatusStore(conn), ChatwootMappingStore(conn), conn
+
+
+def _incoming_text_payload(*, message_id: str, cw_conv_id: int, contact: dict, content: str = "你好"):
+    return {
+        "event": "message_created",
+        "id": message_id,
+        "content": content,
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": cw_conv_id},
+        "contact": contact,
+    }
+
+
+@pytest.mark.asyncio
+async def test_contact_first_rejects_missing_identifier(tmp_path):
+    """v1 Contact-first：无 identifier 不得匿名建 Runtime 会话 / Chatwoot mapping。"""
+    status, mapping, conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    payload = _incoming_text_payload(
+        message_id="cf-missing",
+        cw_conv_id=9001,
+        contact={"id": 1, "name": "anon-widget"},
+    )
+
+    result = await handle_agent_bot_message(
+        payload, chatwoot, status=status, mapping=mapping
+    )
+
+    assert result is None
+    assert mapping.find(9001) is None
+    chatwoot.send_bot_message.assert_not_awaited()
+    assert conn.execute("SELECT COUNT(*) FROM conversation_status").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_contact_first_rejects_blank_identifier(tmp_path):
+    status, mapping, conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    payload = _incoming_text_payload(
+        message_id="cf-blank",
+        cw_conv_id=9002,
+        contact={"id": 2, "identifier": "   ", "name": "blank"},
+    )
+
+    result = await handle_agent_bot_message(
+        payload, chatwoot, status=status, mapping=mapping
+    )
+
+    assert result is None
+    assert mapping.find(9002) is None
+    assert conn.execute("SELECT COUNT(*) FROM conversation_status").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_contact_first_binding_establishes_mapping_on_first_message(tmp_path):
+    """首条带 validated identifier 的 AgentBot 消息懒建 conversation_id ↔ Chatwoot mapping。"""
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    payload = _incoming_text_payload(
+        message_id="cf-first",
+        cw_conv_id=9100,
+        contact={"id": 10, "identifier": "u0100", "name": "郑军"},
+    )
+
+    result = await handle_agent_bot_message(
+        payload, chatwoot, status=status, mapping=mapping
+    )
+
+    assert result is not None
+    assert result["chatwoot_conversation_id"] == 9100
+    rec = mapping.find(9100)
+    assert rec is not None
+    assert rec["conversation_id"] == result["conversation_id"]
+    assert status.get_user_id(result["conversation_id"]) == "u0100"
+    assert status.get_thread_id(result["conversation_id"]) is not None
+    chatwoot.send_bot_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_contact_first_binding_reuses_runtime_conversation(tmp_path):
+    status, mapping, conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    contact = {"id": 10, "identifier": "u0100", "name": "郑军"}
+
+    first = await handle_agent_bot_message(
+        _incoming_text_payload(message_id="cf-r1", cw_conv_id=9200, contact=contact),
+        chatwoot,
+        status=status,
+        mapping=mapping,
+    )
+    second = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="cf-r2",
+            cw_conv_id=9200,
+            contact=contact,
+            content="第二句",
+        ),
+        chatwoot,
+        status=status,
+        mapping=mapping,
+    )
+
+    assert first is not None and second is not None
+    assert first["conversation_id"] == second["conversation_id"]
+    thread_id = status.get_thread_id(first["conversation_id"])
+    assert thread_id is not None
+    assert status.get_thread_id(second["conversation_id"]) == thread_id
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM conversation_status WHERE user_id=?", ("u0100",)
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM chatwoot_conversation WHERE chatwoot_conversation_id=?",
+            (9200,),
+        ).fetchone()[0]
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_contact_first_ai_mode_plain_text_returns_bot_text(tmp_path):
+    """AI 模式普通文本 turn：Fake Graph + MemorySaver → mock Chatwoot 出站 bot 文本。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from ai_service_agent.harness.graph import make_ai_graph
+    from ai_service_agent.testing import make_fake_model
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph = make_ai_graph(make_fake_model(), MemorySaver())
+    payload = _incoming_text_payload(
+        message_id="cf-ai",
+        cw_conv_id=9300,
+        contact={"id": 11, "identifier": "u0200", "name": "reader"},
+        content="退货政策是什么",
+    )
+
+    result = await handle_agent_bot_message(
+        payload, chatwoot, graph=graph, status=status, mapping=mapping
+    )
+
+    assert result is not None
+    assert result["response"] == "这是 FAQ 的离线回复（fake model）。"
+    assert mapping.find(9300)["conversation_id"] == result["conversation_id"]
+    chatwoot.send_bot_message.assert_awaited_once()
+    assert chatwoot.send_bot_message.await_args.args[1] == result["response"]
