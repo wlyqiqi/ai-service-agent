@@ -104,8 +104,11 @@ def operation_cancelled_text() -> str:
 
 
 def form_plain_text_refuse_text() -> str:
-    """Form Interrupt 挂起期间用户发纯文本时的友好引导（Form-Only Write）。"""
-    return "请用表单提交本次修改；纯文本不会改订单。填写完成后点击确认即可。"
+    """Form Interrupt 挂起期间非 Resume 消息的友好引导（Form-Only Write / 单挂）。"""
+    return (
+        "您有未完成的修改表单，请先完成或取消当前表单；"
+        "纯文本不会改订单，也不会开启新的修改。填写完成后点击确认即可。"
+    )
 
 
 def approval_approved_text(tool: str) -> str:
