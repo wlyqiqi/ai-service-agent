@@ -37,7 +37,7 @@
 | 安全预检 / handoff 触发 | `docs/specs/safety-spec.md` |
 | conversation_mode / Handoff 生命周期 | `docs/specs/handoff-spec.md` |
 | 持久化 / 错误 / harness hook / 测试基线 | `docs/specs/architecture.md` |
-| 用户前端页 | `docs/specs/user-page-spec.md` |
+| C 端入口（Widget / AgentBot） | `docs/adr/0001-widget-agentbot-form-contract.md`（`user-page-spec.md` 已废止） |
 | 架构决策留痕 | `docs/decisions/`（新决策优先 `docs/adr/`，见 `docs/agents/domain.md`） |
 
 ## 6. 常驻硬约束
