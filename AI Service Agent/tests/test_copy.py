@@ -8,6 +8,8 @@ from ai_service_agent.graph.workflows.copy import (
     clarify_missing_text,
     clarify_no_candidates_text,
     clarify_tier_text,
+    form_plain_text_refuse_text,
+    human_mode_tip_text,
     operation_clarify_text,
     completion_text,
     confirmation_summary,
@@ -70,9 +72,12 @@ def test_completion_text_address_shows_order_and_new_address():
     assert "已修改成功" in text
 
 
-def test_form_plain_text_refuse_text():
-    from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
+def test_human_mode_tip_text():
+    text = human_mode_tip_text()
+    assert "坐席" in text and ("处理" in text or "接待" in text)
 
+
+def test_form_plain_text_refuse_text():
     text = form_plain_text_refuse_text()
     assert "表单" in text and ("纯文本" in text or "不会改" in text)
     assert "完成" in text and "取消" in text

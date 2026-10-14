@@ -6,7 +6,11 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
-from ai_service_agent.graph.workflows.copy import FIELD_LABELS, form_plain_text_refuse_text
+from ai_service_agent.graph.workflows.copy import (
+    FIELD_LABELS,
+    form_plain_text_refuse_text,
+    human_mode_tip_text,
+)
 from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
@@ -231,22 +235,9 @@ async def handle_agent_bot_message(
         return None
 
     if submitted_values:
-        form_action = submitted_values.get("confirmation") or submitted_values.get("action")
-        structured = ", ".join(
-            f"{key}={value}" for key, value in submitted_values.items()
-        )
-        # Form Resume Confirm/Cancel: keep structured representation — never rewrite
-        # address/order submits into NL that could re-enter Router for the write path.
-        if form_action in ("confirmed", "confirm", "canceled", "cancel"):
-            content = structured
-        elif submitted_values.get("order_id") and submitted_values.get("address"):
-            # Legacy AgentBot NL rewrite (teardown is #48); not Form Resume.
-            content = (
-                f"订单 {submitted_values['order_id']} 的收货地址改成 "
-                f"{submitted_values['address']}"
-            )
-        else:
-            content = structured
+        # Form-Only Write / #48: never NL-rewrite address/order submits into Router turns.
+        # Confirm/Cancel and field values stay structured for Form Resume or refuse path.
+        content = ", ".join(f"{key}={value}" for key, value in submitted_values.items())
     else:
         content = payload.get("content")
     if not isinstance(content, str) or not content.strip():
@@ -342,7 +333,19 @@ async def _handle_locked_agent_bot_message(
             mapping.put(conversation_id, cw_conv_id, contact_id)
 
     if status is not None and status.get_mode(conversation_id) != "ai":
-        return None
+        # Human lane (handoff-spec §2): Message Store only + fixed tip; no Graph.
+        if messages_store is not None:
+            message_id = chatwoot_message_id(payload)
+            if message_id and messages_store.get_by_message_id(message_id):
+                return None
+            messages_store.append(conversation_id, "user", content, message_id=message_id or None)
+        tip = human_mode_tip_text()
+        await chatwoot.send_bot_message(conversation_id, tip)
+        return {
+            "conversation_id": conversation_id,
+            "chatwoot_conversation_id": cw_conv_id,
+            "response": tip,
+        }
 
     if callbacks_factory is not None:
         on_interrupt, on_handoff_created, on_approval_pending = callbacks_factory(conversation_id, thread_id)
@@ -356,8 +359,6 @@ async def _handle_locked_agent_bot_message(
     else:
         history = [HumanMessage(content=content)]
 
-    clarification_data = None
-    confirmation_summary = None
     mutation_form_data = None
     final_message_id = None
 
@@ -382,14 +383,6 @@ async def _handle_locked_agent_bot_message(
                     return None
                 if approval_state == "expired":
                     resume_payload = {"result": "expired"}
-                elif isinstance(interrupt_value, dict) and interrupt_value.get("type") == "confirmation_required":
-                    action = (submitted_values or {}).get("confirmation") or (submitted_values or {}).get("action")
-                    if action == "confirmed":
-                        resume_payload = {"action": "confirm"}
-                    elif action == "canceled":
-                        resume_payload = {"action": "cancel"}
-                    else:
-                        resume_payload = resolve_resume_payload(interrupt_value, content)
                 elif is_form_interrupt(interrupt_value):
                     submitted = submitted_values or {}
                     action = submitted.get("confirmation") or submitted.get("action")
@@ -408,11 +401,12 @@ async def _handle_locked_agent_bot_message(
                         if projected:
                             mutation_form_data = projected.get("data") or {}
                 else:
+                    # #48: legacy confirmation_required interactive retired; no special resume.
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 
         if final_text is None:
             async def run_graph():
-                nonlocal final_text, clarification_data, confirmation_summary, mutation_form_data
+                nonlocal final_text, mutation_form_data
                 async for event in event_stream(
                     graph,
                     config,
@@ -429,12 +423,10 @@ async def _handle_locked_agent_bot_message(
                         # form_rejected: same Form Interrupt session with errors
                         # (Closed MutationGraph); Adapter only projects Transport.
                         mutation_form_data = event.get("data") or {}
-                    elif event.get("type") == "clarification_required":
-                        clarification_data = event.get("data") or {}
-                    elif event.get("type") == "confirmation_required":
-                        confirmation_summary = event.get("data", {}).get("summary")
                     elif event.get("type") == "handoff_created" and on_handoff_created is not None:
                         await on_handoff_created(event)
+                    # #48: clarification_required / confirmation_required interactive retired.
+                    # Operation Clarify and HighRisk missing-fields stay outbound chat (done.final).
 
             if thread_lock_factory is not None:
                 async with await thread_lock_factory(thread_id):
@@ -449,17 +441,6 @@ async def _handle_locked_agent_bot_message(
 
     if mutation_form_data is not None:
         await send_mutation_form(chatwoot, conversation_id, mutation_form_data)
-    elif clarification_data is not None and clarification_data.get("reason") != "operation_unclear":
-        # Operation Clarify stays chat text (no Mutation Form / legacy empty clarify-form).
-        await send_clarify_form(
-            chatwoot,
-            conversation_id,
-            clarification_data.get("missing") or [],
-            profile=profile_loader(user_id) if profile_loader else None,
-            orders=orders_loader(user_id) if orders_loader else None,
-        )
-    if confirmation_summary is not None:
-        await send_confirmation(chatwoot, conversation_id, confirmation_summary)
 
     return {
         "conversation_id": conversation_id,
@@ -491,7 +472,7 @@ async def send_clarify_form(
     profile: dict | None = None,
     orders: list[dict] | None = None,
 ) -> None:
-    """把参数澄清事件转换为 Chatwoot 原生表单。"""
+    """Legacy clarify-form builder（#48 AgentBot 出站已停用；保留供兼容/单测）。"""
     items = []
 
     if "order_id" in missing_fields:
@@ -536,7 +517,7 @@ async def send_confirmation(
     conversation_id: str,
     summary: str,
 ) -> None:
-    """把确认中断转换为 Chatwoot 原生选择控件。"""
+    """Legacy confirmation input_select（#48 AgentBot 出站已停用；保留供兼容/单测）。"""
     await chatwoot.send_interactive_message(
         conversation_id,
         summary,

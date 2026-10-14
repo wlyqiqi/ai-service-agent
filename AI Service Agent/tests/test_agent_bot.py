@@ -155,6 +155,7 @@ async def test_send_confirmation_uses_input_select():
 
 @pytest.mark.asyncio
 async def test_message_updated_submitted_values_runs_one_turn():
+    """#48: form submit stays structured — not NL-rewritten for Mutation write."""
     payload = {
         "event": "message_updated",
         "id": "103",
@@ -172,12 +173,14 @@ async def test_message_updated_submitted_values_runs_one_turn():
     result = await handle_agent_bot_message(payload, chatwoot)
 
     assert result is not None
-    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    assert result["response"] == "[AgentBot] 收到表单：order_id=ORD-1, address=新地址"
+    assert "收货地址改成" not in result["response"]
     chatwoot.send_bot_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_message_updated_widget_array_values_formats_address_turn():
+    """#48: widget array form submit is structured, not NL rewrite."""
     payload = {
         "event": "message_updated",
         "id": "105",
@@ -198,7 +201,8 @@ async def test_message_updated_widget_array_values_formats_address_turn():
     result = await handle_agent_bot_message(payload, chatwoot)
 
     assert result is not None
-    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    assert result["response"] == "[AgentBot] 收到表单：order_id=ORD-1, address=新地址"
+    assert "收货地址改成" not in result["response"]
     chatwoot.send_bot_message.assert_awaited_once()
 
 
@@ -224,9 +228,8 @@ async def test_message_updated_outgoing_form_array_runs_one_turn():
     result = await handle_agent_bot_message(payload, chatwoot)
 
     assert result is not None
-    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    assert result["response"] == "[AgentBot] 收到表单：order_id=ORD-1, address=新地址"
     chatwoot.send_bot_message.assert_awaited_once()
-
 
 @pytest.mark.asyncio
 async def test_agent_bot_deduplicates_chatwoot_message_id(tmp_path):
@@ -304,6 +307,7 @@ async def test_agent_bot_serializes_same_chatwoot_conversation(tmp_path):
 
 @pytest.mark.asyncio
 async def test_message_updated_submitted_values_formats_address_turn():
+    """#48 regression: no NL rewrite of address/order form submit."""
     payload = {
         "event": "message_updated",
         "id": "104",
@@ -321,7 +325,8 @@ async def test_message_updated_submitted_values_formats_address_turn():
     result = await handle_agent_bot_message(payload, chatwoot)
 
     assert result is not None
-    assert result["response"] == "[AgentBot] 收到表单：订单 ORD-1 的收货地址改成 新地址"
+    assert result["response"] == "[AgentBot] 收到表单：order_id=ORD-1, address=新地址"
+    assert "收货地址改成" not in result["response"]
 
 
 def _contact_first_stores(tmp_path):
@@ -1229,3 +1234,158 @@ async def test_form_rejected_repushes_same_session_with_errors_then_fix_writes_o
     assert "已更新完成" in fix_result["response"] or "收货地址" in fix_result["response"]
     # Reject re-push already counted; fix path must not open another rejected form.
     assert len(captured["forms"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_confirmation_required_does_not_emit_input_select(
+    monkeypatch, tmp_path
+):
+    """#48: Mutation path must not project confirmation_required as Chatwoot input_select."""
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+
+    async def fake_event_stream(*_args, **_kwargs):
+        yield {
+            "type": "confirmation_required",
+            "data": {"summary": "您即将进行「收货地址修改」操作"},
+        }
+        yield {"type": "done", "data": {"final": "请确认后继续。", "message_id": "m-conf"}}
+
+    monkeypatch.setattr(
+        "ai_service_agent.harness.agent_bot.event_stream", fake_event_stream
+    )
+
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="legacy-confirm-off",
+            cw_conv_id=9501,
+            contact={"id": 31, "identifier": "u1", "name": "郑军"},
+            content="我要改地址",
+        ),
+        chatwoot,
+        graph=SimpleNamespace(checkpointer=None),
+        status=status,
+        mapping=mapping,
+    )
+
+    assert result is not None
+    assert result["response"] == "请确认后继续。"
+    chatwoot.send_bot_message.assert_awaited_once()
+    chatwoot.send_interactive_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_clarify_form_interactive_disabled_for_missing_fields(
+    monkeypatch, tmp_path
+):
+    """#48: clarification_required missing-fields must not open legacy clarify-form."""
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    profile_loader = MagicMock(side_effect=AssertionError("legacy clarify-form"))
+    orders_loader = MagicMock(side_effect=AssertionError("legacy clarify-form"))
+
+    async def fake_event_stream(*_args, **_kwargs):
+        yield {
+            "type": "clarification_required",
+            "data": {"missing": ["order_id", "address"], "reason": "missing_fields"},
+        }
+        yield {
+            "type": "done",
+            "data": {
+                "final": "好的，为了尽快为您办理，请补充：订单号、收货地址，直接回复我就可以～",
+                "message_id": "m-clarify",
+            },
+        }
+
+    monkeypatch.setattr(
+        "ai_service_agent.harness.agent_bot.event_stream", fake_event_stream
+    )
+
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="legacy-clarify-off",
+            cw_conv_id=9502,
+            contact={"id": 32, "identifier": "u1", "name": "郑军"},
+            content="改地址",
+        ),
+        chatwoot,
+        graph=SimpleNamespace(checkpointer=None),
+        status=status,
+        mapping=mapping,
+        profile_loader=profile_loader,
+        orders_loader=orders_loader,
+    )
+
+    assert result is not None
+    assert "请补充" in result["response"]
+    chatwoot.send_bot_message.assert_awaited_once()
+    chatwoot.send_interactive_message.assert_not_awaited()
+    profile_loader.assert_not_called()
+    orders_loader.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_human_mode_sends_fixed_tip_without_graph(tmp_path):
+    """#48: conversation_mode=human → no Graph; fixed tip via Chatwoot.
+
+    Seam: handle_agent_bot_message + mock Chatwoot (graph must not be invoked).
+    """
+    from ai_service_agent.graph.workflows.copy import human_mode_tip_text
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    contact = {"id": 33, "identifier": "u-human", "name": "人工用户"}
+    cw_conv_id = 9600
+
+    bind = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="96001",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="先建会话",
+        ),
+        chatwoot,
+        status=status,
+        mapping=mapping,
+    )
+    assert bind is not None
+    conversation_id = bind["conversation_id"]
+    status.set_mode(conversation_id, "human")
+    chatwoot.reset_mock()
+
+    graph = MagicMock()
+    graph.checkpointer = object()
+    graph.aget_state = AsyncMock(
+        side_effect=AssertionError("human mode must not touch Graph state")
+    )
+    graph.ainvoke = AsyncMock(
+        side_effect=AssertionError("human mode must not invoke Graph")
+    )
+
+    store = MessageStore(sqlite3.connect(tmp_path / "human-tip-messages.db"))
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="96002",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="坐席还在吗",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+        messages_store=store,
+    )
+
+    tip = human_mode_tip_text()
+    assert result is not None
+    assert result["response"] == tip
+    assert "坐席" in tip and ("处理" in tip or "接待" in tip)
+    chatwoot.send_bot_message.assert_awaited_once()
+    assert chatwoot.send_bot_message.await_args.args[1] == tip
+    chatwoot.send_interactive_message.assert_not_awaited()
+    graph.aget_state.assert_not_awaited()
+    graph.ainvoke.assert_not_awaited()
+    rows = store.list(conversation_id)
+    assert rows[-1]["role"] == "user"
+    assert rows[-1]["content"] == "坐席还在吗"
