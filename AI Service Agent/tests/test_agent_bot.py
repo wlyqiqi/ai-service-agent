@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -479,3 +480,232 @@ async def test_contact_first_ai_mode_plain_text_returns_bot_text(tmp_path):
     assert mapping.find(9300)["conversation_id"] == result["conversation_id"]
     chatwoot.send_bot_message.assert_awaited_once()
     assert chatwoot.send_bot_message.await_args.args[1] == result["response"]
+
+
+@pytest.mark.asyncio
+async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkeypatch, tmp_path):
+    """#44: Form Interrupt → Chatwoot native form from interrupt payload (not legacy clarify-form).
+
+    Seam: handle_agent_bot_message + Fake Graph events + mock Chatwoot.
+    """
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    form_data = {
+        "tool": "update_address",
+        "order_candidates": [
+            {
+                "order_id": "ORD-PAID-1",
+                "product_summary": "测试商品 x1",
+            },
+            {
+                "order_id": "ORD-PAID-2",
+                "product_summary": "另一件 x1",
+            },
+        ],
+        "form_session_id": "fs-agentbot-44",
+        "summary": "您即将进行「收货地址修改」操作",
+        "prefills": {"address": "北京市朝阳区预填路 1 号"},
+        "response_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"enum": ["confirm", "cancel"]},
+                "order_id": {"type": "string"},
+                "address": {"type": "string"},
+            },
+        },
+    }
+
+    async def fake_event_stream(*_args, **_kwargs):
+        yield {"type": "form_required", "data": form_data}
+        yield {"type": "done", "data": {"final": None, "message_id": None}}
+
+    monkeypatch.setattr(
+        "ai_service_agent.harness.agent_bot.event_stream", fake_event_stream
+    )
+    profile_loader = MagicMock(side_effect=AssertionError("legacy profile_loader must not build Mutation Form"))
+    orders_loader = MagicMock(side_effect=AssertionError("legacy orders_loader must not build Mutation Form"))
+
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="form-open-1",
+            cw_conv_id=9400,
+            contact={"id": 20, "identifier": "u1", "name": "郑军"},
+            content="我要改个地址",
+        ),
+        chatwoot,
+        graph=SimpleNamespace(checkpointer=None),
+        status=status,
+        mapping=mapping,
+        profile_loader=profile_loader,
+        orders_loader=orders_loader,
+    )
+
+    assert result is not None
+    chatwoot.send_interactive_message.assert_awaited_once()
+    args = chatwoot.send_interactive_message.await_args.args
+    assert args[1] == form_data["summary"]
+    assert args[2] == "form"
+    items = args[3]["items"]
+    order_picker = next(item for item in items if item["name"] == "order_id")
+    assert order_picker["type"] == "select"
+    assert order_picker["options"] == [
+        {"label": "ORD-PAID-1 · 测试商品 x1", "value": "ORD-PAID-1"},
+        {"label": "ORD-PAID-2 · 另一件 x1", "value": "ORD-PAID-2"},
+    ]
+    address_field = next(item for item in items if item["name"] == "address")
+    assert address_field["type"] == "text"
+    assert address_field["default"] == "北京市朝阳区预填路 1 号"
+    assert all(item["name"] not in ("action", "request_id") for item in items)
+    profile_loader.assert_not_called()
+    orders_loader.assert_not_called()
+
+
+def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
+    """#44 AC: Chatwoot items can be derived from interrupt ``fields`` + prefills."""
+    from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
+
+    items = mutation_form_items_from_form_data(
+        {
+            "order_candidates": [{"order_id": "ORD-1", "product_summary": "鞋 x1"}],
+            "prefills": {"note": "工作日配送"},
+            "fields": [
+                {"name": "note", "label": "订单备注", "type": "text"},
+                {"name": "action", "type": "select", "options": [{"label": "确认", "value": "confirm"}]},
+            ],
+            "response_schema": {
+                "properties": {
+                    "address": {"type": "string"},
+                    "action": {"enum": ["confirm", "cancel"]},
+                },
+            },
+        }
+    )
+
+    assert [item["name"] for item in items] == ["order_id", "note"]
+    assert items[0]["options"] == [{"label": "ORD-1 · 鞋 x1", "value": "ORD-1"}]
+    assert items[1]["default"] == "工作日配送"
+    assert items[1]["label"] == "订单备注"
+
+
+@pytest.mark.asyncio
+async def test_operation_clarify_stays_chat_text_without_mutation_form(monkeypatch, tmp_path):
+    """#44: Operation Clarify is chat text only — must not open a Mutation Form."""
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+
+    async def fake_event_stream(*_args, **_kwargs):
+        yield {
+            "type": "clarification_required",
+            "data": {"missing": [], "reason": "operation_unclear"},
+        }
+        yield {
+            "type": "done",
+            "data": {
+                "final": "好的，您是想修改订单相关信息。请问具体要办理哪一项呢？",
+                "message_id": "m-op",
+            },
+        }
+
+    monkeypatch.setattr(
+        "ai_service_agent.harness.agent_bot.event_stream", fake_event_stream
+    )
+
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="op-clarify-1",
+            cw_conv_id=9410,
+            contact={"id": 21, "identifier": "u1", "name": "郑军"},
+            content="我要改一下订单",
+        ),
+        chatwoot,
+        graph=SimpleNamespace(checkpointer=None),
+        status=status,
+        mapping=mapping,
+    )
+
+    assert result is not None
+    assert "修改订单相关信息" in result["response"]
+    chatwoot.send_bot_message.assert_awaited_once()
+    chatwoot.send_interactive_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkeypatch):
+    """#44: Fake Graph Form Interrupt → outbound Chatwoot form (AgentBot seam)."""
+    import importlib.util
+
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from ai_service_agent.domain.orders import SQLiteOrderRepository
+    from ai_service_agent.graph import builder as builder_mod
+    from ai_service_agent.harness.graph import make_ai_graph
+    from ai_service_agent.testing import (
+        ToolCallingFakeModel,
+        router_json_message,
+        select_json_message,
+    )
+    from ai_service_agent.tools import orders as orders_mod
+    from ai_service_agent.tools import write as write_mod
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_agent_bot_form", root / "scripts" / "seed_mock_db.py"
+    )
+    seed_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed_module)
+    business_db = tmp_path / "agentbot-form-mock.db"
+    seed_module.build_database(str(business_db))
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _WriteSettings())
+    monkeypatch.setattr(
+        builder_mod,
+        "SQLiteOrderRepository",
+        lambda path: SQLiteOrderRepository(str(business_db)),
+    )
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    repo = SQLiteOrderRepository(str(business_db))
+    graph = make_ai_graph(
+        ToolCallingFakeModel(
+            responses=[
+                router_json_message("account_profile_update", 0.9),
+                select_json_message("update_address", {}),
+            ]
+        ),
+        MemorySaver(),
+        order_repository=repo,
+    )
+    profile_loader = MagicMock(side_effect=AssertionError("legacy clarify-form path"))
+    orders_loader = MagicMock(side_effect=AssertionError("legacy clarify-form path"))
+
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="form-graph-1",
+            cw_conv_id=9420,
+            contact={"id": 22, "identifier": "u1", "name": "郑军"},
+            content="我要改个地址",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+        profile_loader=profile_loader,
+        orders_loader=orders_loader,
+    )
+
+    assert result is not None
+    chatwoot.send_interactive_message.assert_awaited_once()
+    args = chatwoot.send_interactive_message.await_args.args
+    assert args[2] == "form"
+    items = args[3]["items"]
+    order_picker = next(item for item in items if item["name"] == "order_id")
+    assert order_picker["type"] == "select"
+    assert any(opt["value"] == "ORD-PAID-1" for opt in order_picker["options"])
+    assert any(item["name"] == "address" and item["type"] == "text" for item in items)
+    profile_loader.assert_not_called()
+    orders_loader.assert_not_called()
