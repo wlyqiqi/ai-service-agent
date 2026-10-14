@@ -12,7 +12,18 @@ from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_pa
 from ai_service_agent.harness.streaming import event_stream
 
 # Form Resume schema keys that are not Mutation Form input widgets.
+# ``action`` is appended explicitly as Confirm/Cancel control (not from schema loop).
 _FORM_SCHEMA_SKIP_FIELDS = frozenset({"action", "request_id"})
+
+_MUTATION_FORM_ACTION_ITEM: dict[str, Any] = {
+    "name": "action",
+    "label": "确认或取消",
+    "type": "select",
+    "options": [
+        {"label": "确认", "value": "confirm"},
+        {"label": "取消", "value": "cancel"},
+    ],
+}
 
 
 def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -20,7 +31,8 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
 
     Source of truth matches the former SSE Mutation Form: Order Picker from
     ``order_candidates``, remaining fields from ``fields`` or ``response_schema``,
-    prefills applied as item ``default`` values.
+    prefills applied as item ``default`` values. Always ends with Confirm/Cancel
+    ``action`` select so Form Cancel resume is possible from Widget.
     """
     prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
     items: list[dict[str, Any]] = []
@@ -67,29 +79,30 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
             elif field.get("default") is not None:
                 item["default"] = field["default"]
             items.append(item)
-        return items
+    else:
+        schema = data.get("response_schema") if isinstance(data.get("response_schema"), dict) else {}
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for name, prop in properties.items():
+            if name in _FORM_SCHEMA_SKIP_FIELDS or name == "order_id":
+                continue
+            label = FIELD_LABELS.get(name, name)
+            item = {
+                "name": name,
+                "label": label,
+                "type": "text",
+                "placeholder": f"请输入{label}",
+            }
+            if isinstance(prop, dict) and prop.get("enum"):
+                item["type"] = "select"
+                item["options"] = [
+                    {"label": str(value), "value": value} for value in prop["enum"]
+                ]
+                item.pop("placeholder", None)
+            if prefills.get(name) is not None:
+                item["default"] = prefills[name]
+            items.append(item)
 
-    schema = data.get("response_schema") if isinstance(data.get("response_schema"), dict) else {}
-    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
-    for name, prop in properties.items():
-        if name in _FORM_SCHEMA_SKIP_FIELDS or name == "order_id":
-            continue
-        label = FIELD_LABELS.get(name, name)
-        item: dict[str, Any] = {
-            "name": name,
-            "label": label,
-            "type": "text",
-            "placeholder": f"请输入{label}",
-        }
-        if isinstance(prop, dict) and prop.get("enum"):
-            item["type"] = "select"
-            item["options"] = [
-                {"label": str(value), "value": value} for value in prop["enum"]
-            ]
-            item.pop("placeholder", None)
-        if prefills.get(name) is not None:
-            item["default"] = prefills[name]
-        items.append(item)
+    items.append(dict(_MUTATION_FORM_ACTION_ITEM))
     return items
 
 
@@ -159,13 +172,22 @@ async def handle_agent_bot_message(
         return None
 
     if submitted_values:
-        if submitted_values.get("order_id") and submitted_values.get("address"):
+        form_action = submitted_values.get("confirmation") or submitted_values.get("action")
+        structured = ", ".join(
+            f"{key}={value}" for key, value in submitted_values.items()
+        )
+        # Form Resume Confirm/Cancel: keep structured representation — never rewrite
+        # address/order submits into NL that could re-enter Router for the write path.
+        if form_action in ("confirmed", "confirm", "canceled", "cancel"):
+            content = structured
+        elif submitted_values.get("order_id") and submitted_values.get("address"):
+            # Legacy AgentBot NL rewrite (teardown is #48); not Form Resume.
             content = (
                 f"订单 {submitted_values['order_id']} 的收货地址改成 "
                 f"{submitted_values['address']}"
             )
         else:
-            content = ", ".join(f"{key}={value}" for key, value in submitted_values.items())
+            content = structured
     else:
         content = payload.get("content")
     if not isinstance(content, str) or not content.strip():

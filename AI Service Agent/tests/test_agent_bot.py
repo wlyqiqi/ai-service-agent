@@ -555,7 +555,11 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
     address_field = next(item for item in items if item["name"] == "address")
     assert address_field["type"] == "text"
     assert address_field["default"] == "北京市朝阳区预填路 1 号"
-    assert all(item["name"] not in ("action", "request_id") for item in items)
+    assert all(item["name"] != "request_id" for item in items)
+    action_field = next(item for item in items if item["name"] == "action")
+    assert action_field["type"] == "select"
+    assert {"label": "确认", "value": "confirm"} in action_field["options"]
+    assert {"label": "取消", "value": "cancel"} in action_field["options"]
     profile_loader.assert_not_called()
     orders_loader.assert_not_called()
 
@@ -581,10 +585,14 @@ def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
         }
     )
 
-    assert [item["name"] for item in items] == ["order_id", "note"]
+    assert [item["name"] for item in items] == ["order_id", "note", "action"]
     assert items[0]["options"] == [{"label": "ORD-1 · 鞋 x1", "value": "ORD-1"}]
     assert items[1]["default"] == "工作日配送"
     assert items[1]["label"] == "订单备注"
+    assert items[2]["options"] == [
+        {"label": "确认", "value": "confirm"},
+        {"label": "取消", "value": "cancel"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -629,9 +637,27 @@ async def test_operation_clarify_stays_chat_text_without_mutation_form(monkeypat
     chatwoot.send_interactive_message.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkeypatch):
-    """#44: Fake Graph Form Interrupt → outbound Chatwoot form (AgentBot seam)."""
+def _form_submit_payload(
+    *,
+    message_id: str,
+    cw_conv_id: int,
+    contact: dict,
+    submitted_values: dict,
+):
+    return {
+        "event": "message_updated",
+        "id": message_id,
+        "content": "",
+        "message_type": "incoming",
+        "content_type": "form",
+        "content_attributes": {"submitted_values": submitted_values},
+        "conversation": {"id": cw_conv_id},
+        "contact": contact,
+    }
+
+
+def _agent_bot_mutation_form_graph(tmp_path, monkeypatch, *, db_name: str):
+    """Fake Graph + MemorySaver + seeded mock DB for AgentBot Mutation Form tests."""
     import importlib.util
 
     from langgraph.checkpoint.memory import MemorySaver
@@ -649,11 +675,11 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
 
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location(
-        "seed_mock_db_agent_bot_form", root / "scripts" / "seed_mock_db.py"
+        f"seed_mock_db_agent_bot_{db_name}", root / "scripts" / "seed_mock_db.py"
     )
     seed_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed_module)
-    business_db = tmp_path / "agentbot-form-mock.db"
+    business_db = tmp_path / f"{db_name}.db"
     seed_module.build_database(str(business_db))
 
     class _WriteSettings:
@@ -667,8 +693,6 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
         lambda path: SQLiteOrderRepository(str(business_db)),
     )
 
-    status, mapping, _conn = _contact_first_stores(tmp_path)
-    chatwoot = AsyncMock()
     repo = SQLiteOrderRepository(str(business_db))
     graph = make_ai_graph(
         ToolCallingFakeModel(
@@ -679,6 +703,17 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
         ),
         MemorySaver(),
         order_repository=repo,
+    )
+    return graph, repo
+
+
+@pytest.mark.asyncio
+async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkeypatch):
+    """#44: Fake Graph Form Interrupt → outbound Chatwoot form (AgentBot seam)."""
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph, _repo = _agent_bot_mutation_form_graph(
+        tmp_path, monkeypatch, db_name="agentbot-form-mock"
     )
     profile_loader = MagicMock(side_effect=AssertionError("legacy clarify-form path"))
     orders_loader = MagicMock(side_effect=AssertionError("legacy clarify-form path"))
@@ -707,5 +742,163 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
     assert order_picker["type"] == "select"
     assert any(opt["value"] == "ORD-PAID-1" for opt in order_picker["options"])
     assert any(item["name"] == "address" and item["type"] == "text" for item in items)
+    action_field = next(item for item in items if item["name"] == "action")
+    assert {"label": "取消", "value": "cancel"} in action_field["options"]
     profile_loader.assert_not_called()
     orders_loader.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pending_form_confirm_resumes_structured_values_and_writes_once(
+    tmp_path, monkeypatch
+):
+    """#45: Confirm → Form Resume with structured fields; single write; not NL→Router."""
+    import ai_service_agent.harness.agent_bot as agent_bot_mod
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph, repo = _agent_bot_mutation_form_graph(
+        tmp_path, monkeypatch, db_name="agentbot-form-confirm"
+    )
+    contact = {"id": 23, "identifier": "u1", "name": "郑军"}
+    cw_conv_id = 9430
+    new_address = "上海市浦东新区确认路 45 号"
+
+    open_result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="form-confirm-open",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="我要改个地址",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    assert open_result is not None
+    chatwoot.send_interactive_message.assert_awaited_once()
+    thread_id = status.get_thread_id(open_result["conversation_id"])
+    pending = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert pending.interrupts
+
+    before = repo.get_user_profile("u1")["address"]
+    assert before != new_address
+
+    captured: dict = {}
+    real_event_stream = agent_bot_mod.event_stream
+
+    async def capturing_event_stream(*args, **kwargs):
+        captured["resume_payload"] = kwargs.get("resume_payload")
+        async for event in real_event_stream(*args, **kwargs):
+            yield event
+
+    monkeypatch.setattr(agent_bot_mod, "event_stream", capturing_event_stream)
+
+    confirm_result = await handle_agent_bot_message(
+        _form_submit_payload(
+            message_id="form-confirm-submit",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            submitted_values={
+                "action": "confirm",
+                "order_id": "ORD-PAID-1",
+                "address": new_address,
+            },
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+
+    assert confirm_result is not None
+    assert captured["resume_payload"] == {
+        "action": "confirm",
+        "order_id": "ORD-PAID-1",
+        "address": new_address,
+    }
+    assert "收货地址改成" not in str(captured["resume_payload"])
+    after = repo.get_user_profile("u1")["address"]
+    assert after == new_address
+    done = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert not done.interrupts
+    write_tools = [
+        m
+        for m in done.values.get("messages", [])
+        if getattr(m, "type", "") == "tool" and getattr(m, "name", "") == "update_address"
+    ]
+    assert len(write_tools) == 1
+    assert confirm_result["response"]
+    assert "已更新完成" in confirm_result["response"] or "收货地址" in confirm_result["response"]
+
+
+@pytest.mark.asyncio
+async def test_pending_form_cancel_resumes_without_write_and_clears_interrupt(
+    tmp_path, monkeypatch
+):
+    """#45: Cancel button → resume cancel; no tool write; interrupt cleared."""
+    import ai_service_agent.harness.agent_bot as agent_bot_mod
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph, repo = _agent_bot_mutation_form_graph(
+        tmp_path, monkeypatch, db_name="agentbot-form-cancel"
+    )
+    contact = {"id": 24, "identifier": "u1", "name": "郑军"}
+    cw_conv_id = 9440
+
+    open_result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="form-cancel-open",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="我要改个地址",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    assert open_result is not None
+    thread_id = status.get_thread_id(open_result["conversation_id"])
+    pending = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert pending.interrupts
+    before = repo.get_user_profile("u1")["address"]
+
+    captured: dict = {}
+    real_event_stream = agent_bot_mod.event_stream
+
+    async def capturing_event_stream(*args, **kwargs):
+        captured["resume_payload"] = kwargs.get("resume_payload")
+        async for event in real_event_stream(*args, **kwargs):
+            yield event
+
+    monkeypatch.setattr(agent_bot_mod, "event_stream", capturing_event_stream)
+
+    cancel_result = await handle_agent_bot_message(
+        _form_submit_payload(
+            message_id="form-cancel-submit",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            submitted_values={"action": "cancel"},
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+
+    assert cancel_result is not None
+    assert captured["resume_payload"] == {"action": "cancel"}
+    assert repo.get_user_profile("u1")["address"] == before
+    done = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert not done.interrupts
+    write_tools = [
+        m
+        for m in done.values.get("messages", [])
+        if getattr(m, "type", "") == "tool" and getattr(m, "name", "") == "update_address"
+    ]
+    assert write_tools == []
+    assert cancel_result["response"]
+    assert "取消" in cancel_result["response"]
