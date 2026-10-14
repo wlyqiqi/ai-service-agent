@@ -740,8 +740,8 @@ def create_app(
                 )
         return {"ok": True}
     if _web_dir.exists():
-        # 同源托管用户页面（user-page-spec §10）：baseUrl='' 相对路径 + file:// 强制 mock，
-        # 真实模式需 Runtime 同源提供页面；API 路由已在挂载前注册，优先级不变。
+        # 同源托管 web/ 静态资源（如 landing.html）；自建 SSE 用户页 index.html 已下线。
+        # API 路由已在挂载前注册，优先级不变。
         app.mount("/", NoCacheStaticFiles(directory=_web_dir, html=True), name="web")
 
     return app

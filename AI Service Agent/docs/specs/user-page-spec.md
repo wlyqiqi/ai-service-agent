@@ -1,7 +1,7 @@
 # 用户页面规格（user-page-spec.md）
 
 - 日期：2026-09-17
-- 状态：brainstorming 定稿（待实现计划）
+- 状态：**已废止（2026-10-14）** — 交付物 `web/index.html` 已移除；C 端主入口改为 Chatwoot Widget + AgentBot，见 `docs/adr/0001-widget-agentbot-form-contract.md`。下文仅作历史参考，勿再按此实现。
 - 关联：`event-spec.md`（事件协议）· `handoff-spec.md`（conversation_mode / 人工车道）· `architecture.md`（Transport 边界）· `approval-spec.md`（审批）· `tool-spec.md`（工具语义）
 
 ## 1. 目标与范围
