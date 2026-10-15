@@ -161,6 +161,17 @@ Seat Takeover / Handoff Resolve **不**走 AgentBot Outgoing URL。须在 Chatwo
 
 验收：用 Account API / 控制台确认该 webhook 的 subscriptions **含** `conversation_status_changed`。缺订则 Take over / Resolve 不会同步 Conversation Mode。
 
+脚本（读 `.env` 的 `CHATWOOT_*` + `RUNTIME_BASE`）：
+
+```powershell
+$env:RUNTIME_BASE="http://<Chatwoot能访问的Runtime基址>"
+uv run --no-sync python scripts/check_seat_gated_webhooks.py
+```
+
+期望 exit 0：URL = `{RUNTIME_BASE}/webhooks/chatwoot`，订阅含 `conversation_status_changed`，secret 与 `CHATWOOT_WEBHOOK_SECRET` 一致。
+
+自托管投递到 LAN / `host.docker.internal` 时，Chatwoot + Sidekiq 需 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`（否则 Sidekiq 报 `has no public ip addresses`，Take over / Resolve 不会到达 Runtime）。逐步三角见 [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)。
+
 术语：`CONTEXT.md`（Seat Takeover / Handoff Resolve）；规格：`docs/specs/handoff-spec.md` §3.1。
 
 ## 5. `.env` 清单（与 `Settings` 1:1）
@@ -206,7 +217,7 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 - [ ] AgentBot payload 中 `contact.identifier` = 登录 `user_id`  
 - [ ] Account Webhook URL = `{RUNTIME_BASE}/webhooks/chatwoot`，secret = `CHATWOOT_WEBHOOK_SECRET`  
 - [ ] Account Webhook **已订阅** `conversation_status_changed`（**不是** AgentBot Outgoing URL）  
-- [ ] Seat-gated 三角：客户申请后 AI 仍可回复 → 坐席 Take over → 客户收到 Joined Notice / human 车道 → Resolve 后 AI 恢复  
+- [ ] Seat-gated 三角：客户申请后 AI 仍可回复 → 坐席 Take over → 客户收到 Joined Notice / human 车道 → Resolve 后 AI 恢复（逐步表见 [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)）  
 - [ ] （可选）历史：转人工 tip / 坐席续接 → 见 issue #58  
 
 ## 8. 非权威材料
@@ -222,4 +233,5 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 - 本文跟踪：[#57](https://github.com/wlyqiqi/ai-service-agent/issues/57)  
 - Widget 冒烟（人侧）：[#58](https://github.com/wlyqiqi/ai-service-agent/issues/58)  
 - Seat-gated docs：[#80](https://github.com/wlyqiqi/ai-service-agent/issues/80)（父规格 [#79](https://github.com/wlyqiqi/ai-service-agent/issues/79)）  
+- Seat-gated ops / live checklist：[#82](https://github.com/wlyqiqi/ai-service-agent/issues/82) · [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)  
 - ADR：`docs/adr/0001-widget-agentbot-form-contract.md` · `docs/adr/0003-seat-gated-handoff.md`
