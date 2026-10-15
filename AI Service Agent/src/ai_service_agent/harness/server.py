@@ -145,6 +145,11 @@ async def _approval_pending_events(it: dict):
     yield {"type": "done", "data": {"final": None, "message_id": None}}
 
 
+# Seat HTTP badge headers（approval-spec §3.2.1）：口令 + 坐席 actor id，缺一不可。
+_SEAT_CREDENTIAL_HEADER = "X-Seat-Approval-Credential"
+_SEAT_ACTOR_HEADER = "X-Seat-Actor-Id"
+
+
 def create_app(
     db_path: str,
     model=None,
@@ -155,6 +160,7 @@ def create_app(
     chatwoot_agent_bot_secret: str | None = None,
     auth_enabled: bool | None = None,
     jwt_secret: str | None = None,
+    seat_approval_secret: str | None = None,
     profile_db_path: str | None = None,
     order_repository=None,
 ):
@@ -170,6 +176,9 @@ def create_app(
     secret = jwt_secret or settings.jwt_secret
     if required_auth and not secret:
         raise ValueError("JWT_SECRET is required when authentication is enabled")
+    seat_secret = (
+        settings.seat_approval_secret if seat_approval_secret is None else seat_approval_secret
+    ) or None
     sim = settings.simulate_approval if simulate_approval is None else simulate_approval
     conn = sqlite3.connect(db_path, check_same_thread=False)
     users = UserStore(conn)
@@ -245,6 +254,23 @@ def create_app(
         if auth_user is not None and record["requester_user_id"] != auth_user:
             raise HTTPException(status_code=403, detail="approval forbidden")
 
+    def _require_seat_actor(request: Request) -> str:
+        """Seat HTTP badge：内部服务口令 + 坐席 actor id（ADR-0002 / approval-spec §3.2.1）。
+
+        客户 JWT 永不能 approve/reject；口令未配置、口令错误或缺坐席 id → 403（fail-closed）。
+        """
+        if not seat_secret:
+            raise HTTPException(status_code=403, detail="seat approval forbidden")
+        credential = request.headers.get(_SEAT_CREDENTIAL_HEADER) or ""
+        seat_id = (request.headers.get(_SEAT_ACTOR_HEADER) or "").strip()
+        try:
+            credential_ok = bool(credential) and hmac.compare_digest(credential, seat_secret)
+        except (TypeError, ValueError):
+            credential_ok = False
+        if not credential_ok or not seat_id:
+            raise HTTPException(status_code=403, detail="seat approval forbidden")
+        return seat_id
+
     def _chat_ownership(request: Request, body: ChatBody):
         _ensure_conversation_owner(_auth_user(request), body.session_id)
 
@@ -259,10 +285,14 @@ def create_app(
         if record is not None:
             _ensure_conversation_owner(_auth_user(request), record["conversation_id"])
 
-    def _approval_ownership(request: Request, approval_id: str):
+    def _approval_read_access(request: Request, approval_id: str):
+        """客户只读 GET：鉴权开启时按 Requester 过滤；鉴权关闭时禁止倾倒（403）。"""
+        if not required_auth:
+            raise HTTPException(status_code=403, detail="approval forbidden")
+        auth_user = _auth_user(request)
         record = approvals.get(approval_id)
         if record is not None:
-            _ensure_approval_owner(_auth_user(request), record)
+            _ensure_approval_owner(auth_user, record)
 
     async def _emit_handoff(conv_id: str, ev: dict):
         """统一 handoff side-effect path（P0 D3）：落 NOTICE + ensure Chatwoot（失败只记日志）+ 事件流。
@@ -594,7 +624,9 @@ def create_app(
         except ApprovalExpired:
             raise HTTPException(status_code=410, detail="approval expired")
 
-    async def _approval_resume(approval_id: str, resume_payload: dict, decided: str) -> dict:
+    async def _approval_resume(
+        approval_id: str, resume_payload: dict, decided: str, *, decided_by: str
+    ) -> dict:
         first = approvals.get(approval_id)
         if first is None:
             raise HTTPException(status_code=404, detail="approval not found")
@@ -604,7 +636,7 @@ def create_app(
         async with lock:
             rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
             # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
-            approvals.mark_decided(approval_id, decided, decided_by="approver")
+            approvals.mark_decided(approval_id, decided, decided_by=decided_by)
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
@@ -623,18 +655,26 @@ def create_app(
         return {"approval_id": approval_id, "status": decided}
 
     @app.post("/approvals/{approval_id}/approve")
-    async def approve_approval(approval_id: str, _: None = Depends(_approval_ownership)):
-        return await _approval_resume(approval_id, {"action": "approve"}, "approved")
+    async def approve_approval(approval_id: str, request: Request):
+        seat_id = _require_seat_actor(request)
+        return await _approval_resume(
+            approval_id, {"action": "approve"}, "approved", decided_by=f"seat:{seat_id}"
+        )
 
     @app.post("/approvals/{approval_id}/reject")
-    async def reject_approval(approval_id: str, body: RejectBody | None = None, _: None = Depends(_approval_ownership)):
+    async def reject_approval(
+        approval_id: str, request: Request, body: RejectBody | None = None
+    ):
+        seat_id = _require_seat_actor(request)
         resume = {"action": "reject"}
         if body is not None and body.note:
             resume["note"] = body.note
-        return await _approval_resume(approval_id, resume, "rejected")
+        return await _approval_resume(
+            approval_id, resume, "rejected", decided_by=f"seat:{seat_id}"
+        )
 
     @app.get("/approvals/{approval_id}")
-    def get_approval(approval_id: str, _: None = Depends(_approval_ownership)):
+    def get_approval(approval_id: str, _: None = Depends(_approval_read_access)):
         rec = approvals.get(approval_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="approval not found")
@@ -642,10 +682,12 @@ def create_app(
 
     @app.get("/approvals")
     def list_approvals(request: Request, status: str | None = None):
+        # Fail-closed：客户鉴权关闭时不得全站倾倒（approval-spec §3.2.1）
+        if not required_auth:
+            return {"items": []}
         auth_user = _auth_user(request)
         items = approvals.list_pending() if status == "pending" else approvals.all()
-        if auth_user is not None:
-            items = [item for item in items if item["requester_user_id"] == auth_user]
+        items = [item for item in items if item["requester_user_id"] == auth_user]
         return {"items": items}
 
     @app.get("/handoffs")

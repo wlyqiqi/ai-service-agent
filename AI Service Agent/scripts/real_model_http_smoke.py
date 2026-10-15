@@ -28,6 +28,12 @@ from ai_service_agent.evals.lane_criteria import mutation_form_incomplete_pass
 from ai_service_agent.graph.workflows.copy import _TOOL_ACTION_LABELS as TOOL_ACTION_LABELS, completion_text
 from ai_service_agent.harness.server import create_app
 
+_SEAT_SECRET = os.environ.get("SEAT_APPROVAL_SECRET") or "smoke-seat-approval-secret"
+_SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": _SEAT_SECRET,
+    "X-Seat-Actor-Id": os.environ.get("SEAT_ACTOR_ID", "smoke-seat"),
+}
+
 TOOL_MATRIX = [
     # ---- 命中组（expect=hit 计入命中率统计）----
     {"tool": "update_address", "input": "订单 ORD-PAID-1 的收货地址改成上海市浦东新区张江高科",
@@ -400,18 +406,35 @@ def scenario_highrisk(client: httpx.Client, db_path: str) -> dict:
 
     pending = None
     if approval_id:
-        r = client.get(f"{BASE}/approvals/{approval_id}")
-        pending = {"http": r.status_code, "body": r.json()} if r.status_code == 200 else {"http": r.status_code, "body": r.text}
+        # auth-off GET is fail-closed; read status from DB for the smoke report
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT approval_id, status, decided_by FROM approval_record WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()
+        conn.close()
+        pending = {
+            "http": 200 if row else 404,
+            "body": {"approval_id": row[0], "status": row[1], "decided_by": row[2]} if row else None,
+        }
 
     approve = None
     if approval_id:
-        r = client.post(f"{BASE}/approvals/{approval_id}/approve")
+        r = client.post(f"{BASE}/approvals/{approval_id}/approve", headers=_SEAT_HEADERS)
         approve = {"http": r.status_code, "body": r.json()} if r.status_code == 200 else {"http": r.status_code, "body": r.text}
 
     after = None
     if approval_id:
-        r = client.get(f"{BASE}/approvals/{approval_id}")
-        after = {"http": r.status_code, "body": r.json()} if r.status_code == 200 else {"http": r.status_code, "body": r.text}
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT approval_id, status, decided_by FROM approval_record WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()
+        conn.close()
+        after = {
+            "http": 200 if row else 404,
+            "body": {"approval_id": row[0], "status": row[1], "decided_by": row[2]} if row else None,
+        }
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     tool_msgs = [m for m in st["messages"] if m["name"] == "refund_apply"]
@@ -697,7 +720,7 @@ def report(results: list[dict], db_path: str) -> None:
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="smoke-http-")
     db_path = os.path.join(tmp, "smoke.db")
-    app = create_app(db_path, model=_make_model())
+    app = create_app(db_path, model=_make_model(), seat_approval_secret=_SEAT_SECRET)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

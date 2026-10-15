@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -27,6 +28,11 @@ from ai_service_agent.harness.server import create_app
 
 
 BASE = "http://127.0.0.1:8765"
+_SEAT_SECRET = os.environ.get("SEAT_APPROVAL_SECRET") or "eval-seat-approval-secret"
+_SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": _SEAT_SECRET,
+    "X-Seat-Actor-Id": os.environ.get("SEAT_ACTOR_ID", "eval-seat"),
+}
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET = ROOT / "tests" / "evals" / "real_model" / "master.jsonl"
 _DB_PATH = ""
@@ -281,7 +287,9 @@ def evaluate_graph(client: httpx.Client, db_path: str, case: dict) -> dict:
     )
     approval = None
     if approval_id and case.get("approve"):
-        response = client.post(f"{BASE}/approvals/{approval_id}/approve")
+        response = client.post(
+            f"{BASE}/approvals/{approval_id}/approve", headers=_SEAT_HEADERS
+        )
         approval = {"http_status": response.status_code, "body": response.json()}
         if response.status_code != 200:
             status_code = response.status_code
@@ -398,6 +406,7 @@ def main() -> int:
             auth_enabled=False,
             chatwoot=NullChatwoot(),
             profile_db_path=db_path,
+            seat_approval_secret=_SEAT_SECRET,
         )
         server = start_server(app, "127.0.0.1", 8765)
         try:

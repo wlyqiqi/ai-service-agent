@@ -133,5 +133,10 @@ def test_explicit_handoff_priority_over_pending_interrupt(tmp_path):
         types2 = [e["type"] for e in _parse_sse("".join(resp.iter_text()))]
     assert "handoff_created" in types2
     assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "human"
-    pending = client.get("/approvals?status=pending").json()["items"]
+    # auth-off GET /approvals 不倾倒；pending 归宿改查 Approval Service / DB
+    from ai_service_agent.harness.approvals import ApprovalService
+
+    conn = sqlite3.connect(str(tmp_path / "s.db"))
+    pending = ApprovalService(conn).pending_for_conversation(sid)
+    conn.close()
     assert any(a["conversation_id"] == sid and a["status"] == "pending" for a in pending)

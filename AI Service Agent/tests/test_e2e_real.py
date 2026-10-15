@@ -32,6 +32,12 @@ from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 
+SEAT_SECRET = "test-seat-approval-secret"
+SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": SEAT_SECRET,
+    "X-Seat-Actor-Id": "seat-e2e",
+}
+
 # 不用 \\b：中文与 ORD 相邻时 Python \\w 含汉字，边界断言会失败。
 _ORDER_ID_RE = re.compile(r"ORD-[A-Z0-9-]+")
 # 模块级共享 DB 下，写路径用例各自使用独立订单，避免 ORD-PAID-1 被先跑用例改脏。
@@ -195,6 +201,7 @@ def server():
         model=_make_model(),
         order_repository=SQLiteOrderRepository(db_path),
         auth_enabled=False,
+        seat_approval_secret=SEAT_SECRET,
     )
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=srv.run, daemon=True)
@@ -371,7 +378,7 @@ class TestCoreScenarios:
         assert approval_ev is not None, "expected approval_required"
         assert approval_id
 
-        r = client.post(f"/approvals/{approval_id}/approve")
+        r = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
         assert r.status_code == 200
         assert r.json().get("status") == "approved"
 
@@ -387,7 +394,9 @@ class TestCoreScenarios:
 
         assert approval_id
 
-        r = client.post(f"/approvals/{approval_id}/reject", json={"note": "不想退了"})
+        r = client.post(
+            f"/approvals/{approval_id}/reject", json={"note": "不想退了"}, headers=SEAT_HEADERS
+        )
         assert r.status_code == 200
 
         approvals = open_approvals(server["db_path"], sid)
@@ -450,7 +459,7 @@ class TestApprovalExpired:
         conn.commit()
         conn.close()
 
-        r = client.post(f"/approvals/{approval_id}/approve")
+        r = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
         assert r.status_code in (409, 410), f"expected 409/410 for expired, got {r.status_code}"
 
         approvals = open_approvals(server["db_path"], sid)
@@ -473,7 +482,9 @@ class TestApprovalExpired:
         conn.commit()
         conn.close()
 
-        r = client.post(f"/approvals/{approval_id}/reject", json={"note": "test"})
+        r = client.post(
+            f"/approvals/{approval_id}/reject", json={"note": "test"}, headers=SEAT_HEADERS
+        )
         assert r.status_code in (409, 410)
 
 
@@ -733,6 +744,7 @@ class TestCheckpointerRecovery:
                 model=_make_model(),
                 order_repository=SQLiteOrderRepository(db_path),
                 auth_enabled=False,
+                seat_approval_secret=SEAT_SECRET,
             )
             srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
             thread = threading.Thread(target=srv.run, daemon=True)
@@ -785,13 +797,14 @@ class TestCheckpointerRecovery:
         base2 = f"http://127.0.0.1:{state['port']}"
 
         with _e2e_http_client(base2) as client2:
-            # 重启后审批仍可查到
-            r_get = client2.get(f"/approvals/{approval_id}")
-            assert r_get.status_code == 200, "approval should survive server restart"
-            assert r_get.json()["status"] == "pending"
+            # 重启后审批仍在库中（auth off 时 GET 不开放全站倾倒，改查 DB）
+            approvals_mid = open_approvals(db_path, sid)
+            assert any(
+                a["approval_id"] == approval_id and a["status"] == "pending" for a in approvals_mid
+            ), "approval should survive server restart"
 
             # approve -> 图从 Checkpointer 恢复并执行
-            r_approve = client2.post(f"/approvals/{approval_id}/approve")
+            r_approve = client2.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
             assert r_approve.status_code == 200
             assert r_approve.json().get("status") == "approved"
 
@@ -857,14 +870,14 @@ class TestFrontendApiContract:
         assert r.status_code == 404
 
     def test_list_approvals_endpoint(self, client, server):
-        """GET /approvals：审批列表查询。"""
+        """GET /approvals：鉴权关闭时不倾倒全站审批（approval-spec §3.2.1）。"""
         sid = new_session(client)
         chat_sse(client, sid, "订单ORD-PAID-1申请退款")
 
         r = client.get("/approvals")
         assert r.status_code == 200
         data = r.json()
-        assert "items" in data
+        assert data.get("items") == []
 
     def test_list_handoffs_endpoint(self, client, server):
         """GET /handoffs：handoff 列表查询。"""
