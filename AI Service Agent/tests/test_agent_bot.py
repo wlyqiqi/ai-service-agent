@@ -880,7 +880,13 @@ async def test_pending_form_confirm_resumes_structured_values_and_writes_once(
     ]
     assert len(write_tools) == 1
     assert confirm_result["response"]
-    assert "已更新完成" in confirm_result["response"] or "收货地址" in confirm_result["response"]
+    # #73: Adapter prefers success cards + short follow-up over long Graph done.
+    from ai_service_agent.graph.workflows.copy import update_address_success_followup_text
+
+    assert confirm_result["response"] == update_address_success_followup_text()
+    assert any(
+        call.args[2] == "cards" for call in chatwoot.send_interactive_message.await_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -1080,7 +1086,10 @@ async def test_form_rejected_repushes_same_session_with_errors_then_fix_writes_o
     ]
     assert len(write_tools) == 1
     assert fix_result["response"]
-    assert "已更新完成" in fix_result["response"] or "收货地址" in fix_result["response"]
+    # #73: success path projects short follow-up (+ cards), not long Graph done.
+    from ai_service_agent.graph.workflows.copy import update_address_success_followup_text
+
+    assert fix_result["response"] == update_address_success_followup_text()
     # Reject re-push already counted; fix path must not open another rejected form.
     assert len(captured["forms"]) == 1
 
