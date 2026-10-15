@@ -116,6 +116,8 @@ class Settings(BaseSettings):
     auth_enabled: bool = Field(default=False, validation_alias="AUTH_ENABLED")
     jwt_secret: str | None = Field(default=None, validation_alias="JWT_SECRET")
     jwt_expires_minutes: int = Field(default=60, validation_alias="JWT_EXPIRES_MINUTES")
+    # Seat HTTP badge（approval-spec §3.2.1 / ADR-0002）：人工 approve/reject 的内部服务口令
+    seat_approval_secret: str | None = Field(default=None, validation_alias="SEAT_APPROVAL_SECRET")
     # LangSmith 观测（architecture.md §8.1 tracing → LangSmith；SDK 只认 os.environ，
     # pydantic-settings 不导出 .env，故由 _sync_langsmith_env 显式回写。默认关闭。）
     langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")

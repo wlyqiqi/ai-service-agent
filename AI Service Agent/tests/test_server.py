@@ -10,6 +10,12 @@ from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ApprovalFlowFakeModel
+
+SEAT_SECRET = "test-seat-approval-secret"
+SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": SEAT_SECRET,
+    "X-Seat-Actor-Id": "seat-1",
+}
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import write as write_mod
 from ai_service_agent.tools import orders as orders_mod
@@ -193,7 +199,14 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
 
     cw = SimpleNamespace(send_bot_message=AsyncMock())
     db = str(tmp_path / "approval.db")
-    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[]), chatwoot=cw))
+    client = TestClient(
+        create_app(
+            db,
+            model=ApprovalFlowFakeModel(responses=[]),
+            chatwoot=cw,
+            seat_approval_secret=SEAT_SECRET,
+        )
+    )
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         "".join(r.iter_text())
@@ -202,7 +215,7 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
     conn.close()
 
-    response = client.post(f"/approvals/{approval_id}/approve")
+    response = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
     assert response.status_code == 200
     cw.send_bot_message.assert_awaited_once()
     assert "通过审核" in cw.send_bot_message.call_args.args[1]
@@ -1150,7 +1163,13 @@ def test_chat_simulate_approval_resumes_approve(tmp_path):
 def test_approve_resume_persists_final_to_message_store(tmp_path):
     """D7：/approvals/{id}/approve 直接 ainvoke 后 diff 提取本轮新增 assistant 文本并落 Message Store。"""
     db = str(tmp_path / "d7.db")
-    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    client = TestClient(
+        create_app(
+            db,
+            model=ApprovalFlowFakeModel(responses=[]),
+            seat_approval_secret=SEAT_SECRET,
+        )
+    )
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         "".join(r.iter_text())
@@ -1158,7 +1177,7 @@ def test_approve_resume_persists_final_to_message_store(tmp_path):
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
     conn.close()
 
-    r = client.post(f"/approvals/{approval_id}/approve")
+    r = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
     assert r.status_code == 200
 
     conn = sqlite3.connect(db)

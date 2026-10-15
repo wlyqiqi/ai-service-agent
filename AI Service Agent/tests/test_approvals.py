@@ -11,6 +11,12 @@ from ai_service_agent.harness import server as server_module
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.testing import ApprovalFlowFakeModel
 
+SEAT_SECRET = "test-seat-approval-secret"
+SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": SEAT_SECRET,
+    "X-Seat-Actor-Id": "seat-1",
+}
+
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
     ApprovalExpired,
@@ -153,7 +159,13 @@ def test_interrupt_callback_simulate_approval_marks_approved(tmp_path):
 
 def test_approval_endpoint_approve_completes_graph(tmp_path):
     db = str(tmp_path / "e.db")
-    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
+    client = TestClient(
+        create_app(
+            db,
+            model=ApprovalFlowFakeModel(responses=[]),
+            seat_approval_secret=SEAT_SECRET,
+        )
+    )
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
         text = "".join(r.iter_text())
@@ -163,11 +175,11 @@ def test_approval_endpoint_approve_completes_graph(tmp_path):
     approval_id, thread_id = conn.execute("SELECT approval_id, thread_id FROM approval_record LIMIT 1").fetchone()
     conn.close()
 
-    r = client.post(f"/approvals/{approval_id}/approve")
+    r = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
     assert r.status_code == 200
     assert r.json()["status"] == "approved"
 
-    r2 = client.post(f"/approvals/{approval_id}/approve")  # 幂等：重复 decision -> 409
+    r2 = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)  # 幂等：重复 decision -> 409
     assert r2.status_code == 409
 
     async def final_state():
@@ -181,32 +193,69 @@ def test_approval_endpoint_approve_completes_graph(tmp_path):
 
 def test_approval_endpoint_reject_no_tool_and_404(tmp_path):
     db = str(tmp_path / "r.db")
-    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
-    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
+    client = TestClient(
+        create_app(
+            db,
+            model=ApprovalFlowFakeModel(responses=[]),
+            seat_approval_secret=SEAT_SECRET,
+            auth_enabled=True,
+            jwt_secret="test-secret-with-at-least-32-bytes!!",
+        )
+    )
+    from ai_service_agent.harness.auth import UserStore
+
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+    auth_headers = {"Authorization": f"Bearer {token}"}
+
+    session_id = client.post("/sessions", json={"user_id": "u1"}, headers=auth_headers).json()["session_id"]
+    with client.stream(
+        "POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}, headers=auth_headers
+    ) as r:
         "".join(r.iter_text())
     conn = sqlite3.connect(db)
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
     conn.close()
 
-    r = client.post(f"/approvals/{approval_id}/reject", json={"note": "资料不足"})
+    r = client.post(
+        f"/approvals/{approval_id}/reject", json={"note": "资料不足"}, headers=SEAT_HEADERS
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "rejected"
     conn = sqlite3.connect(db)
     rec = conn.execute("SELECT status, decided_by FROM approval_record WHERE approval_id=?", (approval_id,)).fetchone()
     conn.close()
-    assert rec == ("rejected", "approver")
+    assert rec == ("rejected", "seat:seat-1")
 
-    assert client.get("/approvals/nope").status_code == 404
-    assert client.get(f"/approvals/{approval_id}").json()["status"] == "rejected"
+    assert client.get("/approvals/nope", headers=auth_headers).status_code == 404
+    assert client.get(f"/approvals/{approval_id}", headers=auth_headers).json()["status"] == "rejected"
 
 
 def test_approval_get_and_list_pending(tmp_path):
     db = str(tmp_path / "l.db")
-    client = TestClient(create_app(db, model=ApprovalFlowFakeModel(responses=[])))
-    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
+    client = TestClient(
+        create_app(
+            db,
+            model=ApprovalFlowFakeModel(responses=[]),
+            auth_enabled=True,
+            jwt_secret="test-secret-with-at-least-32-bytes!!",
+        )
+    )
+    from ai_service_agent.harness.auth import UserStore
+
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    conn.close()
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+    auth_headers = {"Authorization": f"Bearer {token}"}
+
+    session_id = client.post("/sessions", json={"user_id": "u1"}, headers=auth_headers).json()["session_id"]
+    with client.stream(
+        "POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}, headers=auth_headers
+    ) as r:
         "".join(r.iter_text())
-    body = client.get("/approvals?status=pending").json()
+    body = client.get("/approvals?status=pending", headers=auth_headers).json()
     assert len(body["items"]) == 1 and body["items"][0]["status"] == "pending"
 

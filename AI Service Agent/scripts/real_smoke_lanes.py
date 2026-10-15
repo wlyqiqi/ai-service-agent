@@ -37,6 +37,12 @@ from ai_service_agent.graph.workflows.copy import (
 )
 from ai_service_agent.harness.server import create_app
 
+_SEAT_SECRET = os.environ.get("SEAT_APPROVAL_SECRET") or "smoke-seat-approval-secret"
+_SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": _SEAT_SECRET,
+    "X-Seat-Actor-Id": os.environ.get("SEAT_ACTOR_ID", "smoke-seat"),
+}
+
 # scripts/ is not a package; load seed helper by path.
 import importlib.util
 
@@ -412,7 +418,7 @@ def lane_l4_highrisk_approve(client: httpx.Client, db_path: str) -> dict:
 
     approve = None
     if approval_id:
-        r = client.post(f"{BASE}/approvals/{approval_id}/approve")
+        r = client.post(f"{BASE}/approvals/{approval_id}/approve", headers=_SEAT_HEADERS)
         approve = {"http": r.status_code, "body": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text}
 
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
@@ -651,7 +657,12 @@ def main() -> int:
     from ai_service_agent.config import get_settings
 
     get_settings.cache_clear()
-    app = create_app(db_path, model=make_model(), profile_db_path=profile_db_path)
+    app = create_app(
+        db_path,
+        model=make_model(),
+        profile_db_path=profile_db_path,
+        seat_approval_secret=_SEAT_SECRET,
+    )
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

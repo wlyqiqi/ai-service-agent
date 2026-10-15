@@ -34,12 +34,18 @@ os.environ.setdefault("CHATWOOT_ENABLED", "false")
 os.environ.setdefault("LANGSMITH_TRACING", "false")
 
 from ai_service_agent.config import get_settings, make_model
+from ai_service_agent.harness.approvals import ApprovalService
 from ai_service_agent.harness.server import create_app
 
 _DB_PATH = ""
 _PROFILE_DB = ""
 _SNAPSHOT_PATH = ""
 _PROFILE_SNAPSHOT = ""
+_SEAT_SECRET = os.environ.get("SEAT_APPROVAL_SECRET") or "functional-eval-seat-secret"
+_SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": _SEAT_SECRET,
+    "X-Seat-Actor-Id": os.environ.get("SEAT_ACTOR_ID", "eval-seat"),
+}
 
 
 def load_seed():
@@ -327,7 +333,7 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                     _problems_with_stream_errors(all_events, ["approval_id missing before approve"]),
                     started,
                 )
-            r = client.post(f"{BASE}/approvals/{approval_id}/approve")
+            r = client.post(f"{BASE}/approvals/{approval_id}/approve", headers=_SEAT_HEADERS)
             code = r.status_code
             ev = [{"type": "approval_http", "data": r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}}]
             # approve endpoint resumes graph; capture via follow-up get state only
@@ -345,7 +351,7 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                     _problems_with_stream_errors(all_events, ["approval_id missing before reject"]),
                     started,
                 )
-            r = client.post(f"{BASE}/approvals/{approval_id}/reject")
+            r = client.post(f"{BASE}/approvals/{approval_id}/reject", headers=_SEAT_HEADERS)
             code = r.status_code
             ev = [{"type": "approval_http", "data": r.json() if r.status_code == 200 else {"raw": r.text}}]
         elif action == "expire":
@@ -363,10 +369,11 @@ def run_case(client: httpx.Client, case: dict) -> dict:
                     started,
                 )
             force_expire_approval(_DB_PATH, approval_id)
-            # Trigger lazy expire + resume by GET then a chat nudge if needed
-            r = client.get(f"{BASE}/approvals/{approval_id}")
-            code = r.status_code
-            body = r.json() if r.status_code == 200 else {}
+            # Trigger lazy expire via ApprovalService (auth-off GET is fail-closed / no dump)
+            conn = sqlite3.connect(_DB_PATH)
+            body = ApprovalService(conn).get(approval_id) or {}
+            conn.close()
+            code = 200 if body else 404
             ev = [{"type": "approval_http", "data": body}]
             if body.get("status") == "expired":
                 # HighRisk expire resume often via next chat or approval path; send benign nudge
@@ -554,7 +561,13 @@ def prepare_runtime():
     load_seed().build_database(_PROFILE_DB)
     os.environ["MOCK_ECOMMERCE_DB_PATH"] = _PROFILE_DB
     get_settings.cache_clear()
-    app = create_app(_DB_PATH, model=make_model(), profile_db_path=_PROFILE_DB, auth_enabled=False)
+    app = create_app(
+        _DB_PATH,
+        model=make_model(),
+        profile_db_path=_PROFILE_DB,
+        auth_enabled=False,
+        seat_approval_secret=_SEAT_SECRET,
+    )
     server = start_server(app)
     _SNAPSHOT_PATH = str(Path(temp_dir) / "runtime-clean.db")
     _PROFILE_SNAPSHOT = str(Path(temp_dir) / "profile-clean.db")

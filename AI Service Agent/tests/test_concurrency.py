@@ -17,6 +17,12 @@ from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ApprovalFlowFakeModel, ToolCallingFakeModel
 
+SEAT_SECRET = "test-seat-approval-secret"
+SEAT_HEADERS = {
+    "X-Seat-Approval-Credential": SEAT_SECRET,
+    "X-Seat-Actor-Id": "seat-1",
+}
+
 
 @pytest.fixture(autouse=True)
 def isolated_business_db(monkeypatch, tmp_path):
@@ -123,7 +129,9 @@ def test_resolve_and_chat_race_no_double_processing(tmp_path):
 def test_approval_double_resume_no_double_execution(tmp_path):
     """同一 approval_id 双 approve 并发：thread 锁 + 锁内权威 precheck -> 一个 200 一个 409，只执行一次。"""
     db = str(tmp_path / "ar.db")
-    app = create_app(db, model=ApprovalFlowFakeModel(responses=[]))
+    app = create_app(
+        db, model=ApprovalFlowFakeModel(responses=[]), seat_approval_secret=SEAT_SECRET
+    )
     client = TestClient(app)
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}) as r:
@@ -136,8 +144,8 @@ def test_approval_double_resume_no_double_execution(tmp_path):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             r1, r2 = await asyncio.gather(
-                c.post(f"/approvals/{approval_id}/approve"),
-                c.post(f"/approvals/{approval_id}/approve"),
+                c.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS),
+                c.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS),
             )
             return sorted([r1.status_code, r2.status_code])
 
