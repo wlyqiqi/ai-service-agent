@@ -8,7 +8,6 @@ from langchain_core.messages import HumanMessage
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
-    form_plain_text_refuse_text,
     human_mode_tip_text,
     update_address_current_address_display,
     update_address_empty_state_text,
@@ -18,7 +17,7 @@ from ai_service_agent.graph.workflows.copy import (
     update_address_form_title_text,
     update_address_new_address_placeholder,
 )
-from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
+from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -548,6 +547,9 @@ async def _handle_locked_agent_bot_message(
         config = {"configurable": {"thread_id": thread_id}}
         final_text = None
         resume_payload = None
+        # #72 Implicit Cancel: pending Form Interrupt + non-form inbound →
+        # silent cancel resume, then normal new-turn invoke (same thread_id / lock).
+        implicit_cancel = False
         if getattr(graph, "checkpointer", None):
             state = await graph.aget_state(config)
             if state.interrupts:
@@ -593,48 +595,67 @@ async def _handle_locked_agent_bot_message(
                     elif action in ("canceled", "cancel"):
                         resume_payload = {"action": "cancel"}
                     else:
-                        # 纯文本 / 并发写意图不是 Form Resume：单挂 tip + 重推当前表单，不跑图。
-                        # (#72 Implicit Cancel replaces tip+re-push; keep until that ticket.)
-                        final_text = form_plain_text_refuse_text()
-                        projected = project_form_interrupt(state.interrupts[0])
-                        if projected:
-                            mutation_form_data = projected.get("data") or {}
+                        # Non-form inbound while Form Interrupt pending (#72).
+                        implicit_cancel = True
                 else:
                     # #48: legacy confirmation_required interactive retired; no special resume.
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 
-        if final_text is None:
-            async def run_graph():
-                nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
-                async for event in event_stream(
+        async def _consume_graph_events(*, messages, resume):
+            nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
+            async for event in event_stream(
+                graph,
+                config,
+                messages,
+                on_interrupt=on_interrupt,
+                resume_payload=resume,
+                extra_state={"user_id": user_id},
+                context=context,
+            ):
+                if event.get("type") == "done":
+                    final_text = event.get("data", {}).get("final")
+                    final_message_id = event.get("data", {}).get("message_id")
+                elif event.get("type") in ("form_required", "form_rejected"):
+                    # form_rejected: same Form Interrupt session with errors
+                    # (Closed MutationGraph); Adapter only projects Transport.
+                    mutation_form_data = event.get("data") or {}
+                elif event.get("type") == "approval_required":
+                    # Seat Approver side-channel card (#64); private form, not Widget.
+                    approval_form_data = event.get("data") or {}
+                elif event.get("type") == "handoff_created" and on_handoff_created is not None:
+                    await on_handoff_created(event)
+                # #48: clarification_required / confirmation_required interactive retired.
+                # Operation Clarify and HighRisk missing-fields stay outbound chat (done.final).
+
+        async def run_graph():
+            nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
+            if implicit_cancel:
+                # Phase 1: official cancel resume only — drain events; do not project
+                # cancel tip or re-push the old form (silent Implicit Cancel).
+                async for _event in event_stream(
                     graph,
                     config,
-                    history,
+                    [],
                     on_interrupt=on_interrupt,
-                    resume_payload=resume_payload,
+                    resume_payload={"action": "cancel"},
                     extra_state={"user_id": user_id},
                     context=context,
                 ):
-                    if event.get("type") == "done":
-                        final_text = event.get("data", {}).get("final")
-                        final_message_id = event.get("data", {}).get("message_id")
-                    elif event.get("type") in ("form_required", "form_rejected"):
-                        # form_rejected: same Form Interrupt session with errors
-                        # (Closed MutationGraph); Adapter only projects Transport.
-                        mutation_form_data = event.get("data") or {}
-                    elif event.get("type") == "approval_required":
-                        # Seat Approver side-channel card (#64); private form, not Widget.
-                        approval_form_data = event.get("data") or {}
-                    elif event.get("type") == "handoff_created" and on_handoff_created is not None:
-                        await on_handoff_created(event)
-                    # #48: clarification_required / confirmation_required interactive retired.
-                    # Operation Clarify and HighRisk missing-fields stay outbound chat (done.final).
-
-            if thread_lock_factory is not None:
-                async with await thread_lock_factory(thread_id):
-                    await run_graph()
+                    pass
+                final_text = None
+                mutation_form_data = None
+                approval_form_data = None
+                final_message_id = None
+                # Phase 2: same user message as a normal new turn on the same thread.
+                await _consume_graph_events(messages=history, resume=None)
             else:
+                await _consume_graph_events(messages=history, resume=resume_payload)
+
+        if thread_lock_factory is not None:
+            async with await thread_lock_factory(thread_id):
                 await run_graph()
+        else:
+            await run_graph()
 
     if final_text is not None and (status is None or status.get_mode(conversation_id) == "ai"):
         await chatwoot.send_bot_message(conversation_id, final_text)
