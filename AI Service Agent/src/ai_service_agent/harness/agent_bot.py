@@ -29,6 +29,21 @@ _MUTATION_FORM_ACTION_ITEM: dict[str, Any] = {
     ],
 }
 
+# Seat Approver Approval Side-Channel form fields (ADR-0002 / #64).
+# Customer Widget must never treat these as Mutation Form Resume.
+_APPROVAL_FORM_ID_FIELD = "approval_id"
+_APPROVAL_FORM_DECISION_FIELD = "decision"
+_APPROVAL_FORM_NOTE_FIELD = "note"
+_APPROVAL_FORM_DECISION_ITEM: dict[str, Any] = {
+    "name": _APPROVAL_FORM_DECISION_FIELD,
+    "label": "审批决定",
+    "type": "select",
+    "options": [
+        {"label": "批准", "value": "approve"},
+        {"label": "拒绝", "value": "reject"},
+    ],
+}
+
 
 def _form_errors_map(data: dict[str, Any]) -> dict[str, str]:
     """Normalize ``form_rejected`` errors for Chatwoot copy (no native error field)."""
@@ -185,6 +200,77 @@ def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
     return normalized or None
 
 
+def approval_form_title_from_payload(data: dict[str, Any]) -> str:
+    """Seat-facing Chatwoot form title: enough summary to decide (#64)."""
+    summary = (data.get("summary") or "").strip() or "高风险操作待审批"
+    approval_id = (data.get("approval_id") or "").strip()
+    expires_at = (data.get("expires_at") or "").strip()
+    parts = [f"高风险审批 · {summary}"]
+    if approval_id:
+        parts.append(f"单号 {approval_id}")
+    if expires_at:
+        parts.append(f"截止 {expires_at}")
+    return "\n".join(parts)
+
+
+def approval_form_items_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build private Chatwoot ``form`` items for Seat Approver approve/reject."""
+    approval_id = str(data.get("approval_id") or "")
+    items: list[dict[str, Any]] = [
+        {
+            "name": _APPROVAL_FORM_ID_FIELD,
+            "label": "审批单号",
+            "type": "text",
+            "default": approval_id,
+        },
+        dict(_APPROVAL_FORM_DECISION_ITEM),
+        {
+            "name": _APPROVAL_FORM_NOTE_FIELD,
+            "label": "拒绝备注（可选）",
+            "type": "text",
+            "placeholder": "拒绝时填写原因",
+        },
+    ]
+    return items
+
+
+def parse_approval_form_submission(
+    submitted: dict[str, Any] | list | None,
+) -> dict[str, str] | None:
+    """Parse seat approval form submit → ``{approval_id, action, note?}`` or None."""
+    values = _normalize_submitted_values(submitted) if not isinstance(submitted, dict) else submitted
+    if not values:
+        return None
+    approval_id = str(values.get(_APPROVAL_FORM_ID_FIELD) or "").strip()
+    action = str(values.get(_APPROVAL_FORM_DECISION_FIELD) or "").strip()
+    if not approval_id or action not in ("approve", "reject"):
+        return None
+    parsed: dict[str, str] = {"approval_id": approval_id, "action": action}
+    note = values.get(_APPROVAL_FORM_NOTE_FIELD)
+    if isinstance(note, str) and note.strip():
+        parsed["note"] = note.strip()
+    return parsed
+
+
+async def send_approval_form(
+    chatwoot: ChatwootClient,
+    conversation_id: str,
+    data: dict[str, Any],
+) -> None:
+    """Project ``approval_required`` to a private seat-facing Chatwoot form (#64).
+
+    ``private=True`` keeps Approve/Reject off the customer Widget (ADR-0001).
+    """
+    title = approval_form_title_from_payload(data)
+    items = approval_form_items_from_payload(data)
+    await chatwoot.send_interactive_message(
+        conversation_id,
+        title,
+        "form",
+        {"items": items},
+        private=True,
+    )
+
 def _contact_identifier(contact: dict[str, Any]) -> str | None:
     """Contact-first Identity：非空 contact.identifier（Widget setUser / HMAC 绑定后的登录 user_id）。
 
@@ -228,10 +314,14 @@ async def handle_agent_bot_message(
     if message_type not in ("incoming", 0) and not is_form_update:
         return None
 
-    submitted_values = _normalize_submitted_values(
-        (payload.get("content_attributes") or {}).get("submitted_values")
-    )
+    raw_submitted = (payload.get("content_attributes") or {}).get("submitted_values")
+    submitted_values = _normalize_submitted_values(raw_submitted)
     if event == "message_updated" and submitted_values is None:
+        return None
+
+    # Approval Side-Channel is seat-only (#64 / ADR-0001): contact Widget form submit
+    # of an approval card must never become a seat decision or Mutation Form Resume.
+    if submitted_values is not None and parse_approval_form_submission(submitted_values) is not None:
         return None
 
     if submitted_values:
@@ -242,7 +332,6 @@ async def handle_agent_bot_message(
         content = payload.get("content")
     if not isinstance(content, str) or not content.strip():
         return None
-
     conversation = payload.get("conversation")
     if not isinstance(conversation, dict):
         return None
@@ -360,6 +449,7 @@ async def _handle_locked_agent_bot_message(
         history = [HumanMessage(content=content)]
 
     mutation_form_data = None
+    approval_form_data = None
     final_message_id = None
 
     if graph is None:
@@ -406,7 +496,7 @@ async def _handle_locked_agent_bot_message(
 
         if final_text is None:
             async def run_graph():
-                nonlocal final_text, mutation_form_data
+                nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
                 async for event in event_stream(
                     graph,
                     config,
@@ -423,6 +513,9 @@ async def _handle_locked_agent_bot_message(
                         # form_rejected: same Form Interrupt session with errors
                         # (Closed MutationGraph); Adapter only projects Transport.
                         mutation_form_data = event.get("data") or {}
+                    elif event.get("type") == "approval_required":
+                        # Seat Approver side-channel card (#64); private form, not Widget.
+                        approval_form_data = event.get("data") or {}
                     elif event.get("type") == "handoff_created" and on_handoff_created is not None:
                         await on_handoff_created(event)
                     # #48: clarification_required / confirmation_required interactive retired.
@@ -441,6 +534,9 @@ async def _handle_locked_agent_bot_message(
 
     if mutation_form_data is not None:
         await send_mutation_form(chatwoot, conversation_id, mutation_form_data)
+
+    if approval_form_data is not None:
+        await send_approval_form(chatwoot, conversation_id, approval_form_data)
 
     return {
         "conversation_id": conversation_id,

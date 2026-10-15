@@ -59,3 +59,19 @@ _Avoid_: 把 AgentBot 当成业务编排层；表单提交改写成自然语言�
 **Contact-first Binding**:
 Website Channel 会话为入口；以登录 `user_id` + Identity HMAC 标识 contact，AgentBot 首次触达时懒建 Runtime `conversation_id`/`thread_id` 并写入 mapping。
 _Avoid_: 强制先调自建 `/sessions` 再建 Widget；匿名与登录会话无规则合并
+
+**Requester**:
+发起 HighRisk 操作并进入审批挂起的客户身份。
+_Avoid_: Approver；把申请人当成可自批的审批资源 owner
+
+**Seat Approver**:
+在坐席端（Chatwoot）对 HighRisk 审批做通过/拒绝的操作者；`decided_by` 记为 `seat:{sender.id}`——`seat:` 即来源命名空间，不再内嵌 `chatwoot-agent-`（`system` / `simulate` 为非人工保留字）。
+_Avoid_: 客户 JWT 自批；用字面量 `"approver"` 冒充身份；在鉴权关闭时假装存在人工审批人；把无 `seat:` 前缀的旧值当作坐席 id；写成 `seat:chatwoot-agent-{id}`
+
+**Approval SoD**:
+同一审批单上 Seat Approver 不得与 Requester 为同一身份。
+_Avoid_: 申请人自批；用「有审批能力」绕过身份分离
+
+**Approval Side-Channel**:
+HighRisk 审批在坐席端旁路完成（表单/卡片 → Runtime）；不因此把 `conversation_mode` 切为 `human`。Handoff 仍是会话接管，与审批 gate 分离。坐席决策后立即图 resume + Message Store；出站消息仍受 `conversation_mode==ai` 门控。
+_Avoid_: 进入审批必须先转人工；坐席聊天接管等同于审批通过；human 期间批准却跳过出站门控直接推给用户

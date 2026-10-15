@@ -34,14 +34,35 @@
 
 | 方法 | 路径 | 行为 |
 |---|---|---|
-| POST | `/approvals/{id}/approve` | 前置检查 → 有效则 `graph.ainvoke(Command(resume={"action":"approve"}), config={"thread_id": ...})` |
-| POST | `/approvals/{id}/reject` | 前置检查 → 有效则 `graph.ainvoke(Command(resume={"action":"reject", "note": ...}), config={"thread_id": ...})`（`note` 来自请求体） |
-| GET | `/approvals/{id}` | 查询状态（Approval Service 只读） |
-| GET | `/approvals?status=pending` | 人工端列表（Approval Service 只读） |
+| POST | `/approvals/{id}/approve` | 坐席工牌鉴权 → 前置检查 → 有效则 resume approve（见下） |
+| POST | `/approvals/{id}/reject` | 坐席工牌鉴权 → 前置检查 → 有效则 resume reject（`note` 来自请求体） |
+| GET | `/approvals/{id}` | 客户 JWT：仅本人 Requester 可读；Approval Service 只读 |
+| GET | `/approvals?status=pending` | 客户 JWT：仅本人 Requester 行；无客户鉴权时不得全站倾倒 |
 
 - **前置有效性检查（Approval Service 只读）**：approval 存在；status 仍为 `pending`；`now <= expires_at`。任一不满足 → 直接返回错误（`not_found` / `already_processed` / `expired`），**不调用图**；重复提交同一 `approval_id` 由此天然幂等。
 - **机械映射，非业务判断**：`approve → {action: "approve"}`、`reject → {action: "reject", note}` 仅是把 HTTP 动作映射为 `graph-spec.md` §3 的 resume schema；"批准后执行什么 / 拒绝后如何收尾"由图中子图决定。
-- 审批动作写审计日志：who / what / when / result（harness 观测，经 hook 挂接）。
+- 审批动作写审计日志：who / what / when / result（harness 观测，经 hook 挂接）；人工 who = `decided_by` 的 `seat:{id}`。
+
+### 3.2.1 身份与授权（ADR-0002）
+
+术语见 `CONTEXT.md`：Requester、Seat Approver、Approval SoD、Approval Side-Channel。
+
+| 动作 | 谁可以 | 备注 |
+|---|---|---|
+| approve / reject（人工） | 仅 **坐席工牌**：内部服务口令 + 坐席 actor id | 客户 JWT **一律 403**；口令不对或缺少坐席 id → 403 |
+| approve（自动） | 仅 `simulate_approval` 路径 | `decided_by=simulate` |
+| 过期落地 | 系统惰性 | `decided_by=system` |
+| GET 单条 / 列表 | 客户 JWT 且 `requester_user_id` 匹配 | 客户只读自己的单；**不**开放客户写 |
+
+- **Fail-closed**：客户鉴权关闭（`AUTH_ENABLED=false` / 无有效客户身份）时，**禁止**人工 approve/reject（403），只允许 `simulate_approval` 自动批。不得再出现「无 auth 则跳过 ownership、谁都能批」。
+- **Approval SoD（v1 通道级）**：客户身份通道永不能 approve；不做坐席↔客户账号绑定表（残余风险见 ADR-0002）。
+- **坐席工牌（Seat HTTP badge）**：共享内部 secret（配置）+ 请求携带的坐席 id（对应 Chatwoot `sender.id`）。禁止「仅自报坐席 id、无口令」。未来 Chatwoot 适配器验签后调用**同一**内部决策入口，复用工牌，不另造客户角色列。
+- **`decided_by`**：人工 = `seat:{坐席 id}`（`seat:` 即来源命名空间，不内嵌 `chatwoot-agent-`）；保留字 `simulate` / `system`；历史 `"approver"` 为遗留脏值，不得当作坐席 id。
+
+### 3.2.2 审批 resume 横切（与 chat 路径同构）
+
+- **出站 mode 门控**：approve/reject 后立即图 resume + Message Store；向 Chatwoot/Widget **出站**前重读 `conversation_mode`，仅 `ai` 可发送（`handoff-spec` §1.4）。`human` 期间仍可坐席决策。
+- **`on_interrupt` / callbacks**：审批 resume **不得**裸 `ainvoke` 以致后续 `approval_required` / `handoff_request` 静默；须挂接与 chat 路径同级的 interrupt 回调（落库 / 建 handoff 等）。
 
 ### 3.3 恢复入口（殊途同归）
 
@@ -58,8 +79,9 @@
 
 ## 5. 人工端（v1）
 
-- CLI 命令或简单页面：列出 pending、approve/reject、查看摘要。
-- 测试环境提供 `simulate_approval=True` 开关（自动批准），仅测试用；该开关走与真实端点相同的前置检查 + resume 转发路径（自动构造 approve 动作），不改变"决策在图内"的分工。
+- **产品主路径**：Chatwoot 坐席端 **private** 表单/卡片投影 `approval_required`（摘要 + 批准/拒绝）→ 验签后的 `/webhooks/chatwoot` 适配器调用与 §3.2.1 **同一**工牌决策入口（配置口令 + `sender.id` → `decided_by=seat:{id}`）。不得把 Approve/Reject 投到客户 Widget（ADR-0001）。
+- **HTTP / 测试路径**：持坐席工牌调 approve/reject；客户 JWT 只读 GET。
+- 测试环境提供 `simulate_approval=True` 开关（自动批准），仅测试用；该开关走与真实端点相同的前置检查 + resume 转发路径（自动构造 approve 动作），不改变"决策在图内"的分工；`decided_by=simulate`。
 
 ## 6. 与安全预检/转人工的边界
 
