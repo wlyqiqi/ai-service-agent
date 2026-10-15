@@ -228,6 +228,21 @@ def handoff_request_private_note_text(summary: str = "") -> str:
         return f"{base}\n摘要：{summary}"
     return base
 
+
+def handoff_form_cancelled_customer_text() -> str:
+    """进入 human 时取消未提交 Mutation Form 的客户可见提示。"""
+    return "人工客服已接入。尚未提交的修改已取消，不会写入订单。"
+
+
+def handoff_form_cancelled_seat_note_text() -> str:
+    """进入 human 时取消未提交表单的坐席 private note。"""
+    return "【未提交表单已取消】客户有未完成的修改表单，接入人工时已取消，迟到的提交不会写入。"
+
+
+def handoff_returned_to_bot_text() -> str:
+    """交回 Bot（status pending / Resolve）时客户与坐席都可见的短提示。"""
+    return "已交回助手"
+
 def approval_approved_text(tool: str) -> str:
     return f"您的{_label(tool)}申请已通过审核并执行完成，相关结果可以在订单详情中查看。"
 

@@ -93,12 +93,12 @@ Seat Takeover 成功后由 Bot 发给客户的短提示（人工已接入）；�
 _Avoid_: 与 HANDOFF_NOTICE 旧「已转接请稍候」混用同一句在申请阶段停 AI
 
 **Seat Takeover**:
-坐席用 Chatwoot 官方 **Take over**（或等价：派给人 / 状态 `open`）接手会话；此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。
-_Avoid_: 自定义「同意」卡当作主路径；把 assignee 变更当成唯一真相而忽略 status=`open`
+坐席用 Chatwoot 官方 **Take over**（或等价：派给人 / Bot `toggle_status(open)` / 状态 `open`）接手会话；此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。若当时有未提交的 Mutation Form Interrupt，先 cancel（不写库）再进 human。
+_Avoid_: 自定义「同意」卡当作主路径；把 assignee 变更当成唯一真相而忽略 status=`open`；接管后仍让迟到的表单提交写库
 
 **Handoff Resolve**:
-坐席用官方 **Resolve / 已解决**（status=`resolved`）结束人工；Conversation Mode 回 `ai`，Chatwoot 再回到 `pending` 交回 Bot。
-_Avoid_: 只改 Chatwoot 已解决却不回切 Runtime mode；用客户「结束会话」代替坐席 Resolve 主路径
+交回 Bot：Chatwoot status 回到 `pending`（官方 Agent Bot），Conversation Mode 回 `ai`。兼容路径是官方 **Resolve / 已解决**（status=`resolved`），Runtime 再 `toggle_status(pending)`。mode 已是 `ai` 时的 `pending` 忽略，防止环。
+_Avoid_: 只改 Chatwoot 已解决却不回切 Runtime mode；把已是 `ai` 的 `pending` 再当成一次 Resolve；用客户「结束会话」代替坐席交回主路径
 
 **Handoff Cancel**:
 坐席 Take over 之前，客户取消挂起的 Handoff Request；与申请同属**入口层确定性检测**（`detect_handoff_cancel`，无 Router/LLM），清挂起且不切 Conversation Mode。之后坐席仍可主动 Seat Takeover。

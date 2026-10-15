@@ -589,6 +589,7 @@ async def _handle_locked_agent_bot_message(
     # #73: capture update_address confirm fields for success-card projection.
     address_success: dict[str, str] | None = None
     address_write_ok = False
+    aborted_for_human = False
 
     if graph is None:
         final_text = (
@@ -695,6 +696,20 @@ async def _handle_locked_agent_bot_message(
 
         async def run_graph():
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
+            nonlocal aborted_for_human
+            if status is not None and status.get_mode(conversation_id) != "ai":
+                # Takeover cancelled the form under this lock: do not Form Resume.
+                aborted_for_human = True
+                final_text = human_mode_tip_text()
+                return
+            if (
+                isinstance(resume_payload, dict)
+                and resume_payload.get("action") == "confirm"
+                and getattr(graph, "checkpointer", None)
+            ):
+                fresh = await graph.aget_state(config)
+                if not fresh.interrupts or not is_form_interrupt(fresh.interrupts[0].value):
+                    return
             if implicit_cancel:
                 # Phase 1: official cancel resume only — drain events; do not project
                 # cancel tip or re-push the old form (silent Implicit Cancel).
@@ -724,7 +739,13 @@ async def _handle_locked_agent_bot_message(
             await run_graph()
 
     # #73: confirm write ok + no new form → cards (+ short bubble); suppress long done.
-    if (
+    if aborted_for_human and final_text is not None:
+        await chatwoot.send_bot_message(conversation_id, final_text)
+        if messages_store is not None:
+            messages_store.append(
+                conversation_id, "assistant", final_text, message_id=final_message_id
+            )
+    elif (
         address_success is not None
         and address_write_ok
         and mutation_form_data is None

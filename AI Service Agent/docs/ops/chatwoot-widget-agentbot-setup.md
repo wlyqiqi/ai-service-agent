@@ -28,7 +28,7 @@ POST {RUNTIME_BASE}/webhooks/chatwoot
 > **与 AgentBot Outgoing URL 不是同一通道。**  
 > AgentBot `outgoing_url` → `/webhooks/agent_bot`（客户消息进 Runtime）。  
 > **Account Webhook** → `/webhooks/chatwoot`（坐席消息回写 + `conversation_status_changed`）。  
-> Seat-gated handoff 依赖后者订阅 `conversation_status_changed`（`open` = Seat Takeover，`resolved` = Handoff Resolve）；见 [ADR-0003](../adr/0003-seat-gated-handoff.md) / `docs/specs/handoff-spec.md` §3.1。
+> Seat-gated handoff 依赖后者订阅 `conversation_status_changed`（`pending` = Bot / mode `ai`，`open` = 人工 / mode `human`）；见 [ADR-0003](../adr/0003-seat-gated-handoff.md) / `docs/specs/handoff-spec.md` §3.1。
 
 ## 1. Website Inbox + `website_token`
 
@@ -152,14 +152,44 @@ AgentBot 回写与坐席同步依赖 Chatwoot Application API。
 
 ### 4.1 Account Webhook：`conversation_status_changed`（Seat-gated 必开）
 
-Seat Takeover / Handoff Resolve **不**走 AgentBot Outgoing URL。须在 Chatwoot **Account** 级 Webhook（Settings → Integrations → Webhooks，或等价 Account Webhooks）配置：
+Seat Takeover / 交回 Bot **不**走 AgentBot Outgoing URL。须在 Chatwoot **Account** 级 Webhook（Settings → Integrations → Webhooks，或等价 Account Webhooks）配置：
 
 1. **URL** = `{RUNTIME_BASE}/webhooks/chatwoot`
-2. **Webhook secret** 与 Runtime `CHATWOOT_WEBHOOK_SECRET` 一致（HMAC 校验与既有坐席回写相同）
+2. **Webhook secret** = Runtime `CHATWOOT_WEBHOOK_SECRET`（HMAC 校验与既有坐席回写相同；不要填成 AgentBot secret）
 3. **订阅事件必须包含** `conversation_status_changed`（以及既有坐席回写所需的 `message_created` 等）
-4. Runtime 语义：`open` → Seat Takeover（mode=`human` + `handoff_created` + Handoff Joined Notice）；`resolved` → Handoff Resolve（mode=`ai` + `handoff_resolved` + `toggle_status(pending)`）；`pending` 忽略防环
+4. Runtime 语义（官方 Agent Bot）：
+   - `pending` 且 mode 已是 `ai`：Bot 持有，**忽略**（防环）
+   - `open`：Seat Takeover（mode=`human` + `handoff_created` + Handoff Joined Notice）。若有未提交的 Mutation Form，先 cancel（不写库），客户看到「尚未提交的修改已取消」
+   - `pending` 且 mode 为 `human`：交回 Bot（mode=`ai` + `handoff_resolved` + 双方可见「已交回助手」）。**不再** toggle（status 已经是 pending）
+   - `resolved`：兼容路径，同样交回，并由 Runtime `toggle_status(pending)`；随后的 `pending` 回声忽略
 
-验收：用 Account API / 控制台确认该 webhook 的 subscriptions **含** `conversation_status_changed`。缺订则 Take over / Resolve 不会同步 Conversation Mode。
+Bot 自己 `toggle_status(open)`、坐席 Take over、或把会话派给人工，都会变成 `open`，走同一条 webhook。
+
+验收：用 Account API / 控制台确认该 webhook 的 subscriptions **含** `conversation_status_changed`。缺订则 Take over / 交回 pending 不会同步 Conversation Mode。
+
+#### Docker 自建 Chatwoot（人工必配）
+
+控制台里把 Account Webhook 配成下面三项即可。Chatwoot 跑在 Docker 时，URL 必须是 **容器能访问到的 Runtime**，不是 `127.0.0.1`（那是容器自己）。
+
+| 项 | 值 |
+|---|---|
+| URL | `{RUNTIME_BASE}/webhooks/chatwoot` |
+| Secret | 与 Runtime `.env` 的 `CHATWOOT_WEBHOOK_SECRET` 相同 |
+| 订阅 | 勾选 `conversation_status_changed`（并保留 `message_created`） |
+
+`RUNTIME_BASE` 示例：`http://192.168.x.x:8766`（宿主机 LAN IP + Runtime 端口）。Chatwoot v4 SafeFetch 默认拒绝私网，投递会在 Sidekiq 报 `has no public ip addresses`。Chatwoot **和** `chatwoot-sidekiq` 都要：
+
+```bash
+SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
+```
+
+改完后重启 `chatwoot` 与 `chatwoot-sidekiq`。未开此开关时，不要用 `host.docker.internal`。
+
+人工验收（控制台，不靠脚本）：
+
+1. 客户在 Widget 说话，会话 status 为 **pending**，助手能回复。
+2. 坐席 **Take over**（status → **open**）：助手不再跑图；客户收到人工已接入。
+3. 坐席把 status 设回 **pending**：助手恢复回复，双方可见「已交回助手」。
 
 脚本（读 `.env` 的 `CHATWOOT_*` + `RUNTIME_BASE`）：
 
@@ -170,7 +200,7 @@ uv run --no-sync python scripts/check_seat_gated_webhooks.py
 
 期望 exit 0：URL = `{RUNTIME_BASE}/webhooks/chatwoot`，订阅含 `conversation_status_changed`，secret 与 `CHATWOOT_WEBHOOK_SECRET` 一致。
 
-自托管投递到 LAN / `host.docker.internal` 时，Chatwoot + Sidekiq 需 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`（否则 Sidekiq 报 `has no public ip addresses`，Take over / Resolve 不会到达 Runtime）。逐步三角见 [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)。
+自托管投递到 LAN / `host.docker.internal` 时，Chatwoot + Sidekiq 需 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`（否则 Sidekiq 报 `has no public ip addresses`，Take over / 交回 pending 不会到达 Runtime）。逐步三角见 [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)。Docker 三项配置见上文 §4.1。
 
 术语：`CONTEXT.md`（Seat Takeover / Handoff Resolve）；规格：`docs/specs/handoff-spec.md` §3.1。
 
@@ -217,7 +247,7 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 - [ ] AgentBot payload 中 `contact.identifier` = 登录 `user_id`  
 - [ ] Account Webhook URL = `{RUNTIME_BASE}/webhooks/chatwoot`，secret = `CHATWOOT_WEBHOOK_SECRET`  
 - [ ] Account Webhook **已订阅** `conversation_status_changed`（**不是** AgentBot Outgoing URL）  
-- [ ] Seat-gated 三角：客户申请后 AI 仍可回复 → 坐席 Take over → 客户收到 Joined Notice / human 车道 → Resolve 后 AI 恢复（逐步表见 [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)）  
+- [ ] Seat-gated 三角：pending 时 AI 仍可回复 → 坐席 Take over（open）后 AI 停止 → status 回到 pending 后 AI 恢复（逐步表见 [seat-gated-handoff-live-checklist.md](./seat-gated-handoff-live-checklist.md)）
 - [ ] （可选）历史：转人工 tip / 坐席续接 → 见 issue #58  
 
 ## 8. 非权威材料

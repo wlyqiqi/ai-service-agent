@@ -23,9 +23,12 @@ from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_h
 from ai_service_agent.graph.workflows.copy import (
     form_plain_text_refuse_text,
     handoff_cancel_confirm_text,
+    handoff_form_cancelled_customer_text,
+    handoff_form_cancelled_seat_note_text,
     handoff_request_confirm_text,
     handoff_request_idempotent_tip_text,
     handoff_request_private_note_text,
+    handoff_returned_to_bot_text,
 )
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
@@ -367,8 +370,65 @@ def create_app(
             except Exception:
                 logger.exception("chatwoot joined notice failed: conv=%s", conv_id)
 
-    async def _complete_handoff_resolve(handoff_id: str) -> dict:
-        """HTTP resolve 与 webhook resolved 共用完成路径（handoff-spec §1.3）。"""
+    async def _emit_returned_to_bot(conv_id: str) -> None:
+        """交回 Bot：客户与坐席都可见的短提示（公开消息，非 private note）。"""
+        tip = handoff_returned_to_bot_text()
+        messages_store.append(conv_id, "assistant", tip)
+        if chatwoot is None:
+            return
+        try:
+            await chatwoot.ensure_conversation(conv_id, tip)
+            await chatwoot.send_bot_message(conv_id, tip)
+        except Exception:
+            logger.exception("chatwoot returned-to-bot tip failed: conv=%s", conv_id)
+
+    async def _emit_form_cancelled_on_handoff(conv_id: str) -> None:
+        """进入 human 且清掉未提交表单后：客户提示 + 可选坐席 private note。"""
+        tip = handoff_form_cancelled_customer_text()
+        messages_store.append(conv_id, "assistant", tip)
+        if chatwoot is None:
+            return
+        try:
+            await chatwoot.send_bot_message(conv_id, tip)
+            await chatwoot.send_bot_message(
+                conv_id, handoff_form_cancelled_seat_note_text(), private=True
+            )
+        except Exception:
+            logger.exception("chatwoot form-cancelled-on-handoff tip failed: conv=%s", conv_id)
+
+    async def _cancel_pending_form_interrupt(conv_id: str) -> bool:
+        """Resume a pending Mutation Form with cancel. Caller holds the thread lock.
+
+        Approval and handoff interrupts are left alone. Raises if a form interrupt
+        is still pending after cancel, so Takeover does not flip mode first.
+        """
+        thread_id = status.get_thread_id(conv_id)
+        if thread_id is None:
+            return False
+        async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+            graph = make_ai_graph(
+                _resolve_model(model), saver, order_repository=resolved_order_repository
+            )
+            cfg = {"configurable": {"thread_id": thread_id}}
+            st = await graph.aget_state(cfg)
+            if not st.interrupts or not is_form_interrupt(st.interrupts[0].value):
+                return False
+            await graph.ainvoke(
+                Command(resume={"action": "cancel"}),
+                config=cfg,
+                context=_runtime_context(status.get_user_id(conv_id) or ""),
+            )
+            st_after = await graph.aget_state(cfg)
+            if st_after.interrupts and is_form_interrupt(st_after.interrupts[0].value):
+                raise RuntimeError(f"form interrupt still pending after cancel: {conv_id}")
+        return True
+
+    async def _complete_handoff_resolve(handoff_id: str, *, restore_pending: bool = True) -> dict:
+        """HTTP resolve、webhook resolved，以及 webhook pending（已是 pending）共用完成路径。
+
+        restore_pending：Chatwoot 尚未 pending 时 toggle_status(pending)。
+        官方交回是 status 已回到 pending，此时不得再 toggle（防环）。
+        """
         pending_handoff = handoff.get(handoff_id)
         if pending_handoff is None:
             raise KeyError(f"handoff not found: {handoff_id}")
@@ -380,7 +440,8 @@ def create_app(
                 "conversation_id": conv_id,
                 "event": {"type": "handoff_resolved", "data": {"handoff_id": handoff_id, "conversation_id": conv_id}},
             }
-        if status.get_mode(conv_id) == "human":
+        was_human = status.get_mode(conv_id) == "human"
+        if was_human:
             await _sync_chatwoot_agent_messages(conv_id)
         result = handoff.resolve_handoff(handoff_id)
         conv_id = result["conversation_id"]
@@ -393,7 +454,7 @@ def create_app(
                 len(pending),
             )
         thread_id = status.get_thread_id(conv_id)
-        if chatwoot is not None:
+        if restore_pending and chatwoot is not None:
             try:
                 await chatwoot.set_conversation_status(conv_id, "pending")
             except Exception:
@@ -420,6 +481,8 @@ def create_app(
                             )
                         except Exception:
                             pass
+        if was_human:
+            await _emit_returned_to_bot(conv_id)
         event = {
             "type": "handoff_resolved",
             "data": {"handoff_id": handoff_id, "conversation_id": conv_id},
@@ -433,9 +496,27 @@ def create_app(
         }
 
     async def _seat_takeover_for_conversation(conv_id: str) -> dict:
-        """Account Webhook open → Seat Takeover + Joined Notice。"""
-        rec = handoff.seat_takeover(conv_id)
+        """Account Webhook open → cancel pending form, then Seat Takeover + Joined Notice.
+
+        Already-human is idempotent (no second notice, no second cancel).
+        Form cancel runs before mode flips and under the thread lock, so a late
+        Form Resume waiting on that lock cannot write.
+        """
+        if status.get_mode(conv_id) == "human":
+            rec = handoff.get_active(conv_id) or {}
+            return {"type": "handoff_created", "data": rec}
+        thread_id = status.get_thread_id(conv_id)
+        cancelled = False
+        if thread_id is None:
+            rec = handoff.seat_takeover(conv_id)
+        else:
+            lock = await _thread_lock(thread_id)
+            async with lock:
+                cancelled = await _cancel_pending_form_interrupt(conv_id)
+                rec = handoff.seat_takeover(conv_id)
         await _emit_joined_notice(conv_id)
+        if cancelled:
+            await _emit_form_cancelled_on_handoff(conv_id)
         return {"type": "handoff_created", "data": rec}
 
     def _webhook_conversation_status(data: dict) -> tuple[int | None, str | None]:
@@ -610,6 +691,13 @@ def create_app(
             )
             lock = await _thread_lock(thread_id)
             async with lock:
+                if status.get_mode(conv_id) != "ai":
+                    # Takeover won the lock: do not start a graph turn that could write.
+                    yield {
+                        "type": "done",
+                        "data": {"final": "已转人工，坐席将尽快回复。", "message_id": None},
+                    }
+                    return
                 async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                     graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                     cfg = {"configurable": {"thread_id": thread_id}}
@@ -702,6 +790,8 @@ def create_app(
 
         lock = await _thread_lock(thread_id)
         async with lock:
+            if status.get_mode(conv_id) != "ai":
+                raise HTTPException(status_code=409, detail="conversation is not in ai mode")
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
@@ -971,7 +1061,26 @@ def create_app(
                     (created.get("data") or {}).get("handoff_id"),
                 )
                 return {"ok": True, "event": created}
+            if new_status == "pending":
+                # Official return-to-bot. Already-ai is a no-op (anti-loop after
+                # our own toggle_status(pending) or a pending baseline).
+                if status.get_mode(conv_id) != "human":
+                    return {"ok": True}
+                active = handoff.get_active(conv_id) or handoff.get_awaiting(conv_id)
+                if active is None:
+                    status.set_mode(conv_id, "ai")
+                    await _emit_returned_to_bot(conv_id)
+                    return {"ok": True}
+                try:
+                    result = await _complete_handoff_resolve(
+                        active["handoff_id"], restore_pending=False
+                    )
+                    return {"ok": True, "event": result.get("event")}
+                except KeyError:
+                    return {"ok": True}
             if new_status == "resolved":
+                # Compatible close: Resolve also returns the lane, then Runtime
+                # toggle_status(pending). The following pending webhook is a no-op.
                 active = handoff.get_active(conv_id) or handoff.get_awaiting(conv_id)
                 if active is not None:
                     try:
@@ -979,7 +1088,6 @@ def create_app(
                         return {"ok": True, "event": result.get("event")}
                     except KeyError:
                         pass
-            # pending: ignore (anti-loop after toggle_status(pending))
             return {"ok": True}
 
         if event_name != "message_created" or not is_agent_message(data):

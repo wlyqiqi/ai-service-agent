@@ -7,7 +7,7 @@ Account Webhook URL host.docker.internal:8766), then:
   B) FAQ still AI
   C) Chatwoot toggle_status(open) → webhook Takeover → Joined Notice + mode human
   D) further chat stays human tip
-  E) Chatwoot toggle_status(resolved) → webhook Resolve → mode ai
+  E) Chatwoot toggle_status(pending) → webhook return-to-bot → mode ai
   F) FAQ AI again
 
 Prereq: scripts/check_seat_gated_webhooks.py PASS with matching RUNTIME_BASE.
@@ -35,6 +35,7 @@ from ai_service_agent.config import get_settings, make_model
 from ai_service_agent.graph.workflows.copy import (
     handoff_joined_notice_text,
     handoff_request_confirm_text,
+    handoff_returned_to_bot_text,
 )
 from ai_service_agent.harness.server import create_app
 
@@ -303,14 +304,20 @@ def main() -> int:
                 "final": human_tip,
             })
 
-            # E — Resolve via Chatwoot resolved
-            toggled = seat.toggle_status(cw_id, "resolved")
+            # E — Official return: status back to pending (no Runtime re-toggle)
+            toggled = seat.toggle_status(cw_id, "pending")
             mode = wait_mode(client, sid, "ai")
+            msgs = client.get(f"{BASE}/conversations/{sid}/messages").json().get("items") or []
+            returned = handoff_returned_to_bot_text()
+            has_returned = any(
+                it.get("role") == "assistant" and it.get("content") == returned for it in msgs
+            )
             results.append({
-                "name": "E.resolve_mode_ai",
-                "pass": toggled and mode == "ai",
+                "name": "E.pending_returns_ai",
+                "pass": toggled and mode == "ai" and has_returned,
                 "toggle_ok": toggled,
                 "mode": mode,
+                "returned_tip": has_returned,
             })
 
             # F — AI resumes

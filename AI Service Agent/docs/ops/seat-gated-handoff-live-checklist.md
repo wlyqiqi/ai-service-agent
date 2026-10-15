@@ -22,7 +22,7 @@ SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
 
 然后重启 `chatwoot` + `chatwoot-sidekiq`。`RUNTIME_BASE` 用 Chatwoot 容器能路由到的宿主机地址（常见：宿主机 LAN IP，如 `http://192.168.x.x:8766`）；`host.docker.internal` 在未开上述开关时会被 SSRF 拦截。
 
-自动化三角（`/chat` + 真实 Chatwoot `toggle_status` + Account Webhook；等价于坐席 Take over / Resolve 的 status 边，**不是** Website Widget UI 点击）。Widget 登录路径仍按 §1 表手测或补跑。
+自动化三角（`/chat` + 真实 Chatwoot `toggle_status` + Account Webhook；等价于坐席 Take over / 设回 pending 的 status 边，**不是** Website Widget UI 点击）。Widget 登录路径仍按 §1 表手测或补跑。
 
 ```powershell
 $env:AI_SERVICE_PORT="8766"   # 须与 Account Webhook URL 端口一致
@@ -39,7 +39,8 @@ uv run --no-sync python scripts/live_seat_gated_triangular.py
 | B | Customer | 再问一条 FAQ（如「退货政策是什么」） | **AI 仍回复**（非 human 车道静默） |
 | C | Seat | Chatwoot 对该会话 **Take over**（status → `open`） | 客户收到 **Handoff Joined Notice**；Runtime mode=`human`；事件 `handoff_created` |
 | D | Customer | 再发一条消息 | human 车道 tip / 无 AI Graph 回复（坐席侧可继续聊） |
-| E | Seat | **Resolve**（status → `resolved`） | Runtime mode=`ai`；Chatwoot 被 `toggle_status(pending)` 交回 Bot；事件 `handoff_resolved` |
+| E | Seat | 把 status 设回 **pending**（官方交回 Bot） | Runtime mode=`ai`；**不再** toggle（已经是 pending）；双方可见「已交回助手」；事件 `handoff_resolved` |
+| E2 | Seat | （兼容）**Resolve**（status → `resolved`） | Runtime mode=`ai`，并 `toggle_status(pending)`；随后的 pending 回声不再切一次 |
 | F | Customer | 再问一条 FAQ | **AI 再次回复** |
 
 ## 2. 记录模板
@@ -61,7 +62,7 @@ Login:
 | B AI still replies | | |
 | C Take over + Joined Notice | | |
 | D Human lane tip | | |
-| E Resolve → ai + pending | | |
+| E pending → ai + 已交回助手 | | |
 | F AI resumes | | |
 ```
 
