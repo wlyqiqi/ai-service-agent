@@ -46,7 +46,7 @@ from ai_service_agent.harness.resume import (
     resolve_resume_payload,
 )
 from ai_service_agent.harness.session import ConversationStatusStore
-from ai_service_agent.harness.streaming import event_stream, new_assistant_text_and_id, snapshot_assistant_ids
+from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import make_fake_model
 
 logger = logging.getLogger("ai_service_agent")
@@ -637,20 +637,35 @@ def create_app(
             rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
             # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
             approvals.mark_decided(approval_id, decided, decided_by=decided_by)
+            # 与 /chat 同级：挂接 handoff/approval interrupt 回调，避免后续中断静默（approval-spec §3.2.2）
+            cb = _combined_interrupt_callback(
+                handoff.make_interrupt_callback(conv_id),
+                approvals.make_interrupt_callback(conv_id, thread_id),
+            )
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
-                before_ids = await snapshot_assistant_ids(graph, cfg)  # D7：resume 前快照
-                await graph.ainvoke(
-                    Command(resume=resume_payload),
+                final: str | None = None
+                final_message_id: str | None = None
+                async for ev in event_stream(
+                    graph,
                     cfg,
+                    [],
+                    on_interrupt=cb,
+                    resume_payload=resume_payload,
                     context=_runtime_context(status.get_user_id(conv_id) or ""),
-                )
-                # D7：diff 取本轮新增 assistant 文本 -> Message Store（唯一真相源）
-                final, final_message_id = await new_assistant_text_and_id(graph, cfg, before_ids)
+                ):
+                    if ev["type"] == "done":
+                        final = ev["data"].get("final")
+                        final_message_id = ev["data"].get("message_id")
+                    elif ev["type"] == "handoff_created":
+                        # 回调已建 Record；补 NOTICE / Chatwoot ensure（与 chat 路径同构）
+                        async for _ in _emit_handoff(conv_id, ev):
+                            pass
+                # Message Store 始终落库；出站仅当发送前 conversation_mode 仍为 ai（handoff-spec §1.4）
                 if final is not None:
                     messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
-                    if chatwoot is not None:
+                    if chatwoot is not None and status.get_mode(conv_id) == "ai":
                         await chatwoot.send_bot_message(conv_id, final)
         return {"approval_id": approval_id, "status": decided}
 
