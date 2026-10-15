@@ -353,6 +353,7 @@ def test_handoff_resolve_endpoint(tmp_path):
     info = status.create_session("u1")
     handoff = HandoffService(conn, status)
     rec = handoff.create_handoff(info["conversation_id"], "r", "s")
+    handoff.seat_takeover(info["conversation_id"])
     conn.close()
 
     client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
@@ -412,7 +413,7 @@ def test_resolve_entrance_handoff_then_next_chat_is_answered(tmp_path):
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
         text1 = "".join(r.iter_text())
-    assert "handoff_created" in text1
+    assert "handoff_requested" in text1
 
     conn = sqlite3.connect(db)
     handoff_id = conn.execute("SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)).fetchone()[0]
@@ -1053,18 +1054,18 @@ def test_plain_text_during_form_interrupt_refuses_with_guidance(tmp_path, monkey
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
-    from ai_service_agent.harness.handoff import HANDOFF_NOTICE
+    from ai_service_agent.harness.handoff import HANDOFF_REQUEST_CONFIRM
     client = TestClient(create_app(str(tmp_path / "n.db"), model=KeywordHandoffFakeModel(responses=[])))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
         text = "".join(r.iter_text())
     assert '"token"' in text
-    assert "handoff_created" in text
+    assert "handoff_requested" in text
     conn = sqlite3.connect(str(tmp_path / "n.db"))
     rows = MessageStore(conn).list(session_id)
     conn.close()
     assert [r["role"] for r in rows] == ["user", "assistant"]
-    assert rows[1]["content"] == HANDOFF_NOTICE
+    assert rows[1]["content"] == HANDOFF_REQUEST_CONFIRM
 
 def test_chat_and_resolve_share_make_ai_graph_entry(tmp_path, monkeypatch):
     """/chat 与 /handoffs/{id}/resolve 都必须经同一个 make_ai_graph 入口（P2 一致性要求）。"""
@@ -1087,7 +1088,9 @@ def test_chat_and_resolve_share_make_ai_graph_entry(tmp_path, monkeypatch):
 
     conn = sqlite3.connect(str(tmp_path / "g.db"))
     status = ConversationStatusStore(conn)
-    rec = HandoffService(conn, status).create_handoff(session_id, "r", "s")
+    svc = HandoffService(conn, status)
+    rec = svc.create_handoff(session_id, "r", "s")
+    svc.seat_takeover(session_id)
     conn.close()
     r = client.post(f"/handoffs/{rec['handoff_id']}/resolve")
     assert r.status_code == 200
@@ -1121,7 +1124,9 @@ def test_resolve_with_pending_approval_still_completes(tmp_path):
     conn = sqlite3.connect(db)
     status = ConversationStatusStore(conn)
     info = status.create_session("u1")
-    rec = HandoffService(conn, status).create_handoff(info["conversation_id"], "r", "s")
+    svc = HandoffService(conn, status)
+    rec = svc.create_handoff(info["conversation_id"], "r", "s")
+    svc.seat_takeover(info["conversation_id"])
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     ApprovalService(conn).insert_if_absent("A-D9", info["conversation_id"], info["thread_id"], {

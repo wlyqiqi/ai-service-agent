@@ -198,6 +198,31 @@ def human_mode_tip_text() -> str:
     return "当前由人工客服接待，坐席正在处理您的问题，请稍候。"
 
 
+def handoff_request_confirm_text() -> str:
+    """Handoff Request 挂起确认（mode 仍 ai；与 Joined Notice 区分）。"""
+    return (
+        "好的，已收到您的转人工申请。人工客服接入前我会继续为您服务；"
+        "如需取消请回复「取消转人工」。"
+    )
+
+
+def handoff_joined_notice_text() -> str:
+    """Seat Takeover 后 Handoff Joined Notice。"""
+    return "人工客服已接入，接下来将由人工为您服务。"
+
+
+def handoff_cancel_confirm_text() -> str:
+    """客户取消挂起 Handoff Request 后的短 tip。"""
+    return "好的，已取消转人工申请。有需要随时告诉我。"
+
+
+def handoff_request_private_note_text(summary: str = "") -> str:
+    """Chatwoot 强提示 private note 正文。"""
+    base = "【转人工申请】客户请求人工客服接入（Conversation Mode 仍为 AI，待 Take over）。"
+    if summary:
+        return f"{base}\n摘要：{summary}"
+    return base
+
 def approval_approved_text(tool: str) -> str:
     return f"您的{_label(tool)}申请已通过审核并执行完成，相关结果可以在订单详情中查看。"
 

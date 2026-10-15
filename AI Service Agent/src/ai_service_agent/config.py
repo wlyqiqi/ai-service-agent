@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     # P0（2026-09-18）：显式转人工意图检测配置（graph/handoff_rules.py 消费）。
     # 替代旧 handoff_keywords 裸子串匹配（"人工" 会误伤 "人工呼吸/人工智能" 等话题性表达）。
     handoff_phrases: list[str] = ["转人工", "转接人工", "找人工", "找客服", "人工客服", "真人客服"]
+    handoff_cancel_phrases: list[str] = [
+        "取消转人工",
+        "不用转人工",
+        "不转人工了",
+        "取消人工",
+        "不要人工了",
+        "不用人工了",
+    ]
     handoff_negative_suffix: list[str] = [
         "培训", "审核", "成本", "智能", "呼吸", "操作", "考试",
         "招聘", "岗位", "工作", "工资", "流程", "制度", "标准",

@@ -6,8 +6,12 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
+from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
+    handoff_cancel_confirm_text,
+    handoff_request_confirm_text,
+    handoff_request_private_note_text,
     human_mode_tip_text,
     update_address_current_address_display,
     update_address_empty_state_text,
@@ -387,6 +391,7 @@ async def handle_agent_bot_message(
     callbacks_factory=None,
     on_handoff_created=None,
     on_approval_pending=None,
+    handoff=None,
     context=None,
 ) -> dict[str, Any] | None:
     """处理 AgentBot incoming 消息，并回写 outgoing 消息。"""
@@ -452,6 +457,7 @@ async def handle_agent_bot_message(
         callbacks_factory=callbacks_factory,
         on_handoff_created=on_handoff_created,
         on_approval_pending=on_approval_pending,
+        handoff=handoff,
         context=context,
         conversation=conversation,
         cw_conv_id=cw_conv_id,
@@ -481,6 +487,7 @@ async def _handle_locked_agent_bot_message(
     callbacks_factory=None,
     on_handoff_created=None,
     on_approval_pending=None,
+    handoff=None,
     context=None,
     conversation: dict[str, Any],
     cw_conv_id: int,
@@ -525,7 +532,11 @@ async def _handle_locked_agent_bot_message(
         }
 
     if callbacks_factory is not None:
-        on_interrupt, on_handoff_created, on_approval_pending = callbacks_factory(conversation_id, thread_id)
+        on_interrupt, on_handoff_requested, on_approval_pending = callbacks_factory(
+            conversation_id, thread_id
+        )
+    else:
+        on_handoff_requested = on_handoff_created
 
     if messages_store is not None:
         message_id = chatwoot_message_id(payload)
@@ -535,6 +546,42 @@ async def _handle_locked_agent_bot_message(
         history = messages_store.hydrate(conversation_id)
     else:
         history = [HumanMessage(content=content)]
+
+    # Seat-gated entry detectors (handoff-spec §2): confirm/cancel only; no Graph.
+    if handoff is not None and submitted_values is None:
+        if handoff.get_awaiting(conversation_id) is not None and detect_handoff_cancel(content):
+            handoff.cancel_handoff_request(conversation_id)
+            tip = handoff_cancel_confirm_text()
+            if messages_store is not None:
+                messages_store.append(conversation_id, "assistant", tip)
+            await chatwoot.send_bot_message(conversation_id, tip)
+            return {
+                "conversation_id": conversation_id,
+                "chatwoot_conversation_id": cw_conv_id,
+                "response": tip,
+            }
+        if detect_handoff_intent(content):
+            ev = handoff.request_handoff(conversation_id, "用户显式请求转人工", content[:80])
+            if on_handoff_requested is not None:
+                await on_handoff_requested(ev)
+            else:
+                tip = handoff_request_confirm_text()
+                if messages_store is not None:
+                    messages_store.append(conversation_id, "assistant", tip)
+                await chatwoot.send_bot_message(conversation_id, tip)
+                try:
+                    await chatwoot.prompt_handoff_request(
+                        conversation_id,
+                        handoff_request_private_note_text((ev.get("data") or {}).get("summary") or ""),
+                    )
+                except Exception:
+                    pass
+            tip = handoff_request_confirm_text()
+            return {
+                "conversation_id": conversation_id,
+                "chatwoot_conversation_id": cw_conv_id,
+                "response": tip,
+            }
 
     mutation_form_data = None
     approval_form_data = None
@@ -641,8 +688,8 @@ async def _handle_locked_agent_bot_message(
                 elif event.get("type") == "approval_required":
                     # Seat Approver side-channel card (#64); private form, not Widget.
                     approval_form_data = event.get("data") or {}
-                elif event.get("type") == "handoff_created" and on_handoff_created is not None:
-                    await on_handoff_created(event)
+                elif event.get("type") == "handoff_requested" and on_handoff_requested is not None:
+                    await on_handoff_requested(event)
                 # #48: clarification_required / confirmation_required interactive retired.
                 # Operation Clarify and HighRisk missing-fields stay outbound chat (done.final).
 

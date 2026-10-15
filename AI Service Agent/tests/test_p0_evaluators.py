@@ -114,32 +114,32 @@ def test_safety_correct_reject_and_false_reject():
 def test_handoff_correct():
     must = handoff_correct(
         {"suite": "handoff"},
-        {"actual": {"events": ["handoff_created", "done"], "mode": "human"}},
+        {"actual": {"events": ["handoff_requested", "done"], "mode": "ai"}},
         {
-            "expected_events": ["handoff_created", "done"],
+            "expected_events": ["handoff_requested", "done"],
             "forbidden_events": [],
-            "expected_mode": "human",
+            "expected_mode": "ai",
         },
     )
     assert must["score"] == 1
 
     forbid = handoff_correct(
         {"suite": "handoff"},
-        {"actual": {"events": ["handoff_created", "done"], "mode": "ai"}},
+        {"actual": {"events": ["handoff_requested", "done"], "mode": "ai"}},
         {
             "expected_events": ["done"],
-            "forbidden_events": ["handoff_created"],
+            "forbidden_events": ["handoff_requested"],
             "expected_mode": "ai",
         },
     )
     assert forbid["score"] == 0
 
-    # resolve: handoff happened, final mode ai
+    # resolve after hang: handoff_requested happened, final mode ai
     resolved = handoff_correct(
         {"suite": "handoff", "turns": [{"message": "转人工"}, {"action": "resolve"}]},
-        {"actual": {"events": ["handoff_created", "done"], "mode": "ai"}},
+        {"actual": {"events": ["handoff_requested", "done"], "mode": "ai"}},
         {
-            "expected_events": ["handoff_created", "done"],
+            "expected_events": ["handoff_requested", "done"],
             "forbidden_events": [],
             "expected_mode": "ai",
         },

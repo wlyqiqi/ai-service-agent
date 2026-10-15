@@ -100,13 +100,20 @@ def _handoff_applicable(inputs: Mapping[str, Any], reference_outputs: Mapping[st
     expected = set(reference_outputs.get("expected_events") or [])
     forbidden = set(reference_outputs.get("forbidden_events") or [])
     suite = _suite(inputs, reference_outputs)
-    if "handoff_created" in expected or "handoff_created" in forbidden:
+    if (
+        "handoff_created" in expected
+        or "handoff_created" in forbidden
+        or "handoff_requested" in expected
+        or "handoff_requested" in forbidden
+    ):
         return True
     if reference_outputs.get("expected_mode") == "human":
         return True
     if suite == "handoff":
         return True
-    if suite == "fallback" and "handoff_created" in expected:
+    if suite == "fallback" and (
+        "handoff_created" in expected or "handoff_requested" in expected
+    ):
         return True
     return False
 
@@ -124,10 +131,11 @@ def score_handoff(
     actual_mode = _as_dict(outputs.get("actual")).get("mode")
     expected_mode = reference_outputs.get("expected_mode")
     problems: list[str] = []
-    if "handoff_created" in expected and "handoff_created" not in actual_events:
-        problems.append("missing handoff_created")
-    if "handoff_created" in forbidden and "handoff_created" in actual_events:
-        problems.append("forbidden handoff_created")
+    for name in ("handoff_requested", "handoff_created"):
+        if name in expected and name not in actual_events:
+            problems.append(f"missing {name}")
+        if name in forbidden and name in actual_events:
+            problems.append(f"forbidden {name}")
     if expected_mode is not None and actual_mode != expected_mode:
         problems.append(f"mode expected={expected_mode} actual={actual_mode}")
     ok = not problems
@@ -346,13 +354,20 @@ def _handoff_applicable(inputs, reference_outputs):
     expected = set(reference_outputs.get("expected_events") or [])
     forbidden = set(reference_outputs.get("forbidden_events") or [])
     suite = _suite(inputs, reference_outputs)
-    if "handoff_created" in expected or "handoff_created" in forbidden:
+    if (
+        "handoff_created" in expected
+        or "handoff_created" in forbidden
+        or "handoff_requested" in expected
+        or "handoff_requested" in forbidden
+    ):
         return True
     if reference_outputs.get("expected_mode") == "human":
         return True
     if suite == "handoff":
         return True
-    if suite == "fallback" and "handoff_created" in expected:
+    if suite == "fallback" and (
+        "handoff_created" in expected or "handoff_requested" in expected
+    ):
         return True
     return False
 
@@ -365,10 +380,11 @@ def score_handoff(inputs, outputs, reference_outputs):
     actual_mode = _as_dict(outputs.get("actual")).get("mode")
     expected_mode = reference_outputs.get("expected_mode")
     problems = []
-    if "handoff_created" in expected and "handoff_created" not in actual_events:
-        problems.append("missing handoff_created")
-    if "handoff_created" in forbidden and "handoff_created" in actual_events:
-        problems.append("forbidden handoff_created")
+    for name in ("handoff_requested", "handoff_created"):
+        if name in expected and name not in actual_events:
+            problems.append("missing %s" % name)
+        if name in forbidden and name in actual_events:
+            problems.append("forbidden %s" % name)
     if expected_mode is not None and actual_mode != expected_mode:
         problems.append("mode expected=%s actual=%s" % (expected_mode, actual_mode))
     ok = not problems

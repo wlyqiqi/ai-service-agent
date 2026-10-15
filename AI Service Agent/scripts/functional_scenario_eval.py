@@ -86,7 +86,7 @@ def parse_sse(text: str) -> list[dict]:
 
 def watched_events(events: list[dict]) -> list[str]:
     watched = {
-        "handoff_created", "clarification_required", "confirmation_required",
+        "handoff_requested", "handoff_created", "clarification_required", "confirmation_required",
         "form_required", "form_rejected",
         "approval_required", "confirmation_updated", "approval_updated",
         "safety_rejected", "tool_call", "tool_result", "done", "error", "token",
@@ -386,7 +386,11 @@ def run_case(client: httpx.Client, case: dict) -> dict:
         elif action == "resolve":
             # find handoff id from events or DB
             handoff_id = next(
-                ((e.get("data") or {}).get("handoff_id") for e in all_events if e.get("type") == "handoff_created"),
+                (
+                    (e.get("data") or {}).get("handoff_id")
+                    for e in all_events
+                    if e.get("type") in ("handoff_requested", "handoff_created")
+                ),
                 None,
             )
             if not handoff_id:

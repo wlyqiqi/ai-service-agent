@@ -176,12 +176,12 @@ async def test_send_interactive_message_posts_form_contract(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_set_conversation_status_patches_mapped_conversation(tmp_path):
+async def test_set_conversation_status_uses_toggle_status(tmp_path):
     def handler(request):
-        assert request.method == "PATCH"
-        assert request.url.path.endswith("/conversations/555")
+        assert request.method == "POST"
+        assert request.url.path.endswith("/conversations/555/toggle_status")
         assert json.loads(request.content) == {"status": "open"}
-        return Response(200, json={"id": 555, "status": "open"})
+        return Response(200, json={"payload": {"success": True, "current_status": "open"}})
 
     cw, mapping, calls = _client_with(handler, tmp_path)
     mapping.put("c1", 555)

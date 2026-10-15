@@ -52,6 +52,7 @@ def test_full_handoff_loop(tmp_path):
     conn2 = sqlite3.connect(db)
     handoff = HandoffService(conn2, ConversationStatusStore(conn2))
     rec = handoff.create_handoff(info["conversation_id"], "reason", "summary")
+    handoff.seat_takeover(info["conversation_id"])
     conn2.close()
 
     conn3 = sqlite3.connect(db)
@@ -75,19 +76,20 @@ def test_chat_ai_lane_streams_token_and_done(tmp_path):
 
 
 def test_handoff_interrupt_roundtrip(tmp_path):
-    """验收 #4/#6（P0 起入口层）：显式转人工 -> detector 前置拦截（不进图）-> request_handoff 建 Record + 原子切 human + handoff_created。"""
+    """Seat-gated：显式转人工 -> 挂起 + handoff_requested；mode 仍 ai。"""
     client = TestClient(create_app(str(tmp_path / "h.db"), model=KeywordHandoffFakeModel(responses=[])))
     r = client.post("/sessions", json={"user_id": "u1"})
     session_id = r.json()["session_id"]
 
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as resp:
         text = "".join(resp.iter_text())
-    assert "handoff_created" in text
+    assert "handoff_requested" in text
+    assert "handoff_created" not in text
 
     conn = sqlite3.connect(str(tmp_path / "h.db"))
     mode = ConversationStatusStore(conn).get_mode(session_id)
     conn.close()
-    assert mode == "human"
+    assert mode == "ai"
 
 
 def test_ai_chat_hydrates_history_across_turns(tmp_path):

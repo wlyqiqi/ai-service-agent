@@ -25,7 +25,7 @@ def test_get_handoffs_by_conversation(tmp_path):
     # 触发转人工（P0 起：入口层 detector 拦截显式请求 -> request_handoff，不进图）
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as r:
         r.read()
-    assert client.get(f"/handoffs?conversation_id={sid}").json()["status"] == "active"
+    assert client.get(f"/handoffs?conversation_id={sid}").json()["status"] == "awaiting_seat"
 
     # resolve 后仍可查询，状态 resolved
     rec = client.get(f"/handoffs?conversation_id={sid}").json()

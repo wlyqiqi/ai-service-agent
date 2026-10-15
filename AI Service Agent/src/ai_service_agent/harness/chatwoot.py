@@ -217,16 +217,55 @@ class ChatwootClient:
         return r.json().get("payload", [])
 
     async def set_conversation_status(self, conversation_id: str, status: str) -> None:
-        """把已映射 Chatwoot conversation 切到 pending/open（AgentBot/handoff 状态同步）。"""
+        """官方 toggle_status 切换会话 status（禁止 PATCH body status，ADR-0003）。"""
         rec = self.mapping.get(conversation_id)
         if rec is None:
             return
-        r = await self.client.patch(
-            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}",
+        cw_id = rec["chatwoot_conversation_id"]
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/toggle_status",
             headers=self._headers(),
             json={"status": status},
         )
         r.raise_for_status()
+
+    async def get_conversation_labels(self, conversation_id: str) -> list[str]:
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return []
+        cw_id = rec["chatwoot_conversation_id"]
+        r = await self.client.get(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/labels",
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        payload = r.json().get("payload")
+        if isinstance(payload, list):
+            return [str(x) for x in payload]
+        return []
+
+    async def add_conversation_label(self, conversation_id: str, label: str) -> None:
+        """合并写入 conversation label（Chatwoot POST labels 会覆盖列表，故先 GET）。"""
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return
+        existing = await self.get_conversation_labels(conversation_id)
+        if label in existing:
+            labels = existing
+        else:
+            labels = [*existing, label]
+        cw_id = rec["chatwoot_conversation_id"]
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/labels",
+            headers=self._headers(),
+            json={"labels": labels},
+        )
+        r.raise_for_status()
+
+    async def prompt_handoff_request(self, conversation_id: str, note: str) -> None:
+        """Handoff Request 强提示：private note + label handoff-request；不改 status。"""
+        await self.send_bot_message(conversation_id, note, private=True)
+        await self.add_conversation_label(conversation_id, "handoff-request")
 
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
         rec = self.mapping.get(conversation_id)
