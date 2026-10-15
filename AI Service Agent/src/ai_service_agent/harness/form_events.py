@@ -31,7 +31,7 @@ def project_form_interrupt(interrupt) -> dict | None:
         "order_candidates": value["order_candidates"],
         "form_session_id": value.get("form_session_id") or getattr(interrupt, "id", None),
     }
-    for key in ("fields", "prefills", "summary"):
+    for key in ("fields", "prefills", "summary", "current_address"):
         if key in value and value[key] is not None:
             data[key] = value[key]
     if errors:

@@ -546,25 +546,33 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
     )
 
     assert result is not None
+    from ai_service_agent.graph.workflows.copy import update_address_form_intro_text
+
+    # #71: intro bubble then locked update_address form (no action select).
+    chatwoot.send_bot_message.assert_awaited_once()
+    assert chatwoot.send_bot_message.await_args.args[1] == update_address_form_intro_text()
     chatwoot.send_interactive_message.assert_awaited_once()
     args = chatwoot.send_interactive_message.await_args.args
-    assert args[1] == form_data["summary"]
+    assert "修改收货地址" in args[1]
     assert args[2] == "form"
     items = args[3]["items"]
+    assert [item["name"] for item in items] == [
+        "current_address",
+        "order_id",
+        "address",
+        "abandon_footnote",
+    ]
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["type"] == "select"
     assert order_picker["options"] == [
-        {"label": "ORD-PAID-1 · 测试商品 x1", "value": "ORD-PAID-1"},
-        {"label": "ORD-PAID-2 · 另一件 x1", "value": "ORD-PAID-2"},
+        {"label": "ORD-PAID-1 · 已支付 · 测试商品 x1", "value": "ORD-PAID-1"},
+        {"label": "ORD-PAID-2 · 已支付 · 另一件 x1", "value": "ORD-PAID-2"},
     ]
+    assert "default" not in order_picker
     address_field = next(item for item in items if item["name"] == "address")
     assert address_field["type"] == "text"
     assert address_field["default"] == "北京市朝阳区预填路 1 号"
-    assert all(item["name"] != "request_id" for item in items)
-    action_field = next(item for item in items if item["name"] == "action")
-    assert action_field["type"] == "select"
-    assert {"label": "确认", "value": "confirm"} in action_field["options"]
-    assert {"label": "取消", "value": "cancel"} in action_field["options"]
+    assert all(item["name"] not in ("request_id", "action") for item in items)
     profile_loader.assert_not_called()
     orders_loader.assert_not_called()
 
@@ -774,12 +782,18 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
     args = chatwoot.send_interactive_message.await_args.args
     assert args[2] == "form"
     items = args[3]["items"]
+    assert [item["name"] for item in items] == [
+        "current_address",
+        "order_id",
+        "address",
+        "abandon_footnote",
+    ]
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["type"] == "select"
     assert any(opt["value"] == "ORD-PAID-1" for opt in order_picker["options"])
+    assert any("已支付" in opt["label"] for opt in order_picker["options"])
     assert any(item["name"] == "address" and item["type"] == "text" for item in items)
-    action_field = next(item for item in items if item["name"] == "action")
-    assert {"label": "取消", "value": "cancel"} in action_field["options"]
+    assert all(item["name"] != "action" for item in items)
     profile_loader.assert_not_called()
     orders_loader.assert_not_called()
 
@@ -1013,9 +1027,9 @@ async def test_pending_form_plain_text_refuses_and_repushes_same_form_session(
 
     assert refuse_result is not None
     assert refuse_result["response"] == form_plain_text_refuse_text()
-    chatwoot.send_bot_message.assert_awaited_once_with(
-        open_result["conversation_id"], form_plain_text_refuse_text()
-    )
+    # tip + #71 open-form intro when re-pushing update_address form
+    bot_texts = [call.args[1] for call in chatwoot.send_bot_message.await_args_list]
+    assert form_plain_text_refuse_text() in bot_texts
     assert captured.get("event_stream_called") is not True
     assert "repush_form_data" in captured
     assert captured["repush_form_data"]["form_session_id"] == form_session_id
@@ -1024,6 +1038,7 @@ async def test_pending_form_plain_text_refuses_and_repushes_same_form_session(
     assert chatwoot.send_interactive_message.await_args.args[2] == "form"
     items = chatwoot.send_interactive_message.await_args.args[3]["items"]
     assert any(item["name"] == "address" for item in items)
+    assert all(item["name"] != "action" for item in items)
     assert repo.get_user_profile("u1")["address"] == before
     still = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     assert still.interrupts
@@ -1092,7 +1107,8 @@ async def test_pending_form_single_hang_tips_without_second_mutation_form(
     tip = tip_result["response"]
     assert tip == form_plain_text_refuse_text()
     assert "表单" in tip and "完成" in tip and "取消" in tip
-    chatwoot.send_bot_message.assert_awaited_once()
+    bot_texts = [call.args[1] for call in chatwoot.send_bot_message.await_args_list]
+    assert form_plain_text_refuse_text() in bot_texts
     assert len(captured.get("forms", [])) == 1
     assert captured["forms"][0]["form_session_id"] == form_session_id
     assert captured["forms"][0]["tool"] == "update_address"
@@ -1100,6 +1116,7 @@ async def test_pending_form_single_hang_tips_without_second_mutation_form(
     items = chatwoot.send_interactive_message.await_args.args[3]["items"]
     assert any(item["name"] == "address" for item in items)
     assert not any(item["name"] == "phone" for item in items)
+    assert all(item["name"] != "action" for item in items)
     profile = repo.get_user_profile("u1")
     assert profile["address"] == address_before
     assert profile["phone"] == phone_before
