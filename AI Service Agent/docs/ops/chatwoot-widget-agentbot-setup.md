@@ -19,11 +19,16 @@ AgentBot webhook（本仓已实现）：
 POST {RUNTIME_BASE}/webhooks/agent_bot
 ```
 
-坐席回写 webhook（人工车道，可选但生产建议开）：
+Account Webhook / 坐席回写（人工车道 + **Seat Takeover / Handoff Resolve**；生产必开）：
 
 ```text
 POST {RUNTIME_BASE}/webhooks/chatwoot
 ```
+
+> **与 AgentBot Outgoing URL 不是同一通道。**  
+> AgentBot `outgoing_url` → `/webhooks/agent_bot`（客户消息进 Runtime）。  
+> **Account Webhook** → `/webhooks/chatwoot`（坐席消息回写 + `conversation_status_changed`）。  
+> Seat-gated handoff 依赖后者订阅 `conversation_status_changed`（`open` = Seat Takeover，`resolved` = Handoff Resolve）；见 [ADR-0003](../adr/0003-seat-gated-handoff.md) / `docs/specs/handoff-spec.md` §3.1。
 
 ## 1. Website Inbox + `website_token`
 
@@ -143,7 +148,20 @@ AgentBot 回写与坐席同步依赖 Chatwoot Application API。
 | API access token | `CHATWOOT_API_TOKEN` | `chatwoot_api_token` |
 | 坐席 → Runtime 的 webhook 签名 secret | `CHATWOOT_WEBHOOK_SECRET` | `chatwoot_webhook_secret` |
 
-坐席 webhook 入口：`POST /webhooks/chatwoot`（与 AgentBot 路径不同；secret 也不同，勿混用）。
+坐席 / Account Webhook 入口：`POST /webhooks/chatwoot`（与 AgentBot 路径不同；secret 也不同，勿混用）。
+
+### 4.1 Account Webhook：`conversation_status_changed`（Seat-gated 必开）
+
+Seat Takeover / Handoff Resolve **不**走 AgentBot Outgoing URL。须在 Chatwoot **Account** 级 Webhook（Settings → Integrations → Webhooks，或等价 Account Webhooks）配置：
+
+1. **URL** = `{RUNTIME_BASE}/webhooks/chatwoot`
+2. **Webhook secret** 与 Runtime `CHATWOOT_WEBHOOK_SECRET` 一致（HMAC 校验与既有坐席回写相同）
+3. **订阅事件必须包含** `conversation_status_changed`（以及既有坐席回写所需的 `message_created` 等）
+4. Runtime 语义：`open` → Seat Takeover（mode=`human` + `handoff_created` + Handoff Joined Notice）；`resolved` → Handoff Resolve（mode=`ai` + `handoff_resolved` + `toggle_status(pending)`）；`pending` 忽略防环
+
+验收：用 Account API / 控制台确认该 webhook 的 subscriptions **含** `conversation_status_changed`。缺订则 Take over / Resolve 不会同步 Conversation Mode。
+
+术语：`CONTEXT.md`（Seat Takeover / Handoff Resolve）；规格：`docs/specs/handoff-spec.md` §3.1。
 
 ## 5. `.env` 清单（与 `Settings` 1:1）
 
@@ -186,7 +204,10 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 - [ ] `CHATWOOT_AGENT_BOT_SECRET` 校验通过（错误 secret 会 401）  
 - [ ] `CHATWOOT_ENABLED` + API 字段齐全；Widget 发「你好」有 bot 回复  
 - [ ] AgentBot payload 中 `contact.identifier` = 登录 `user_id`  
-- [ ] （可选）转人工后出现固定 tip，坐席可在 Chatwoot 续接 → 见 issue #58  
+- [ ] Account Webhook URL = `{RUNTIME_BASE}/webhooks/chatwoot`，secret = `CHATWOOT_WEBHOOK_SECRET`  
+- [ ] Account Webhook **已订阅** `conversation_status_changed`（**不是** AgentBot Outgoing URL）  
+- [ ] Seat-gated 三角：客户申请后 AI 仍可回复 → 坐席 Take over → 客户收到 Joined Notice / human 车道 → Resolve 后 AI 恢复  
+- [ ] （可选）历史：转人工 tip / 坐席续接 → 见 issue #58  
 
 ## 8. 非权威材料
 
@@ -200,4 +221,5 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 - Spec（已关闭）：[#42](https://github.com/wlyqiqi/ai-service-agent/issues/42)  
 - 本文跟踪：[#57](https://github.com/wlyqiqi/ai-service-agent/issues/57)  
 - Widget 冒烟（人侧）：[#58](https://github.com/wlyqiqi/ai-service-agent/issues/58)  
-- ADR：`docs/adr/0001-widget-agentbot-form-contract.md`
+- Seat-gated docs：[#80](https://github.com/wlyqiqi/ai-service-agent/issues/80)（父规格 [#79](https://github.com/wlyqiqi/ai-service-agent/issues/79)）  
+- ADR：`docs/adr/0001-widget-agentbot-form-contract.md` · `docs/adr/0003-seat-gated-handoff.md`
