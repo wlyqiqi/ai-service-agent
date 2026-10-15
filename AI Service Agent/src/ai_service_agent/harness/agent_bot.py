@@ -10,6 +10,13 @@ from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
     form_plain_text_refuse_text,
     human_mode_tip_text,
+    update_address_current_address_display,
+    update_address_empty_state_text,
+    update_address_form_footnote_text,
+    update_address_form_intro_text,
+    update_address_form_subtitle_text,
+    update_address_form_title_text,
+    update_address_new_address_placeholder,
 )
 from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
@@ -17,7 +24,10 @@ from ai_service_agent.harness.streaming import event_stream
 
 # Form Resume schema keys that are not Mutation Form input widgets.
 # ``action`` is appended explicitly as Confirm/Cancel control (not from schema loop).
-_FORM_SCHEMA_SKIP_FIELDS = frozenset({"action", "request_id"})
+# ``current_address`` is read-only projection for update_address (#71).
+_FORM_SCHEMA_SKIP_FIELDS = frozenset(
+    {"action", "request_id", "current_address", "abandon_footnote"}
+)
 
 _MUTATION_FORM_ACTION_ITEM: dict[str, Any] = {
     "name": "action",
@@ -53,15 +63,28 @@ def _form_errors_map(data: dict[str, Any]) -> dict[str, str]:
     return {str(key): str(value) for key, value in raw.items() if value not in (None, "", [], {})}
 
 
+def _is_update_address_form(data: dict[str, Any]) -> bool:
+    return data.get("tool") == "update_address"
+
+
 def mutation_form_title_from_form_data(data: dict[str, Any]) -> str:
     """Chatwoot form ``content``: summary plus form-level / leftover error copy."""
-    title = data.get("summary") or "请填写表单"
+    if _is_update_address_form(data):
+        # Title + limit subtitle in content; footnote is a trailing form item (§2.1).
+        title = "\n".join(
+            [
+                update_address_form_title_text(),
+                update_address_form_subtitle_text(),
+            ]
+        )
+    else:
+        title = data.get("summary") or "请填写表单"
     errors = _form_errors_map(data)
     if not errors:
         return title
     # Field errors are also painted onto matching items; ``_form`` and any
     # unmatched keys still need a visible place in the message copy.
-    item_names = {"order_id", "action"}
+    item_names = {"order_id", "action", "current_address", "address"}
     explicit = data.get("fields")
     if isinstance(explicit, list):
         for field in explicit:
@@ -102,16 +125,79 @@ def _apply_errors_to_mutation_form_items(
     return items
 
 
+def _update_address_order_option_label(candidate: dict[str, Any]) -> str:
+    order_id = str(candidate.get("order_id") or "")
+    product = (candidate.get("product_summary") or "").strip()
+    # Candidates for update_address are paid-only; label locked as 订单号 · 已支付 · 短名.
+    if product:
+        return f"{order_id} · 已支付 · {product}"
+    return f"{order_id} · 已支付"
+
+
+def _update_address_form_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Locked open-form / form_rejected IA for update_address (#71). No action select."""
+    prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
+    items: list[dict[str, Any]] = [
+        {
+            "name": "current_address",
+            "label": "当前收货地址（只读）",
+            "type": "text",
+            "default": update_address_current_address_display(data.get("current_address")),
+        },
+    ]
+    options: list[dict[str, str]] = []
+    for candidate in data.get("order_candidates") or []:
+        if not isinstance(candidate, dict) or not candidate.get("order_id"):
+            continue
+        options.append(
+            {
+                "label": _update_address_order_option_label(candidate),
+                "value": str(candidate["order_id"]),
+            }
+        )
+    order_item: dict[str, Any] = {
+        "name": "order_id",
+        "label": "选择订单",
+        "type": "select",
+        "options": options,
+        "placeholder": "请选择要修改的订单",
+    }
+    # Open form: never auto-preselect. form_rejected: keep draft via prefills.
+    if _form_errors_map(data) and prefills.get("order_id") is not None:
+        order_item["default"] = prefills["order_id"]
+    items.append(order_item)
+    address_item: dict[str, Any] = {
+        "name": "address",
+        "label": "新收货地址",
+        "type": "text",
+        "placeholder": update_address_new_address_placeholder(),
+    }
+    if prefills.get("address") is not None:
+        address_item["default"] = prefills["address"]
+    items.append(address_item)
+    items.append(
+        {
+            "name": "abandon_footnote",
+            "label": "说明",
+            "type": "text",
+            "default": update_address_form_footnote_text(),
+        }
+    )
+    return _apply_errors_to_mutation_form_items(items, _form_errors_map(data))
+
+
 def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Build Chatwoot ``form`` items from a ``form_required`` / ``form_rejected`` payload.
 
-    Source of truth matches the former SSE Mutation Form: Order Picker from
-    ``order_candidates``, remaining fields from ``fields`` or ``response_schema``,
-    prefills applied as item ``default`` values. Always ends with Confirm/Cancel
-    ``action`` select so Form Cancel resume is possible from Widget.
+    ``update_address`` uses the locked four-state open-form layout (#71): read-only
+    current address, paid Order Picker (no preselect), new address, footnote, no action select.
+    Other mutation tools keep Order Picker + schema fields + Confirm/Cancel select.
     ``form_rejected`` ``errors`` are projected into item label/placeholder and
     title copy within what Chatwoot native forms allow.
     """
+    if _is_update_address_form(data):
+        return _update_address_form_items(data)
+
     prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
     items: list[dict[str, Any]] = []
 
@@ -476,16 +562,39 @@ async def _handle_locked_agent_bot_message(
                 elif is_form_interrupt(interrupt_value):
                     submitted = submitted_values or {}
                     action = submitted.get("confirmation") or submitted.get("action")
-                    if action in ("confirmed", "confirm"):
+                    # #71: update_address primary submit has no action select — business
+                    # fields alone mean confirm. Ignore read-only / footnote echo fields.
+                    _resume_skip = frozenset(
+                        {
+                            "action",
+                            "confirmation",
+                            "request_id",
+                            "current_address",
+                            "abandon_footnote",
+                        }
+                    )
+                    write_keys = {
+                        key
+                        for key, value in submitted.items()
+                        if key not in _resume_skip and value not in (None, "")
+                    }
+                    primary_submit_confirm = (
+                        not action
+                        and write_keys
+                        and submitted_values is not None
+                        and interrupt_value.get("tool") == "update_address"
+                    )
+                    if action in ("confirmed", "confirm") or primary_submit_confirm:
                         resume_payload = {"action": "confirm"}
                         for key, value in submitted.items():
-                            if key in ("action", "confirmation", "request_id"):
+                            if key in _resume_skip:
                                 continue
                             resume_payload[key] = value
                     elif action in ("canceled", "cancel"):
                         resume_payload = {"action": "cancel"}
                     else:
                         # 纯文本 / 并发写意图不是 Form Resume：单挂 tip + 重推当前表单，不跑图。
+                        # (#72 Implicit Cancel replaces tip+re-push; keep until that ticket.)
                         final_text = form_plain_text_refuse_text()
                         projected = project_form_interrupt(state.interrupts[0])
                         if projected:
@@ -550,7 +659,24 @@ async def send_mutation_form(
     conversation_id: str,
     form_data: dict[str, Any],
 ) -> None:
-    """Project Form Interrupt ``form_required`` / ``form_rejected`` to Chatwoot ``form``."""
+    """Project Form Interrupt ``form_required`` / ``form_rejected`` to Chatwoot ``form``.
+
+    ``update_address`` empty candidates → plain-text empty state only (#71).
+    With candidates → intro bubble then locked form (no empty picker).
+    """
+    if _is_update_address_form(form_data):
+        candidates = form_data.get("order_candidates") or []
+        errors = form_data.get("errors")
+        # Empty state only on first open (no errors). form_rejected must re-push form.
+        if not candidates and errors in (None, {}, [], ""):
+            await chatwoot.send_bot_message(
+                conversation_id, update_address_empty_state_text()
+            )
+            return
+        if errors in (None, {}, [], ""):
+            await chatwoot.send_bot_message(
+                conversation_id, update_address_form_intro_text()
+            )
     title = mutation_form_title_from_form_data(form_data)
     items = mutation_form_items_from_form_data(form_data)
     await chatwoot.send_interactive_message(

@@ -42,6 +42,7 @@ from ai_service_agent.graph.workflows.copy import (
     confirmation_summary,
     mutation_tool_failed_text,
     operation_cancelled_text,
+    update_address_empty_state_text,
     RUNTIME_ERROR_TEXT,
 )
 from ai_service_agent.graph.workflows.safety import (
@@ -93,7 +94,8 @@ def _resume_field_values(resume) -> dict:
     return {
         key: value
         for key, value in data.items()
-        if key not in ("action", "request_id") and value is not None
+        if key not in ("action", "request_id", "current_address", "abandon_footnote")
+        and value is not None
     }
 
 
@@ -141,6 +143,33 @@ def make_mutation_graph(
                 candidates = repository.list_order_picker_candidates(user_id, pending["tool"])
             except (OrderRepositoryUnavailable, ValueError):
                 candidates = []
+        current_address = ""
+        if pending["tool"] == "update_address" and repository is not None and user_id:
+            try:
+                profile = repository.get_user_profile(user_id) or {}
+                current_address = str(profile.get("address") or "")
+            except OrderRepositoryUnavailable:
+                current_address = ""
+        # #71 empty state: no eligible paid orders → plain text, no empty Form Interrupt.
+        if pending["tool"] == "update_address" and not candidates and errors is None:
+            next_ctx = {
+                key: item
+                for key, item in ctx.items()
+                if key
+                not in (
+                    "form_errors",
+                    "recheck_reason",
+                    "confirm_result",
+                    "form_session_id",
+                    "pending_tool",
+                )
+            }
+            next_ctx["confirm_result"] = "empty"
+            return {
+                "messages": [AIMessage(content=update_address_empty_state_text())],
+                "execution_status": "completed",
+                "context": next_ctx,
+            }
         meta = registry.meta_for(pending["tool"])
         value = {
             "tool": pending["tool"],
@@ -148,6 +177,8 @@ def make_mutation_graph(
             "summary": confirmation_summary(pending["tool"], pending["args"]),
             "form_session_id": form_session_id,
         }
+        if pending["tool"] == "update_address":
+            value["current_address"] = current_address
         if errors:
             value["errors"] = errors
         resume = _lg_types.interrupt(
@@ -228,7 +259,13 @@ def make_mutation_graph(
         return "safety_final" if state.get("context", {}).get("precheck_reason") else "prepare_form"
 
     def _confirm_target(state: dict) -> str:
-        return "recheck" if state.get("context", {}).get("confirm_result") == "confirm" else "finalize_rejected"
+        result = state.get("context", {}).get("confirm_result")
+        if result == "confirm":
+            return "recheck"
+        if result == "empty":
+            # Empty-state message already written; skip cancel copy (#71).
+            return "end"
+        return "finalize_rejected"
 
     def _recheck_target(state: dict) -> str:
         # Closed MutationGraph: same form session re-interrupt (form_rejected), not abort.
@@ -282,7 +319,9 @@ def make_mutation_graph(
     )
     builder.add_edge("prepare_form", "form_interrupt")
     builder.add_conditional_edges(
-        "form_interrupt", _confirm_target, {"recheck": "recheck", "finalize_rejected": "finalize_rejected"}
+        "form_interrupt",
+        _confirm_target,
+        {"recheck": "recheck", "finalize_rejected": "finalize_rejected", "end": END},
     )
     builder.add_conditional_edges(
         "recheck", _recheck_target, {"execute": "execute", "form_interrupt": "form_interrupt"}

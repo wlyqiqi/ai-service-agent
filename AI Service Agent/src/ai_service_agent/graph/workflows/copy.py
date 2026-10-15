@@ -111,6 +111,51 @@ def form_plain_text_refuse_text() -> str:
     )
 
 
+# update_address four-state copy (#71 open-form / empty-state; locked plan §2).
+_UPDATE_ADDRESS_FORM_INTRO = (
+    "好的。请填写下面的表单，提交后我们会按新地址处理（仅限已支付且未发货的订单）。"
+)
+_UPDATE_ADDRESS_FORM_TITLE = "修改收货地址"
+_UPDATE_ADDRESS_FORM_SUBTITLE = "仅已支付且未发货订单可改"
+_UPDATE_ADDRESS_FORM_FOOTNOTE = (
+    "提交后会更新账户收货地址；改聊别的或离开表单，等于放弃本次修改。"
+)
+_UPDATE_ADDRESS_EMPTY_STATE = (
+    "当前没有可改地址的订单（需要已支付且尚未发货）。你可以先查订单，或支付完成后再改。"
+)
+_UPDATE_ADDRESS_PLACEHOLDER = "省市区 + 街道门牌，例如：山东省青岛市..."
+_UPDATE_ADDRESS_CURRENT_EMPTY = "暂无"
+
+
+def update_address_form_intro_text() -> str:
+    return _UPDATE_ADDRESS_FORM_INTRO
+
+
+def update_address_form_title_text() -> str:
+    return _UPDATE_ADDRESS_FORM_TITLE
+
+
+def update_address_form_subtitle_text() -> str:
+    return _UPDATE_ADDRESS_FORM_SUBTITLE
+
+
+def update_address_form_footnote_text() -> str:
+    return _UPDATE_ADDRESS_FORM_FOOTNOTE
+
+
+def update_address_empty_state_text() -> str:
+    return _UPDATE_ADDRESS_EMPTY_STATE
+
+
+def update_address_new_address_placeholder() -> str:
+    return _UPDATE_ADDRESS_PLACEHOLDER
+
+
+def update_address_current_address_display(current: str | None) -> str:
+    text = (current or "").strip()
+    return text if text else _UPDATE_ADDRESS_CURRENT_EMPTY
+
+
 def human_mode_tip_text() -> str:
     """conversation_mode=human 时 AgentBot / Widget 固定 tip（不跑 Graph）。"""
     return "当前由人工客服接待，坐席正在处理您的问题，请稍候。"
