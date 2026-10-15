@@ -28,7 +28,11 @@ from ai_service_agent.harness.approvals import (
     ApprovalService,
 )
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
-from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.harness.agent_bot import (
+    handle_agent_bot_message,
+    parse_approval_form_submission,
+    send_approval_form,
+)
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
@@ -127,8 +131,8 @@ def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
             await chatwoot.set_conversation_status(conv_id, "open")
 
         async def send_approval_pending(value: dict) -> None:
-            content = "高风险操作 · 人工审批中：" + (value.get("summary") or "")
-            await chatwoot.send_bot_message(conv_id, content)
+            # Seat-facing private form (#64); do not push Approve/Reject to Widget.
+            await send_approval_form(chatwoot, conv_id, value)
 
         return cb, send_handoff_notice, send_approval_pending
 
@@ -254,23 +258,29 @@ def create_app(
         if auth_user is not None and record["requester_user_id"] != auth_user:
             raise HTTPException(status_code=403, detail="approval forbidden")
 
-    def _require_seat_actor(request: Request) -> str:
-        """Seat HTTP badge：内部服务口令 + 坐席 actor id（ADR-0002 / approval-spec §3.2.1）。
+    def _authenticate_seat_badge(credential: str, seat_id: str) -> str:
+        """Shared Seat HTTP badge gate（approval-spec §3.2.1）：口令 + 坐席 id，缺一不可。
 
-        客户 JWT 永不能 approve/reject；口令未配置、口令错误或缺坐席 id → 403（fail-closed）。
+        HTTP handlers pass request headers; Chatwoot adapter passes configured secret +
+        ``sender.id`` after webhook verification — same entry, no second authz model.
         """
         if not seat_secret:
             raise HTTPException(status_code=403, detail="seat approval forbidden")
-        credential = request.headers.get(_SEAT_CREDENTIAL_HEADER) or ""
-        seat_id = (request.headers.get(_SEAT_ACTOR_HEADER) or "").strip()
+        actor = (seat_id or "").strip()
         try:
             credential_ok = bool(credential) and hmac.compare_digest(credential, seat_secret)
         except (TypeError, ValueError):
             credential_ok = False
-        if not credential_ok or not seat_id:
+        if not credential_ok or not actor:
             raise HTTPException(status_code=403, detail="seat approval forbidden")
-        return seat_id
+        return actor
 
+    def _require_seat_actor(request: Request) -> str:
+        """Seat HTTP badge from request headers（ADR-0002 / approval-spec §3.2.1）。"""
+        return _authenticate_seat_badge(
+            request.headers.get(_SEAT_CREDENTIAL_HEADER) or "",
+            request.headers.get(_SEAT_ACTOR_HEADER) or "",
+        )
     def _chat_ownership(request: Request, body: ChatBody):
         _ensure_conversation_owner(_auth_user(request), body.session_id)
 
@@ -491,6 +501,12 @@ def create_app(
                             async for out in _emit_handoff(conv_id, ev):
                                 yield out
                             continue
+                        if ev["type"] == "approval_required" and chatwoot is not None:
+                            # Approval Side-Channel: project private seat form (#64).
+                            try:
+                                await send_approval_form(chatwoot, conv_id, ev.get("data") or {})
+                            except Exception:
+                                logger.exception("chatwoot approval form project failed: conv=%s", conv_id)
                         if ev["type"] == "done":
                             mode_now = status.get_mode(conv_id)
                             if mode_now != "ai":
@@ -504,7 +520,6 @@ def create_app(
                             yield ev
                             return
                         yield ev
-
         return _sse_response(ai_stream())
 
     @app.post("/actions/confirm")
@@ -669,24 +684,37 @@ def create_app(
                         await chatwoot.send_bot_message(conv_id, final)
         return {"approval_id": approval_id, "status": decided}
 
+    async def _decide_approval_as_seat(
+        approval_id: str,
+        action: str,
+        seat_id: str,
+        *,
+        note: str | None = None,
+    ) -> dict:
+        """Shared seat decision entry after badge auth（HTTP + Chatwoot adapter）。"""
+        if action == "approve":
+            return await _approval_resume(
+                approval_id, {"action": "approve"}, "approved", decided_by=f"seat:{seat_id}"
+            )
+        resume: dict[str, Any] = {"action": "reject"}
+        if note:
+            resume["note"] = note
+        return await _approval_resume(
+            approval_id, resume, "rejected", decided_by=f"seat:{seat_id}"
+        )
+
     @app.post("/approvals/{approval_id}/approve")
     async def approve_approval(approval_id: str, request: Request):
         seat_id = _require_seat_actor(request)
-        return await _approval_resume(
-            approval_id, {"action": "approve"}, "approved", decided_by=f"seat:{seat_id}"
-        )
+        return await _decide_approval_as_seat(approval_id, "approve", seat_id)
 
     @app.post("/approvals/{approval_id}/reject")
     async def reject_approval(
         approval_id: str, request: Request, body: RejectBody | None = None
     ):
         seat_id = _require_seat_actor(request)
-        resume = {"action": "reject"}
-        if body is not None and body.note:
-            resume["note"] = body.note
-        return await _approval_resume(
-            approval_id, resume, "rejected", decided_by=f"seat:{seat_id}"
-        )
+        note = body.note if body is not None else None
+        return await _decide_approval_as_seat(approval_id, "reject", seat_id, note=note)
 
     @app.get("/approvals/{approval_id}")
     def get_approval(approval_id: str, _: None = Depends(_approval_read_access)):
@@ -712,6 +740,52 @@ def create_app(
             raise HTTPException(status_code=404, detail="handoff not found")
         return rec
 
+    async def _seat_decide_from_chatwoot(data: dict) -> bool:
+        """Verified Chatwoot seat form submit → shared seat badge decision entry (#64).
+
+        After webhook signature verify, adapter presents configured seat credential +
+        ``sender.id`` to ``_authenticate_seat_badge`` / ``_decide_approval_as_seat``.
+        Only private seat-facing forms; approval must belong to the mapped conversation.
+        Returns True when this payload was an approval form submission.
+        """
+        if data.get("event") != "message_updated":
+            return False
+        if data.get("private") is not True:
+            return False
+        if data.get("content_type") not in ("form", "input_select"):
+            return False
+        sender = data.get("sender") or {}
+        if sender.get("type") != "user":
+            return False
+        decision = parse_approval_form_submission(
+            (data.get("content_attributes") or {}).get("submitted_values")
+        )
+        if decision is None:
+            return False
+        conversation = data.get("conversation")
+        if not isinstance(conversation, dict):
+            return False
+        try:
+            cw_id = int(conversation.get("id"))
+        except (TypeError, ValueError):
+            return False
+        mapping_rec = mapping.find(cw_id)
+        if mapping_rec is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        approval_id = decision["approval_id"]
+        rec = approvals.get(approval_id)
+        if rec is None or rec["conversation_id"] != mapping_rec["conversation_id"]:
+            raise HTTPException(status_code=404, detail="approval not found")
+        # Same badge entry as HTTP: credential (configured) + seat actor id (sender.id).
+        seat_id = _authenticate_seat_badge(seat_secret or "", str(sender.get("id") or ""))
+        await _decide_approval_as_seat(
+            approval_id,
+            decision["action"],
+            seat_id,
+            note=decision.get("note"),
+        )
+        return True
+
     @app.post("/webhooks/chatwoot")
     async def chatwoot_webhook(request: Request):
         payload = await request.body()
@@ -723,7 +797,19 @@ def create_app(
             data = json.loads(payload)
         except (UnicodeDecodeError, ValueError):
             return {"ok": True}
-        if not isinstance(data, dict) or data.get("event") != "message_created" or not is_agent_message(data):
+        if not isinstance(data, dict):
+            return {"ok": True}
+
+        # Approval Side-Channel: seat form submit (private) before human-lane message sync.
+        try:
+            if await _seat_decide_from_chatwoot(data):
+                return {"ok": True}
+        except HTTPException as exc:
+            # Authz must fail closed; precheck conflicts → ack (avoid Chatwoot retry storms).
+            if exc.status_code in (404, 409, 410):
+                return {"ok": True}
+            raise
+        if data.get("event") != "message_created" or not is_agent_message(data):
             return {"ok": True}
 
         conversation = data.get("conversation")
@@ -755,7 +841,6 @@ def create_app(
             data["content"],
         )
         return {"ok": True}
-
     _web_dir = Path(__file__).resolve().parents[3] / "web"
     @app.post("/webhooks/agent_bot")
     async def agent_bot_webhook(request: Request):

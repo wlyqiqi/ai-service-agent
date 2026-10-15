@@ -239,9 +239,11 @@ class ChatwootClient:
         content: str,
         content_type: str | None = None,
         content_attributes: dict | None = None,
+        *,
+        private: bool = False,
     ) -> None:
         """以 AgentBot 身份发送 outgoing 消息；无映射时跳过。"""
-        body: dict = {"content": content, "message_type": "outgoing"}
+        body: dict = {"content": content, "message_type": "outgoing", "private": private}
         if content_type is not None:
             body["content_type"] = content_type
         if content_attributes is not None:
@@ -254,10 +256,17 @@ class ChatwootClient:
         content: str,
         content_type: str,
         content_attributes: dict,
+        *,
+        private: bool = False,
     ) -> None:
         """发送 Chatwoot 原生 form/input_select 等交互消息。"""
-        await self.send_bot_message(conversation_id, content, content_type, content_attributes)
-
+        await self.send_bot_message(
+            conversation_id,
+            content,
+            content_type,
+            content_attributes,
+            private=private,
+        )
     async def _post_message(self, conversation_id: str, body: dict) -> None:
         rec = self.mapping.get(conversation_id)
         if rec is None:
