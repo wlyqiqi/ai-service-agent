@@ -164,7 +164,7 @@ docs/                     # project-audit.md + specs/
 
 | 状态机 | 取值 | 存储位置 | 管理位置 | 转移触发 |
 |---|---|---|---|---|
-| `conversation_mode` | `ai` / `human` | 轻量 `conversation_status`（独立表/Redis key，`conversation_id → mode`） | **入口层**（Conversation Runtime），不进 LangGraph | `ai→human`：收 `interrupt(handoff_request)` 后与建 Handoff Record **同一事务**原子切换；`human→ai`：人工 Resolve（前置校验 pending 审批，归宿=继续挂起，见 `handoff-spec.md` §1.3） |
+| `conversation_mode` | `ai` / `human` | 轻量 `conversation_status`（独立表/Redis key，`conversation_id → mode`） | **入口层**（Conversation Runtime），不进 LangGraph | `ai→human`：收 `interrupt(handoff_request)` 后与建 Handoff Record **同一事务**原子切换；`human→ai`：人工 Resolve（前置校验 pending 审批仍有效；**审批归宿**不再是「继续挂起等 AI」——Seat Approver / Approval Side-Channel，见 [ADR-0002](../adr/0002-seat-approver-side-channel.md)；`handoff-spec.md` §1.3 / §5.1 归宿段已 supersede） |
 | `execution_status` | 9 值（`idle…waiting_handoff…failed`） | LangGraph **State 内字段**，随 checkpoint 持久化 | **图内**（Router / 子图 / ResumeHandler 按 turn 阶段置位） | `check_handoff` 抛 `handoff_request` 前置 `waiting_handoff`；Resolve 后 ResumeHandler 恢复转 `running` |
 | 审批状态 | `pending / approved / rejected / expired` | Approval Service（轻量状态存储，同 `conversation_status` 定位） | 状态存储在外置服务（惰性过期）；**业务决策在图内** | 图发起 interrupt；HTTP 端点前置校验后 `Command(resume=...)` 恢复（见 `approval-spec.md` §3） |
 | Handoff 生命周期 | `created → 接管中 → resolved` | `handoff_record` 表 | **外层**创建 / resolve，与 mode 切换同事务 | 子图 `interrupt(handoff_request)` → 外层建 Record + 切 mode + `handoff_created`；`POST /handoffs/{id}/resolve` → `handoff_resolved` |

@@ -23,7 +23,10 @@
 ### 1.3 human → ai（人工 Resolve 触发）
 
 - 转换前**必须校验**该 `conversation_id` 名下是否存在状态为 `pending` 的、与某个 HighRiskGraph / MutationGraph interrupt 关联的审批。
-- **归宿定案（MVP）**：pending 审批**继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复**（决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`；恢复机制见 `graph-spec.md` §3）。人工坐席不代为审批，不额外开发"代为审批"界面与权限体系。
+- **归宿定案（MVP）**：
+  > **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md).** 审批由 Seat Approver 经 Approval Side-Channel 决策；不再要求「坐席不代为审批 / 等 AI 接管后才收尾」。以下为历史 MVP 原文，仅供追溯。
+  >
+  > pending 审批**继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复**（决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`；恢复机制见 `graph-spec.md` §3）。人工坐席不代为审批，不额外开发"代为审批"界面与权限体系。
 - **handoff 中断恢复（P1 定案）**：resolve 回切 `conversation_mode=ai` 后，由服务端在 resolve 动作本身触发时**主动完成被 handoff 中断的图执行**（`graph.ainvoke(Command(resume={"action": "handoff_resumed"}, update={"messages": <水合历史>}))`），不依赖等待用户下一条消息；因此用户 resolve 后发送的第一条消息直接进入正常 Router 流程并得到回复。若主动 resume 异常未完成，入口层 resume 调度（见 `graph-spec.md` §3）在下一用户消息时兜底恢复。决策留痕见 `docs/decisions/2026-09-14-checkpointer-resume-handoff.md`。
 - 人工接管期间审批到期仍按 `approval-spec.md` §4 惰性过期处理，与本方案兼容。
 
@@ -59,7 +62,10 @@
 ### 5.1 已定案（MVP）
 
 - **ID 映射**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 是 LangGraph checkpoint 内部标识，与 `conversation_id` 建立**一对一映射但不是同一个字段**。会话创建时生成 `thread_id`（如 uuid）并持久化映射；同一业务会话需要重置图执行状态时（如严重异常后清空 graph 重来），可更换 `thread_id` 而 `conversation_id` 不变。决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`。
-- **pending 审批归宿（human → ai 切换时）**：继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复（见 §1.3 / `graph-spec.md` §3）。
+- **pending 审批归宿（human → ai 切换时）**：
+  > **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md)**（与 §1.3 归宿段同口径）。以下为历史 MVP 原文，仅供追溯。
+  >
+  > 继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复（见 §1.3 / `graph-spec.md` §3）。
 
 ### 5.2 已定案（消息真相源，2026-09-14）
 

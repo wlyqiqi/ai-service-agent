@@ -28,6 +28,7 @@
 - **D4（配置改造）**：`config.py` 用 `handoff_phrases`（精确短语）+ `handoff_negative_suffix`（话题性后缀）**替换** `handoff_keywords`（裸 `"人工"`/`"人工客服"` 子串会误伤「人工呼吸」「人工客服培训」）。同步改 `fallback.py` / `evals/runner.py` / `tests/test_config.py` / `tests/test_evals.py` 引用。
 - **D5（C3 补：入口层命中先落 user 消息）**：入口层命中后先 `messages_store.append(conv_id, "user", body.message)`（Message Store 唯一真相源），再走 `request_handoff` / `_emit_handoff`，保证 E2E 断言的消息顺序 `["我要转人工", HANDOFF_NOTICE, ...]` 不变。
 - **D6（C4 补：pending interrupt 优先转人工）**：入口层检测在 `ai_stream` 的 `aget_state`/resume 逻辑之前，因此存在挂起审批/确认中断时用户显式转人工 → 直接转人工，pending 中断继续挂起（handoff-spec §1.3 定案，AI 重新接管后自然恢复）。
+  > **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md)**（「继续挂起 / 等 AI 接管」归宿段）；D6 的入口层优先转人工时序本身未废止。
 - **D7（eval 适配）**：`handoff.jsonl` 显式请求（CTRL-0061/0062）在 handoff/routing 维度不再 skip；动态信号 9 条（CTRL-0063~0070）保持 `handoff_rule_pending` skip（D13 不变）。`test_cli_runs_on_real_control_dataset` 的 routing 计数随之更新：pass 91→92，skip `{"handoff_rule_pending": 9}`→`{"handoff_rule_pending": 8}`。
 
 ## File Structure

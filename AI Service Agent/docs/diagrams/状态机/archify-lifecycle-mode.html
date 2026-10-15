@@ -5416,7 +5416,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <li>&bull; POST /sessions 时显式写入 ai</li>
           <li>&bull; ai → human 必须与创建 Handoff Record 处于同一数据库事务</li>
           <li>&bull; human → ai 由人工 Resolve 触发</li>
-          <li>&bull; pending 审批继续挂起，AI 重新接管后自然恢复</li>
+          <li>&bull; pending 审批归宿见 ADR-0002（旧「继续挂起」已废止）；Resolve 前仍校验 pending</li>
         </ul>
       </div>
     </div>
