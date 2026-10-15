@@ -26,12 +26,22 @@ class Settings(BaseSettings):
     jev_node_timeout_seconds: float = Field(
         default=3.0, validation_alias="JEV_NODE_TIMEOUT_SECONDS"
     )
-    # 真实运行走 ARK（OpenAI 兼容）：字段与 .env 的 ARK_* 对齐
+    # ARK_*：历史默认 / 可选回落；Router / LLM 优先各自 ROUTER_* / LLM_*
     model_name: str = Field(default="deepseek-v4-flash", validation_alias="ARK_MODEL")
     model_endpoint: str | None = Field(default=None, validation_alias="ARK_BASE_URL")
     model_api_key: str | None = Field(default=None, validation_alias="ARK_API_KEY")
-    # Router 专用模型（替代不可用的 JEV）；空则与 ARK_MODEL 共用同一模型
+    # Router 主模型（空则回落 ARK_MODEL）；凭证 ROUTER_* → LLM_* → ARK_*
     router_model_name: str | None = Field(default=None, validation_alias="ROUTER_MODEL")
+    router_model_endpoint: str | None = Field(default=None, validation_alias="ROUTER_BASE_URL")
+    router_model_api_key: str | None = Field(default=None, validation_alias="ROUTER_API_KEY")
+    # Router 主模型失败时的兜底（同端点凭证）；空则不启用二段调用
+    router_fallback_model_name: str | None = Field(
+        default=None, validation_alias="ROUTER_FALLBACK_MODEL"
+    )
+    # 非 Router LLM 节点（read / select / fallback）：默认可走 SiliconFlow；空则回落 ARK_*
+    llm_model_name: str | None = Field(default=None, validation_alias="LLM_MODEL")
+    llm_model_endpoint: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
+    llm_model_api_key: str | None = Field(default=None, validation_alias="LLM_API_KEY")
     router_conf_threshold: float = 0.6
     router_node_timeout_seconds: float = Field(
         default=6.0, validation_alias="ROUTER_NODE_TIMEOUT_SECONDS"
@@ -161,13 +171,15 @@ def _openai_compat_model(
     temperature: float,
     timeout: float,
     max_tokens: int,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> ChatOpenAI:
     """OpenAI 兼容端点（SiliconFlow / ARK）；关闭 thinking；SDK 不叠乘图级 Retry。"""
     settings = get_settings()
     return ChatOpenAI(
         model=model_name,
-        api_key=settings.model_api_key,
-        base_url=settings.model_endpoint,
+        api_key=api_key if api_key is not None else settings.model_api_key,
+        base_url=base_url if base_url is not None else settings.model_endpoint,
         temperature=temperature,
         timeout=timeout,
         max_tokens=max_tokens,
@@ -179,19 +191,48 @@ def _openai_compat_model(
     )
 
 
+def _llm_profile() -> tuple[str, str | None, str | None]:
+    """非 Router LLM 节点凭证：LLM_* 优先，否则回落 ARK_*。"""
+    settings = get_settings()
+    name = (settings.llm_model_name or "").strip() or settings.model_name
+    endpoint = (settings.llm_model_endpoint or "").strip() or settings.model_endpoint
+    api_key = (settings.llm_model_api_key or "").strip() or settings.model_api_key
+    return name, endpoint, api_key
+
+
+def _router_profile() -> tuple[str, str | None, str | None]:
+    """Router 主模型凭证：ROUTER_* → LLM_* → ARK_*。"""
+    settings = get_settings()
+    name = (settings.router_model_name or "").strip() or settings.model_name
+    endpoint = (
+        (settings.router_model_endpoint or "").strip()
+        or (settings.llm_model_endpoint or "").strip()
+        or settings.model_endpoint
+    )
+    api_key = (
+        (settings.router_model_api_key or "").strip()
+        or (settings.llm_model_api_key or "").strip()
+        or settings.model_api_key
+    )
+    return name, endpoint, api_key
+
+
 def make_read_model() -> ChatOpenAI:
-    """ReadGraph 生产模型（ARK_MODEL）。"""
+    """ReadGraph 生产模型（LLM_MODEL / SiliconFlow，或回落 ARK_MODEL）。"""
     settings = get_settings()
     _assert_model_timeout_under_node(
         settings.llm_model_timeout_seconds,
         settings.llm_node_timeout_seconds,
         "read",
     )
+    name, endpoint, api_key = _llm_profile()
     return _openai_compat_model(
-        settings.model_name,
+        name,
         temperature=settings.read_temperature,
         timeout=settings.llm_model_timeout_seconds,
         max_tokens=settings.read_max_tokens,
+        api_key=api_key,
+        base_url=endpoint,
     )
 
 
@@ -201,19 +242,45 @@ def make_model() -> ChatOpenAI:
 
 
 def make_router_model() -> ChatOpenAI:
-    """Router 专用模型：ROUTER_MODEL 优先，否则回落 ARK_MODEL。"""
+    """Router 主模型（ROUTER_MODEL，凭证见 _router_profile）。"""
     settings = get_settings()
     _assert_model_timeout_under_node(
         settings.router_model_timeout_seconds,
         settings.router_node_timeout_seconds,
         "router",
     )
-    name = (settings.router_model_name or "").strip() or settings.model_name
+    name, endpoint, api_key = _router_profile()
     return _openai_compat_model(
         name,
         temperature=settings.router_temperature,
         timeout=settings.router_model_timeout_seconds,
         max_tokens=settings.router_max_tokens,
+        api_key=api_key,
+        base_url=endpoint,
+    )
+
+
+def make_router_fallback_model() -> ChatOpenAI | None:
+    """Router 主模型失败时的兜底；ROUTER_FALLBACK_MODEL 未设则返回 None。"""
+    settings = get_settings()
+    name = (settings.router_fallback_model_name or "").strip()
+    if not name:
+        return None
+    primary_name, endpoint, api_key = _router_profile()
+    if name == primary_name:
+        return None
+    _assert_model_timeout_under_node(
+        settings.router_model_timeout_seconds,
+        settings.router_node_timeout_seconds,
+        "router_fallback",
+    )
+    return _openai_compat_model(
+        name,
+        temperature=settings.router_temperature,
+        timeout=settings.router_model_timeout_seconds,
+        max_tokens=settings.router_max_tokens,
+        api_key=api_key,
+        base_url=endpoint,
     )
 
 
@@ -225,11 +292,14 @@ def make_select_model() -> ChatOpenAI:
         settings.llm_node_timeout_seconds,
         "select",
     )
+    name, endpoint, api_key = _llm_profile()
     return _openai_compat_model(
-        settings.model_name,
+        name,
         temperature=settings.select_temperature,
         timeout=settings.llm_model_timeout_seconds,
         max_tokens=settings.select_max_tokens,
+        api_key=api_key,
+        base_url=endpoint,
     )
 
 
@@ -241,9 +311,12 @@ def make_fallback_model() -> ChatOpenAI:
         settings.llm_node_timeout_seconds,
         "fallback",
     )
+    name, endpoint, api_key = _llm_profile()
     return _openai_compat_model(
-        settings.model_name,
+        name,
         temperature=settings.fallback_temperature,
         timeout=settings.llm_model_timeout_seconds,
         max_tokens=settings.fallback_max_tokens,
+        api_key=api_key,
+        base_url=endpoint,
     )

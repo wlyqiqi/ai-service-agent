@@ -184,13 +184,27 @@ def _classify_route_intent_with_jev(client, state: dict, settings) -> dict | Non
 
     return _route_intent_result(choice, confidence, "jev", False)
 
-def make_deepseek_router(model) -> Callable[[dict], Awaitable[dict]]:
-    """DeepSeek fallback; always outputs route_intent (same schema as JEV).
+def _backend_label(model) -> str:
+    name = str(getattr(model, "model_name", None) or getattr(model, "model", "") or "")
+    lower = name.lower()
+    if "qwen" in lower:
+        return "qwen"
+    if "deepseek" in lower:
+        return "deepseek"
+    return "router"
 
-    Real model: uses with_structured_output (function_calling) for native JSON
-    schema enforcement. Fake model: uses create_agent + manual JSON parsing.
-    Both paths pass only the current message + last 2 turns (aligned with
-    JEV's _jev_state window).
+
+def _finalize_route_intent(intent: str, confidence: float, backend: str, fallback: bool) -> dict:
+    if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
+        intent = "unknown"
+    return _route_intent_result(intent, confidence, backend, fallback)
+
+
+def make_deepseek_router(model, fallback_model=None) -> Callable[[dict], Awaitable[dict]]:
+    """LLM Route Intent 节点（JEV 关闭时的主路由；JEV 失败时的兜底节点同此）。
+
+    Real model: with_structured_output(function_calling)。主模型失败时可再试
+    fallback_model（如 Qwen → DeepSeek-V4-Flash）。Fake：create_agent + JSON 解析。
     """
     if isinstance(model, FakeMessagesListChatModel):
         agent = create_agent(_router_model(model), tools=[], system_prompt=ROUTE_INTENT_SYSTEM)
@@ -202,27 +216,43 @@ def make_deepseek_router(model) -> Callable[[dict], Awaitable[dict]]:
             except (json.JSONDecodeError, TypeError, ValueError):
                 return _route_intent_result("unknown", 0.0, "deepseek", True)
             parsed = RouteIntentSchema.model_validate(payload)
-            intent = parsed.route_intent
-            confidence = float(parsed.confidence)
-            if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
-                intent = "unknown"
-            return _route_intent_result(intent, confidence, "deepseek", True)
+            return _finalize_route_intent(
+                parsed.route_intent, float(parsed.confidence), "deepseek", True
+            )
     else:
-        structured_model = model.with_structured_output(RouteIntentSchema, method="function_calling")
+        primary = model.with_structured_output(RouteIntentSchema, method="function_calling")
+        secondary = None
+        if fallback_model is not None and not isinstance(fallback_model, FakeMessagesListChatModel):
+            secondary = fallback_model.with_structured_output(
+                RouteIntentSchema, method="function_calling"
+            )
+        primary_backend = _backend_label(model)
+        fallback_backend = _backend_label(fallback_model) if fallback_model is not None else "deepseek"
 
         async def deepseek_route(state: dict, config: RunnableConfig | None = None) -> dict:
+            messages = [SystemMessage(content=ROUTE_INTENT_SYSTEM), *build_router_messages(state)]
+            parsed = None
+            used_fallback = False
+            backend = primary_backend
             try:
-                messages = [SystemMessage(content=ROUTE_INTENT_SYSTEM), *build_router_messages(state)]
-                parsed = await structured_model.ainvoke(messages, config=config)
+                parsed = await primary.ainvoke(messages, config=config)
             except Exception:
-                return _route_intent_result("unknown", 0.0, "deepseek", True)
+                parsed = None
+            if parsed is None and secondary is not None:
+                used_fallback = True
+                backend = fallback_backend
+                try:
+                    parsed = await secondary.ainvoke(messages, config=config)
+                except Exception:
+                    parsed = None
             if parsed is None:
-                return _route_intent_result("unknown", 0.0, "deepseek", True)
-            intent = parsed.route_intent
-            confidence = float(parsed.confidence)
-            if intent not in ROUTE_POLICY or not route_intent_is_confident(intent, confidence):
-                intent = "unknown"
-            return _route_intent_result(intent, confidence, "deepseek", True)
+                return _route_intent_result("unknown", 0.0, backend, True)
+            return _finalize_route_intent(
+                parsed.route_intent,
+                float(parsed.confidence),
+                backend,
+                used_fallback or backend == "deepseek",
+            )
 
     return deepseek_route
 

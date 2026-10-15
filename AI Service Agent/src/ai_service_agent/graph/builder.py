@@ -7,7 +7,7 @@ from langgraph.errors import NodeError, NodeTimeoutError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from ai_service_agent.config import get_settings, make_router_model
+from ai_service_agent.config import get_settings, make_router_fallback_model, make_router_model
 from ai_service_agent.domain.orders import OrderRepository, SQLiteOrderRepository
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.messages import message_text
@@ -114,6 +114,7 @@ def build_graph(
     tool_hooks=None,
     order_repository: OrderRepository | None = None,
     router_model=None,
+    router_fallback_model=None,
     select_model=None,
     fallback_model=None,
 ):
@@ -121,7 +122,8 @@ def build_graph(
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
     model：ReadGraph 模型（向后兼容测试单一 Fake）。
-    router_model / select_model / fallback_model：缺省回落为 model（Fake 单测零改动）。
+    router_model / router_fallback_model / select_model / fallback_model：缺省回落为 model
+    （Fake 单测零改动；router_fallback_model 缺省为 None，不启用二段 Router 调用）。
     """
     repository = order_repository or SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
     reg = registry if registry is not None else make_tool_registry(repository)
@@ -169,6 +171,13 @@ def build_graph(
             router_model = make_router_model()
         else:
             router_model = model
+    if (
+        router_fallback_model is None
+        and not settings.fake_model
+        and not isinstance(model, FakeMessagesListChatModel)
+        and (settings.router_fallback_model_name or "").strip()
+    ):
+        router_fallback_model = make_router_fallback_model()
     if use_jev:
         builder.add_node(
             "router_jev",
@@ -178,7 +187,7 @@ def build_graph(
         )
     builder.add_node(
         "router_deepseek",
-        make_deepseek_router(router_model),
+        make_deepseek_router(router_model, fallback_model=router_fallback_model),
         error_handler=root_error_handler,
         retry_policy=RETRY_DEEPSEEK_ROUTER,
         timeout=make_timeout_policy(settings.router_node_timeout_seconds),

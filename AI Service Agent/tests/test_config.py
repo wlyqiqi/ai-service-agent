@@ -22,13 +22,19 @@ def test_model_profile_factories(monkeypatch):
 
     settings = Settings(
         _env_file=None,
-        model_api_key="sk-test",
-        model_endpoint="https://api.siliconflow.cn/v1",
-        model_name="deepseek-ai/DeepSeek-V4-Flash",
+        model_api_key="ark-test",
+        model_endpoint="https://ark.cn-beijing.volces.com/api/v3",
+        model_name="deepseek-v4-flash",
+        router_model_name="Qwen/Qwen3.6-35B-A3B",
+        router_fallback_model_name="deepseek-ai/DeepSeek-V4-Flash",
+        llm_model_api_key="sk-test",
+        llm_model_endpoint="https://api.siliconflow.cn/v1",
+        llm_model_name="deepseek-ai/DeepSeek-V4-Flash",
     )
     monkeypatch.setattr(config_mod, "get_settings", lambda: settings)
 
     router = config_mod.make_router_model()
+    router_fb = config_mod.make_router_fallback_model()
     select = config_mod.make_select_model()
     read = config_mod.make_read_model()
     fallback = config_mod.make_fallback_model()
@@ -37,6 +43,11 @@ def test_model_profile_factories(monkeypatch):
     assert router.max_tokens == 256
     assert router.max_retries == 0
     assert router.extra_body["enable_thinking"] is False
+    assert str(router.openai_api_base).startswith("https://api.siliconflow.cn")
+    assert router.model_name == "Qwen/Qwen3.6-35B-A3B"
+    assert router_fb is not None
+    assert router_fb.model_name == "deepseek-ai/DeepSeek-V4-Flash"
+    assert str(router_fb.openai_api_base).startswith("https://api.siliconflow.cn")
 
     assert select.temperature == 0.0
     assert select.max_tokens == 512
@@ -44,6 +55,10 @@ def test_model_profile_factories(monkeypatch):
     assert read.max_tokens == 1024
     assert fallback.temperature == 0.3
     assert fallback.max_tokens == 512
+    assert str(read.openai_api_base).startswith("https://api.siliconflow.cn")
+    assert read.model_name == "deepseek-ai/DeepSeek-V4-Flash"
+    assert select.model_name == read.model_name
+    assert fallback.model_name == read.model_name
     assert config_mod.make_model().max_tokens == read.max_tokens
 
 
