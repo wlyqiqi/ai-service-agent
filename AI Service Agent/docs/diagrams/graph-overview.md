@@ -22,12 +22,12 @@ flowchart TD
     F --> PRE{"发送前重校验 mode == ai ?<br/>读实时值，非生成时刻值"}
     PRE -- "是(ai)" --> SEND["通过 SSE/WS 发送"]
     PRE -- "否" --> DROP["丢弃（防双重回复）"]
-    H --> RESOLVE["人工 Resolve<br/>先查 pending 审批归宿（Open）→ mode=ai"]
+    H --> RESOLVE["人工 Resolve<br/>先查 pending 审批（校验）→ mode=ai<br/>审批旁路见 ADR-0002"]
     RESOLVE --> A
 ```
 
 ## 关键注记
 
 - Guard 节点 MVP 阶段推迟生效，不阻断任何请求，但保留占位不删除。
-- `conversation_id=session_id`、`thread_id` 独立一对一映射与 pending 审批归宿（继续挂起）均已定案（见 `docs/specs/handoff-spec.md` §5.1）；`state.messages` 唯一真相源仍待裁决。
+- `conversation_id=session_id`、`thread_id` 独立一对一映射已定案（见 `docs/specs/handoff-spec.md` §5.1）。pending 审批「继续挂起等 AI」归宿 **已废止**（[ADR-0002](../adr/0002-seat-approver-side-channel.md)；`handoff-spec` §1.3 / §5.1 归宿段已 supersede）。`state.messages` 唯一真相源见 Message Store 定案。
 - 发送前重校验读取实时 mode 值，非生成时刻值。

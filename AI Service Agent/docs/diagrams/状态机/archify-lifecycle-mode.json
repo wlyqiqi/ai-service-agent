@@ -21,7 +21,7 @@
     { "id": "t-to-ai", "from": "mode-human", "to": "mode-ai", "label": "Resolve", "variant": "emphasis", "route": "bottom-channel" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "关键规则", "items": ["POST /sessions 时显式写入 ai", "ai → human 必须与创建 Handoff Record 处于同一数据库事务", "human → ai 由人工 Resolve 触发", "pending 审批继续挂起，AI 重新接管后自然恢复"] }
+    { "dot": "cyan", "title": "关键规则", "items": ["POST /sessions 时显式写入 ai", "ai → human 必须与创建 Handoff Record 处于同一数据库事务", "human → ai 由人工 Resolve 触发", "pending 审批归宿见 ADR-0002（旧「继续挂起」已废止）；Resolve 前仍校验 pending"] }
   ]
 }
 

@@ -2,6 +2,8 @@
 
 > 首轮任务第二步验收文档：用自己的话完整复述 5 项内容，作为理解正确性的验收依据。
 > 权威定义：`docs/specs/handoff-spec.md`；顶层图：`docs/diagrams/handoff-overview.svg`。
+>
+> **Superseded in part by [ADR-0002](../adr/0002-seat-approver-side-channel.md):** 下文凡「pending 审批归宿 = 继续挂起 / 坐席不代为审批 / 等 AI 重新接管后自然恢复」均为 2026-09-14 当日留痕，政策以 ADR-0002 为准。Resolve 前校验 pending 审批的要求本身未废止。
 
 ## 1. conversation_mode 完整生命周期
 

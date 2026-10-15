@@ -83,7 +83,7 @@ sequenceDiagram
     C-->>H: 通知坐席（写 Message Store）
     H->>H: 人工与用户对话
     H->>C: Resolve
-    C->>C: 校验 pending 审批（继续挂起）→ mode=ai
+    C->>C: 校验 pending 审批 → mode=ai（审批旁路 ADR-0002）
     C-->>U: 事件: handoff_resolved
     U->>C: 下一条消息
     C->>C: mode==ai → 进入图
@@ -94,4 +94,4 @@ sequenceDiagram
 
 - 子图不自行创建 Handoff Record / 不自行切 `conversation_mode`，统一 `interrupt(handoff_request)`，由外层接管（`handoff-spec.md` §3）。
 - 发送 AI 回复前实时校验 `conversation_mode==ai`，否则丢弃（`handoff-spec.md` §1.4）。
-- human → ai 切换前必须校验该会话是否存在 pending 审批；归宿定案为继续挂起，AI 重新接管后自然恢复（`handoff-spec.md` §1.3）。
+- human → ai 切换前必须校验该会话是否存在 pending 审批（校验条仍有效）。旧「归宿=继续挂起、等 AI 接管后自然恢复」**已废止**——Seat Approver / Approval Side-Channel，见 [ADR-0002](../adr/0002-seat-approver-side-channel.md)（`handoff-spec.md` §1.3 / §5.1 归宿段已 supersede）。

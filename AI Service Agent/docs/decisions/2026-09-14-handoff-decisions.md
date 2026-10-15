@@ -11,11 +11,13 @@
 
 ## 2. human → ai 切换时 pending 审批归宿
 
-- **决定（MVP）**：**继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复**。
+> **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md).** Seat Approver 经 Approval Side-Channel 决策；不再要求「坐席不代为审批 / 等 AI 接管后才收尾」。以下为历史 MVP 原文，仅供追溯。
+
+- **决定（MVP，已废止）**：**继续挂起，等 AI 重新接管后经图内 ResumeHandler / ACTIVE 判断自然恢复**。
 - **理由**：实现成本最低（无需给坐席开发"代为审批"界面与权限体系）；业务上合理——审批应由触发它的原流程收尾，人工客服只处理沟通，不代为做业务决策。
 - **兼容性**：人工接管期间审批到期仍按 `approval-spec.md` §4 惰性过期处理。
 
-> 修订（2026-09-14，P1）：恢复机制已由 `docs/decisions/2026-09-14-checkpointer-resume-handoff.md` 定案——入口层 resume 调度 + 图内被中断节点续接（原"图内 ResumeHandler / ACTIVE"表述被取代）；pending 审批归宿语义不变。
+> 修订（2026-09-14，P1）：恢复机制已由 `docs/decisions/2026-09-14-checkpointer-resume-handoff.md` 定案——入口层 resume 调度 + 图内被中断节点续接（原"图内 ResumeHandler / ACTIVE"表述被取代）；pending 审批归宿语义当时不变。
 
 ## 未决（保留）
 
