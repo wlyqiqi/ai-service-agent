@@ -161,12 +161,14 @@ def test_repeated_resolve_does_not_sync_chatwoot_again(tmp_path):
     handoff_id = _request_then_takeover(client, session_id)
 
     first = client.post(f"/handoffs/{handoff_id}/resolve")
-    assert first.status_code == 200 and first.json() == {"handoff_id": handoff_id, "mode": "ai"}
+    assert first.status_code == 200
+    assert first.json()["handoff_id"] == handoff_id and first.json()["mode"] == "ai"
+    assert first.json()["event"]["type"] == "handoff_resolved"
     sync_calls = sum(method == "GET" and "/conversations/111/messages" in url for method, url, _ in calls)
     assert sync_calls == 1
 
     second = client.post(f"/handoffs/{handoff_id}/resolve")
-    assert second.status_code == 200 and second.json() == first.json()
+    assert second.status_code == 200 and second.json()["mode"] == "ai"
     assert sum(method == "GET" and "/conversations/111/messages" in url for method, url, _ in calls) == sync_calls
 
 
@@ -188,7 +190,7 @@ def test_resolve_survives_chatwoot_sync_failure(tmp_path):
 
     response = client.post(f"/handoffs/{handoff_id}/resolve")
     assert response.status_code == 200
-    assert response.json() == {"handoff_id": handoff_id, "mode": "ai"}
+    assert response.json()["handoff_id"] == handoff_id and response.json()["mode"] == "ai"
     assert _mode(db, session_id) == "ai"
     assert ("list", session_id) in calls
 

@@ -112,11 +112,19 @@ def test_entry_cancel_clears_hang(tmp_path):
 
 
 def test_re_request_while_awaiting_idempotent(tmp_path):
-    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
+    from ai_service_agent.graph.workflows.copy import handoff_request_idempotent_tip_text
+
+    cw = _fake_chatwoot()
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot=cw))
     sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
-    for msg in ("我要转人工", "再转一次人工"):
-        with client.stream("POST", "/chat", json={"session_id": sid, "message": msg}) as resp:
-            "".join(resp.iter_text())
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
+        "".join(resp.iter_text())
+    assert cw.prompt_handoff_request.await_count == 1
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "再转一次人工"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+    assert cw.prompt_handoff_request.await_count == 1  # no second strong prompt
+    tip = handoff_request_idempotent_tip_text()
+    assert any(e.get("data", {}).get("text") == tip or e.get("data", {}).get("final") == tip for e in events)
     conn = sqlite3.connect(str(tmp_path / "s.db"))
     n = conn.execute(
         "SELECT COUNT(*) FROM handoff_record WHERE conversation_id=? AND status=?",
@@ -151,6 +159,9 @@ def test_webhook_open_seat_takeover(tmp_path):
         headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
     )
     assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["event"]["type"] == "handoff_created"
     assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
     rows = MessageStore(sqlite3.connect(db)).list(sid)
     assert any(m["content"] == handoff_joined_notice_text() for m in rows)
@@ -194,11 +205,14 @@ def test_webhook_resolved_returns_ai_via_toggle_status(tmp_path):
     )
     cw.set_conversation_status.reset_mock()
     raw_res = json.dumps({"event": "conversation_status_changed", "id": 555, "status": "resolved"}).encode()
-    assert client.post(
+    r = client.post(
         "/webhooks/chatwoot",
         content=raw_res,
         headers={"X-Chatwoot-Signature": _sig(raw_res), "X-Chatwoot-Timestamp": TS},
-    ).status_code == 200
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["event"]["type"] == "handoff_resolved"
     assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
     cw.set_conversation_status.assert_awaited_with(sid, "pending")
 
@@ -232,6 +246,49 @@ def test_http_resolve_shares_toggle_pending(tmp_path):
     assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
     assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "ai"
     cw.set_conversation_status.assert_awaited_with(sid, "pending")
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_entry_request_hangs(tmp_path):
+    """Seam AgentBot: explicit request hang without Graph / without human mode."""
+    from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+    from ai_service_agent.harness.messages import MessageStore
+
+    db = str(tmp_path / "ab.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    handoff = HandoffService(conn, status)
+    mapping = ChatwootMappingStore(conn)
+    store = MessageStore(conn)
+    session = status.create_session("u-ab")
+    mapping.put(session["conversation_id"], 42, contact_id=1)
+    cw = AsyncMock()
+    cw.send_bot_message = AsyncMock()
+    cw.ensure_conversation = AsyncMock(return_value=42)
+    cw.prompt_handoff_request = AsyncMock()
+
+    payload = {
+        "event": "message_created",
+        "id": "9001",
+        "content": "我要转人工",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 42},
+        "contact": {"id": 1, "identifier": "u-ab", "name": "ab"},
+    }
+    result = await handle_agent_bot_message(
+        payload,
+        cw,
+        status=status,
+        messages_store=store,
+        mapping=mapping,
+        handoff=handoff,
+    )
+    assert result is not None
+    assert status.get_mode(session["conversation_id"]) == "ai"
+    assert handoff.get_awaiting(session["conversation_id"]) is not None
+    cw.prompt_handoff_request.assert_awaited()
+    conn.close()
 
 
 @pytest.mark.asyncio

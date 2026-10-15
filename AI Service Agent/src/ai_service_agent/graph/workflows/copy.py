@@ -216,6 +216,11 @@ def handoff_cancel_confirm_text() -> str:
     return "好的，已取消转人工申请。有需要随时告诉我。"
 
 
+def handoff_request_idempotent_tip_text() -> str:
+    """挂起期间重复转人工：仅短 tip，不再发强提示。"""
+    return "已收到您的转人工申请，请稍候，人工客服接入前我仍会继续为您服务。"
+
+
 def handoff_request_private_note_text(summary: str = "") -> str:
     """Chatwoot 强提示 private note 正文。"""
     base = "【转人工申请】客户请求人工客服接入（Conversation Mode 仍为 AI，待 Take over）。"
