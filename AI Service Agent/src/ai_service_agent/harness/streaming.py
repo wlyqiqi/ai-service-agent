@@ -56,17 +56,22 @@ async def event_stream(
     （嵌套子图消息以聚合形式出现在顶层 read_graph/... 节点 update，避免与子图 namespace
     重复——实测同一 tool_call/ToolMessage 会在 3 层 namespace 各出现一次）。
     中断以 updates 顶层 {"__interrupt__": (Interrupt,)} 呈现，由 on_interrupt 接管。
-    resume_payload 非 None 时以 Command(resume=..., update={messages}) 恢复挂起中断
-    （入口层 resume 调度，graph-spec.md §3）；done.final 只取本轮新增（token 流 / diff），interrupt 或纯历史轮为 None，
+    resume_payload 非 None 时以 Command(resume=...) 恢复挂起中断（入口层 resume 调度，
+    graph-spec.md §3）。若同时传入 messages，则 ``update={messages}``（Confirm / 显式 Cancel）；
+    messages 为空时仅 resume（Implicit Cancel 清挂起，不把新用户消息塞进 cancel 步）。
+    done.final 只取本轮新增（token 流 / diff），interrupt 或纯历史轮为 None，
     不回落历史文本（避免重复落库）。
     done 的 message_id = 本 turn 最后一条 assistant 消息的 langchain id，
     供 Message Store 对账持久化（handoff-spec.md §5.2）。
     context：LangGraph Runtime 依赖（GraphContext）；透传 astream(..., context=...)。
     """
     # 非 resume 首轮：messages 之外按需补业务初始 state（如 user_id，供安全预检消费）；
-    # resume 轮 user_id 已随 checkpoint 恢复，仅注入 messages。
+    # resume 轮 user_id 已随 checkpoint 恢复；有 messages 时一并注入。
     if resume_payload:
-        invocation = Command(resume=resume_payload, update={"messages": messages})
+        if messages:
+            invocation = Command(resume=resume_payload, update={"messages": messages})
+        else:
+            invocation = Command(resume=resume_payload)
     else:
         invocation = {"messages": messages}
         if extra_state:
