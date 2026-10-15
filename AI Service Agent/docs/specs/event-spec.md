@@ -45,17 +45,19 @@
 
 ## 2.2 Form Interrupt → `form_required` / `form_rejected` 映射
 
-> 术语：`CONTEXT.md`（Form Interrupt / Form Resume / Mutation Form / Order Picker）。  
+> 术语：`CONTEXT.md`（Form Interrupt / Form Resume / Mutation Form / Order Picker / Form-Only Write / Form Cancel / Implicit Cancel）。  
 > 运行时：Form Interrupt = `interrupt(value=..., response_schema=...)`（需 `langgraph>=1.2.12`）；Form Resume = `Command(resume=...)`。  
-> **本协议事件是投影，不是第二套挂起源**：是否在等表单以 checkpointer 的 pending interrupt 为准。
+> **本协议事件是投影，不是第二套挂起源**：是否在等表单以 checkpointer 的 pending interrupt 为准。  
+> Transport（`/chat`、AgentBot）在挂起时可先 cancel resume 再新 turn（Implicit Cancel）；见 §2.2.1 / §2.2.3。
 
 ### 2.2.1 何时发哪种事件
 
 | 图内事实 | SSE `type` | 说明 |
 |---|---|---|
 | 节点首次（或新开表单会话）Form Interrupt，`value` 无 field/business errors（或 `errors` 空） | `form_required` | 客户端据此渲染 Mutation Form + Order Picker |
-| 同一表单会话上校验失败或业务预检失败后**再次** Form Interrupt，`value` 携带 `errors` | `form_rejected` | 原地刷新同一表单；不得当作新会话清空草稿 |
-| 用户 Confirm / Cancel 走 Form Resume | （无单独 `form_*` 成功事件） | Confirm 成功后续走既有 `tool_call` / `tool_result` / `done`；Cancel 不写库并以 `done`（或约定 `error`）收尾 |
+| 同一表单会话上校验失败或业务预检失败后**再次** Form Interrupt，`value` 携带 `errors` | `form_rejected` | 原地刷新同一表单；不得当作新会话清空草稿；**不得**当作 Implicit Cancel |
+| 用户 Confirm / 显式 Cancel 走 Form Resume | （无单独 `form_*` 成功事件） | Confirm 成功后续走既有 `tool_call` / `tool_result` / `done`；Cancel 不写库并以 `done`（或约定 `error`）收尾。Adapter（如 AgentBot）可在 Confirm 成功后额外投影成功小卡（`cards`），与 Graph `done` 并存；不以新的 SSE `form_*` 类型表达成功 |
+| Form Interrupt 挂起且入站**不是**合法 Form 提交（Implicit Cancel，见 `CONTEXT.md`） | （无 `form_*`；随后为新 turn 事件） | Transport 可先对同一 `thread_id` 执行 `Command(resume={"action":"cancel"})` 清挂起（不写库、可无用户可见 cancel tip），再把该消息当**普通新 turn** 跑图；新 turn 按路由正常发事件。不得把该入站当 Form Resume 字段写入 |
 
 ### 2.2.2 `data` 形状（与 interrupt 对齐）
 
@@ -74,15 +76,20 @@
 约束：
 
 - 客户端**不得**另建「Form Pending」会话库作为权威；pending = 线程上仍有 Form Interrupt。
-- Form Resume（Confirm/Cancel）走既有 resume 通道，**不**再当新用户消息进 Router。
+- Form Resume（Confirm / 显式 Cancel）走既有 resume 通道，**不**再当新用户消息进 Router。
+- Implicit Cancel 是 Transport 编排的「先官方 cancel resume，再新 turn」；第二步才是普通用户消息进 Router，第一步仍必须是 `Command(resume=...)`，不得用 `Command(update=...)` 绕过 interrupt。
 - `form_required` / `form_rejected` **不**用于 HighRisk 审批（审批仍用 `approval_required`）。
+- 成功态：Graph 侧仍以 `done`（及既有 `tool_*`）收尾；Chatwoot Adapter 可另发成功 `cards` / 短文本，不新增 SSE 成功表单事件类型。
 
 ### 2.2.3 时序（Mutation Form 主路径）
 
 ```text
 … -> form_required -> (用户 Confirm: Form Resume) -> tool_call -> tool_result -> done
+      # Adapter 可选：成功 cards（与 done 并存；非新 form_* 类型）
 … -> form_required -> (校验/预检失败再 interrupt) -> form_rejected -> (修正后 Confirm) -> …
-… -> form_required -> (Cancel: Form Resume) -> done   # 不写库
+… -> form_required -> (显式 Cancel: Form Resume) -> done   # 不写库
+… -> form_required -> (Implicit Cancel: Transport resume cancel) -> (同内容新 turn 事件流…)
+      # 静默；不重推旧 form；新 turn 按路由发 token/tool_*/form_*/done 等
 ```
 
 Mutation happy path **不再**经过聊天 `clarification_required`（缺业务字段）或 `confirmation_required`。tool 未定时的 Operation Clarify 仍可在进图前发 `clarification_required`（`reason:"operation_unclear"`）。

@@ -80,3 +80,35 @@ async def test_deepseek_fallback_outputs_route_intent():
     assert result["routing_backend"] == "deepseek"
     assert result["routing_fallback"] is True
     assert result["route_control"] == "policy"
+
+
+@pytest.mark.asyncio
+async def test_router_primary_failure_uses_fallback_model():
+    class _Boom:
+        model_name = "Qwen/Qwen3.6-35B-A3B"
+
+        def with_structured_output(self, *args, **kwargs):
+            class _Bound:
+                async def ainvoke(self, messages, config=None):
+                    raise TimeoutError("primary down")
+
+            return _Bound()
+
+    class _Ok:
+        model_name = "deepseek-ai/DeepSeek-V4-Flash"
+
+        def with_structured_output(self, *args, **kwargs):
+            class _Bound:
+                async def ainvoke(self, messages, config=None):
+                    from ai_service_agent.graph.router import RouteIntentSchema
+
+                    return RouteIntentSchema(route_intent="faq", confidence=0.91)
+
+            return _Bound()
+
+    node = make_deepseek_router(_Boom(), fallback_model=_Ok())
+    result = await node({"messages": [{"role": "human", "content": "产品怎么用"}]})
+    assert result["route_intent"] == "faq"
+    assert result["routing_backend"] == "deepseek"
+    assert result["routing_fallback"] is True
+    assert result["route_control"] == "policy"
