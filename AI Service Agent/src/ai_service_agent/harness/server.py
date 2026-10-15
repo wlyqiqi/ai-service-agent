@@ -19,8 +19,14 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable, SQLiteOrderRepository
 from ai_service_agent.graph.runtime_context import GraphContext
 
-from ai_service_agent.graph.handoff_rules import detect_handoff_intent
-from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
+from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
+from ai_service_agent.graph.workflows.copy import (
+    form_plain_text_refuse_text,
+    handoff_cancel_confirm_text,
+    handoff_request_confirm_text,
+    handoff_request_idempotent_tip_text,
+    handoff_request_private_note_text,
+)
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
     ApprovalExpired,
@@ -42,7 +48,13 @@ from ai_service_agent.harness.chatwoot import (
 )
 from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
 from ai_service_agent.harness.graph import make_ai_graph
-from ai_service_agent.harness.handoff import HANDOFF_NOTICE, HandoffService
+from ai_service_agent.harness.handoff import (
+    HANDOFF_JOINED_NOTICE,
+    HANDOFF_REQUEST_CONFIRM,
+    STATUS_ACTIVE,
+    STATUS_AWAITING,
+    HandoffService,
+)
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.resume import (
     HANDOFF_RESUME_ACTION,
@@ -125,16 +137,39 @@ def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
             handoff.make_interrupt_callback(conv_id), approvals.make_interrupt_callback(conv_id, thread_id)
         )
 
-        async def send_handoff_notice(event: dict) -> None:
-            messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
-            await chatwoot.send_bot_message(conv_id, HANDOFF_NOTICE)
-            await chatwoot.set_conversation_status(conv_id, "open")
+        async def on_handoff_requested(event: dict) -> None:
+            rows = messages_store.list(conv_id)
+            already_tipped = any(
+                m.get("content")
+                in (handoff_request_confirm_text(), handoff_request_idempotent_tip_text())
+                for m in rows
+                if m.get("role") == "assistant"
+            )
+            tip = (
+                handoff_request_idempotent_tip_text()
+                if already_tipped
+                else handoff_request_confirm_text()
+            )
+            data = event.get("data") or {}
+            messages_store.append(conv_id, "assistant", tip)
+            await chatwoot.send_bot_message(conv_id, tip)
+            try:
+                await chatwoot.ensure_conversation(conv_id, tip)
+                if not already_tipped:
+                    await chatwoot.prompt_handoff_request(
+                        conv_id,
+                        handoff_request_private_note_text(data.get("summary") or ""),
+                    )
+            except Exception:
+                logging.getLogger("ai_service_agent").exception(
+                    "chatwoot handoff-request prompt failed: conv=%s", conv_id
+                )
 
         async def send_approval_pending(value: dict) -> None:
             # Seat-facing private form (#64); do not push Approve/Reject to Widget.
             await send_approval_form(chatwoot, conv_id, value)
 
-        return cb, send_handoff_notice, send_approval_pending
+        return cb, on_handoff_requested, send_approval_pending
 
     return make_callbacks
 
@@ -304,20 +339,121 @@ def create_app(
         if record is not None:
             _ensure_approval_owner(auth_user, record)
 
-    async def _emit_handoff(conv_id: str, ev: dict):
-        """统一 handoff side-effect path（P0 D3）：落 NOTICE + ensure Chatwoot（失败只记日志）+ 事件流。
-
-        图内动态 handoff（interrupt 建 record 后）与入口显式 handoff 共用；
-        事件顺序 token(HANDOFF_NOTICE) -> handoff_created，与 event-spec / 页面 contract 一致。
-        """
-        messages_store.append(conv_id, "assistant", HANDOFF_NOTICE)
+    async def _emit_handoff_requested(conv_id: str, ev: dict, *, first_request: bool):
+        """Handoff Request 挂起 side-effect：确认 tip；首申才发强提示（handoff-spec §2 幂等短 tip）。"""
+        tip = HANDOFF_REQUEST_CONFIRM if first_request else handoff_request_idempotent_tip_text()
+        data = ev.get("data") or {}
+        messages_store.append(conv_id, "assistant", tip)
         if chatwoot is not None:
             try:
-                await chatwoot.ensure_conversation(conv_id, HANDOFF_NOTICE)
+                await chatwoot.ensure_conversation(conv_id, tip)
+                if first_request:
+                    await chatwoot.prompt_handoff_request(
+                        conv_id,
+                        handoff_request_private_note_text(data.get("summary") or ""),
+                    )
             except Exception:
-                logger.exception("chatwoot ensure failed: conv=%s", conv_id)
-        yield {"type": "token", "data": {"text": HANDOFF_NOTICE}}
+                logger.exception("chatwoot handoff-request prompt failed: conv=%s", conv_id)
+        yield {"type": "token", "data": {"text": tip}}
         yield ev
+
+    async def _emit_joined_notice(conv_id: str) -> None:
+        notice = HANDOFF_JOINED_NOTICE
+        messages_store.append(conv_id, "assistant", notice)
+        if chatwoot is not None:
+            try:
+                await chatwoot.ensure_conversation(conv_id, notice)
+                await chatwoot.send_bot_message(conv_id, notice)
+            except Exception:
+                logger.exception("chatwoot joined notice failed: conv=%s", conv_id)
+
+    async def _complete_handoff_resolve(handoff_id: str) -> dict:
+        """HTTP resolve 与 webhook resolved 共用完成路径（handoff-spec §1.3）。"""
+        pending_handoff = handoff.get(handoff_id)
+        if pending_handoff is None:
+            raise KeyError(f"handoff not found: {handoff_id}")
+        conv_id = pending_handoff["conversation_id"]
+        if pending_handoff["status"] in ("resolved", "cancelled"):
+            return {
+                "handoff_id": handoff_id,
+                "mode": "ai",
+                "conversation_id": conv_id,
+                "event": {"type": "handoff_resolved", "data": {"handoff_id": handoff_id, "conversation_id": conv_id}},
+            }
+        if status.get_mode(conv_id) == "human":
+            await _sync_chatwoot_agent_messages(conv_id)
+        result = handoff.resolve_handoff(handoff_id)
+        conv_id = result["conversation_id"]
+        pending = approvals.pending_for_conversation(conv_id)
+        if pending:
+            logger.info(
+                "resolve handoff %s: conversation %s has %d pending approval(s)",
+                handoff_id,
+                conv_id,
+                len(pending),
+            )
+        thread_id = status.get_thread_id(conv_id)
+        if chatwoot is not None:
+            try:
+                await chatwoot.set_conversation_status(conv_id, "pending")
+            except Exception:
+                logger.exception("chatwoot restore pending failed: conv=%s", conv_id)
+        if thread_id is not None:
+            lock = await _thread_lock(thread_id)
+            async with lock:
+                async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                    graph = make_ai_graph(
+                        _resolve_model(model), saver, order_repository=resolved_order_repository
+                    )
+                    cfg = {"configurable": {"thread_id": thread_id}}
+                    st = await graph.aget_state(cfg)
+                    if st.interrupts:
+                        history = messages_store.hydrate(conv_id)
+                        try:
+                            await graph.ainvoke(
+                                Command(
+                                    resume={"action": HANDOFF_RESUME_ACTION},
+                                    update={"messages": history},
+                                ),
+                                config=cfg,
+                                context=_runtime_context(status.get_user_id(conv_id) or ""),
+                            )
+                        except Exception:
+                            pass
+        event = {
+            "type": "handoff_resolved",
+            "data": {"handoff_id": handoff_id, "conversation_id": conv_id},
+        }
+        logger.info("event handoff_resolved conv=%s handoff=%s", conv_id, handoff_id)
+        return {
+            "handoff_id": handoff_id,
+            "mode": "ai",
+            "conversation_id": conv_id,
+            "event": event,
+        }
+
+    async def _seat_takeover_for_conversation(conv_id: str) -> dict:
+        """Account Webhook open → Seat Takeover + Joined Notice。"""
+        rec = handoff.seat_takeover(conv_id)
+        await _emit_joined_notice(conv_id)
+        return {"type": "handoff_created", "data": rec}
+
+    def _webhook_conversation_status(data: dict) -> tuple[int | None, str | None]:
+        """Parse conversation_status_changed → (chatwoot_conversation_id, status)."""
+        status_val = data.get("status")
+        conversation = data.get("conversation") if isinstance(data.get("conversation"), dict) else None
+        if status_val is None and conversation is not None:
+            status_val = conversation.get("status")
+        cw_id = data.get("id")
+        if conversation is not None and conversation.get("id") is not None:
+            cw_id = conversation.get("id")
+        try:
+            cw_int = int(cw_id) if cw_id is not None else None
+        except (TypeError, ValueError):
+            cw_int = None
+        if status_val is not None:
+            status_val = str(status_val)
+        return cw_int, status_val
 
     async def _sync_chatwoot_agent_messages(conv_id: str) -> None:
         """Resolve 前兜底同步；webhook 延迟或丢失时仍能补齐人工上下文。"""
@@ -433,16 +569,34 @@ def create_app(
 
             return _sse_response(human_stream())
 
-        if detect_handoff_intent(body.message):
-            # P0 D1：显式转人工 -> 不进 Router/Guard/Graph，直接走统一 handoff side-effect path。
-            # 先落 user 消息（Message Store 唯一真相源，handoff-spec §5.2），再 request_handoff（幂等）。
+        if handoff.get_awaiting(conv_id) is not None and detect_handoff_cancel(body.message):
+            # Handoff Cancel：清挂起，不切 mode，不进 Graph。
             messages_store.append(conv_id, "user", body.message)
+            handoff.cancel_handoff_request(conv_id)
+            tip = handoff_cancel_confirm_text()
+            messages_store.append(conv_id, "assistant", tip)
+
+            async def cancel_stream():
+                yield {"type": "token", "data": {"text": tip}}
+                yield {"type": "done", "data": {"final": tip, "message_id": None}}
+
+            return _sse_response(cancel_stream())
+
+        if detect_handoff_intent(body.message):
+            # Seat-gated：显式转人工 → Handoff Request 挂起（mode 仍 ai），本 turn 只回确认。
+            messages_store.append(conv_id, "user", body.message)
+            already = handoff.get_awaiting(conv_id) is not None or handoff.get_active(conv_id) is not None
             ev = handoff.request_handoff(conv_id, "用户显式请求转人工", body.message[:80])
+            tip = (
+                handoff_request_idempotent_tip_text()
+                if already
+                else HANDOFF_REQUEST_CONFIRM
+            )
 
             async def explicit_handoff_stream():
-                async for out in _emit_handoff(conv_id, ev):
+                async for out in _emit_handoff_requested(conv_id, ev, first_request=not already):
                     yield out
-                yield {"type": "done", "data": {"final": HANDOFF_NOTICE, "message_id": None}}
+                yield {"type": "done", "data": {"final": tip, "message_id": None}}
 
             return _sse_response(explicit_handoff_stream())
 
@@ -496,9 +650,20 @@ def create_app(
                         extra_state={"user_id": user_id},
                         context=_runtime_context(user_id),
                     ):
-                        if ev["type"] == "handoff_created":
-                            # 外层文案（D3）：复用统一 side-effect path（落 NOTICE + Chatwoot ensure + 事件流）
-                            async for out in _emit_handoff(conv_id, ev):
+                        if ev["type"] == "handoff_requested":
+                            rows = messages_store.list(conv_id)
+                            already_tipped = any(
+                                m.get("content")
+                                in (
+                                    HANDOFF_REQUEST_CONFIRM,
+                                    handoff_request_idempotent_tip_text(),
+                                )
+                                for m in rows
+                                if m.get("role") == "assistant"
+                            )
+                            async for out in _emit_handoff_requested(
+                                conv_id, ev, first_request=not already_tipped
+                            ):
                                 yield out
                             continue
                         if ev["type"] == "approval_required" and chatwoot is not None:
@@ -588,46 +753,17 @@ def create_app(
         pending_handoff = handoff.get(handoff_id)
         if pending_handoff is None:
             raise HTTPException(status_code=404, detail="handoff not found")
-
-        conv_id = pending_handoff["conversation_id"]
-        if pending_handoff["status"] != "active":
+        if pending_handoff["status"] not in (STATUS_ACTIVE, STATUS_AWAITING):
             return {"handoff_id": handoff_id, "mode": "ai"}
-        if status.get_mode(conv_id) == "human":
-            await _sync_chatwoot_agent_messages(conv_id)
-
         try:
-            result = handoff.resolve_handoff(handoff_id)
+            result = await _complete_handoff_resolve(handoff_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="handoff not found")
-        conv_id = result["conversation_id"]
-        pending = approvals.pending_for_conversation(conv_id)
-        if pending:
-            # D9 裁定：只读信息项，仅日志/坐席展示，不影响 resolve 分支（Handoff 与 Approval 完全独立状态机）
-            logger.info("resolve handoff %s: conversation %s has %d pending approval(s)", handoff_id, conv_id, len(pending))
-        thread_id = status.get_thread_id(conv_id)
-        if chatwoot is not None:
-            try:
-                await chatwoot.set_conversation_status(conv_id, "pending")
-            except Exception:
-                logger.exception("chatwoot restore pending failed: conv=%s", conv_id)
-        lock = await _thread_lock(thread_id)
-        async with lock:
-            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
-                cfg = {"configurable": {"thread_id": thread_id}}
-                st = await graph.aget_state(cfg)
-                if st.interrupts:
-                    history = messages_store.hydrate(conv_id)
-                    try:
-                        await graph.ainvoke(
-                            Command(resume={"action": HANDOFF_RESUME_ACTION}, update={"messages": history}),
-                            config=cfg,
-                            context=_runtime_context(status.get_user_id(conv_id) or ""),
-                        )
-                    except Exception:
-                        # 降级（D2）：中断保留，下一用户消息经入口 resume 调度兜底
-                        pass
-        return {"handoff_id": handoff_id, "mode": "ai"}
+        return {
+            "handoff_id": result["handoff_id"],
+            "mode": result["mode"],
+            "event": result.get("event"),
+        }
 
     def _precheck_approval(approval_id: str) -> dict:
         try:
@@ -673,9 +809,17 @@ def create_app(
                     if ev["type"] == "done":
                         final = ev["data"].get("final")
                         final_message_id = ev["data"].get("message_id")
-                    elif ev["type"] == "handoff_created":
-                        # 回调已建 Record；补 NOTICE / Chatwoot ensure（与 chat 路径同构）
-                        async for _ in _emit_handoff(conv_id, ev):
+                    elif ev["type"] == "handoff_requested":
+                        rows = messages_store.list(conv_id)
+                        already_tipped = any(
+                            m.get("content")
+                            in (HANDOFF_REQUEST_CONFIRM, handoff_request_idempotent_tip_text())
+                            for m in rows
+                            if m.get("role") == "assistant"
+                        )
+                        async for _ in _emit_handoff_requested(
+                            conv_id, ev, first_request=not already_tipped
+                        ):
                             pass
                 # Message Store 始终落库；出站仅当发送前 conversation_mode 仍为 ai（handoff-spec §1.4）
                 if final is not None:
@@ -809,7 +953,36 @@ def create_app(
             if exc.status_code in (404, 409, 410):
                 return {"ok": True}
             raise
-        if data.get("event") != "message_created" or not is_agent_message(data):
+
+        event_name = data.get("event")
+        if event_name == "conversation_status_changed":
+            cw_id, new_status = _webhook_conversation_status(data)
+            if cw_id is None or new_status is None:
+                return {"ok": True}
+            rec = mapping.find(cw_id)
+            if rec is None:
+                return {"ok": True}
+            conv_id = rec["conversation_id"]
+            if new_status == "open":
+                created = await _seat_takeover_for_conversation(conv_id)
+                logger.info(
+                    "event handoff_created conv=%s handoff=%s",
+                    conv_id,
+                    (created.get("data") or {}).get("handoff_id"),
+                )
+                return {"ok": True, "event": created}
+            if new_status == "resolved":
+                active = handoff.get_active(conv_id) or handoff.get_awaiting(conv_id)
+                if active is not None:
+                    try:
+                        result = await _complete_handoff_resolve(active["handoff_id"])
+                        return {"ok": True, "event": result.get("event")}
+                    except KeyError:
+                        pass
+            # pending: ignore (anti-loop after toggle_status(pending))
+            return {"ok": True}
+
+        if event_name != "message_created" or not is_agent_message(data):
             return {"ok": True}
 
         conversation = data.get("conversation")
@@ -878,6 +1051,7 @@ def create_app(
                     thread_lock_factory=_thread_lock,
                     chatwoot_lock_factory=_thread_lock,
                     callbacks_factory=_agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store),
+                    handoff=handoff,
                     context=_runtime_context(),
                 )
         return {"ok": True}

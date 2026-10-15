@@ -34,3 +34,17 @@ def detect_handoff_intent(text: str) -> bool:
         _ACTION_PREFIX + r".{0,4}?" + _TARGET + r"(?!.{0,2}(?:" + suffix + r"))"
     )
     return bool(pattern.search(norm))
+
+
+def detect_handoff_cancel(text: str) -> bool:
+    """Handoff Cancel 入口层判定（ADR-0003）：确定性、无 LLM。
+
+    仅在已有 awaiting hang 时由入口调用；本函数本身只看文案。
+    """
+    if not text:
+        return False
+    norm = re.sub(r"\s+", "", text).lower()
+    phrases = set(get_settings().handoff_cancel_phrases)
+    if norm in phrases:
+        return True
+    return any(p and p in norm for p in phrases)

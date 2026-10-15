@@ -70,7 +70,7 @@ def test_resolve_and_chat_race_no_double_processing(tmp_path):
     client = TestClient(app)
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
-        assert "handoff_created" in "".join(r.iter_text())
+        assert "handoff_requested" in "".join(r.iter_text())
 
     conn = sqlite3.connect(db)
     handoff_id = conn.execute("SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)).fetchone()[0]
@@ -111,7 +111,7 @@ def test_resolve_and_chat_race_no_double_processing(tmp_path):
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
-    notices = [r for r in rows if r["role"] == "assistant" and "转接人工" in r["content"]]
+    notices = [r for r in rows if r["role"] == "assistant" and "转人工申请" in r["content"]]
     assert len(notices) == 1
 
     # resolve 后正常消息继续走 AI 车道完成（execution_status=completed）

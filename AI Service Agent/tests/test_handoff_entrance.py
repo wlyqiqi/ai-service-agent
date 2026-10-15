@@ -1,4 +1,4 @@
-"""P0 入口显式转人工：不进 Router/Guard/Graph、事件顺序、幂等、pending interrupt 优先。"""
+"""P0/Seat-gated 入口显式转人工：不进 Router/Guard/Graph、挂起确认、幂等、pending interrupt 优先。"""
 
 import sqlite3
 import pytest
@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage
 
 from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness import server as server_module
-from ai_service_agent.harness.handoff import HANDOFF_NOTICE
+from ai_service_agent.harness.handoff import HANDOFF_REQUEST_CONFIRM, STATUS_AWAITING
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ToolCallingFakeModel
 
@@ -68,9 +68,8 @@ class ApprovalFlowFakeModel(ToolCallingFakeModel):
                 message=AIMessage(content='{"route_intent": "refund_apply_execute", "confidence": 0.9}'))])
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="已受理"))])
 
-
 def test_explicit_handoff_skips_graph(tmp_path):
-    """D1：显式转人工不进 Router/Guard/Graph（ExplodingModel 若被调用即失败）。"""
+    """显式转人工不进 Router/Guard/Graph；mode 仍 ai；发 handoff_requested。"""
     client = TestClient(create_app(str(tmp_path / "s.db"), model=ExplodingModel(responses=[])))
     r = client.post("/sessions", json={"user_id": "u1"})
     sid = r.json()["session_id"]
@@ -78,13 +77,14 @@ def test_explicit_handoff_skips_graph(tmp_path):
         events = _parse_sse("".join(resp.iter_text()))
     types = [e["type"] for e in events]
     assert types[0] == "token"
-    assert "handoff_created" in types
+    assert "handoff_requested" in types
+    assert "handoff_created" not in types
     assert types[-1] == "done"
-    assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "human"
+    assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "ai"
 
 
-def test_explicit_handoff_writes_user_and_notice_to_store(tmp_path):
-    """D5：Message Store 顺序 = [user, HANDOFF_NOTICE]（唯一真相源）。"""
+def test_explicit_handoff_writes_user_and_confirm_to_store(tmp_path):
+    """Message Store 顺序 = [user, 挂起确认]。"""
     from ai_service_agent.harness.messages import MessageStore
     client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
     r = client.post("/sessions", json={"user_id": "u1"})
@@ -92,11 +92,11 @@ def test_explicit_handoff_writes_user_and_notice_to_store(tmp_path):
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
         "".join(resp.iter_text())
     rows = MessageStore(sqlite3.connect(str(tmp_path / "s.db"))).list(sid)
-    assert [m["content"] for m in rows] == ["我要转人工", HANDOFF_NOTICE]
+    assert [m["content"] for m in rows] == ["我要转人工", HANDOFF_REQUEST_CONFIRM]
 
 
 def test_non_handoff_message_still_uses_ai_lane(tmp_path):
-    """D1：detect False -> 保持 AI Lane 完整流程（有 token + done）。"""
+    """detect False -> 保持 AI Lane 完整流程（有 token + done）。"""
     client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
     r = client.post("/sessions", json={"user_id": "u1"})
     sid = r.json()["session_id"]
@@ -106,8 +106,8 @@ def test_non_handoff_message_still_uses_ai_lane(tmp_path):
     assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "ai"
 
 
-def test_consecutive_explicit_handoffs_single_active(tmp_path):
-    """D3 duplicate protection：连续两次显式转人工只产生 1 个 active handoff。"""
+def test_consecutive_explicit_handoffs_single_awaiting(tmp_path):
+    """连续两次显式转人工只产生 1 个 awaiting_seat handoff。"""
     client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
     r = client.post("/sessions", json={"user_id": "u1"})
     sid = r.json()["session_id"]
@@ -115,25 +115,25 @@ def test_consecutive_explicit_handoffs_single_active(tmp_path):
         with client.stream("POST", "/chat", json={"session_id": sid, "message": msg}) as resp:
             "".join(resp.iter_text())
     conn = sqlite3.connect(str(tmp_path / "s.db"))
-    n = conn.execute("SELECT COUNT(*) FROM handoff_record WHERE conversation_id=? AND status='active'", (sid,)).fetchone()[0]
+    n = conn.execute(
+        "SELECT COUNT(*) FROM handoff_record WHERE conversation_id=? AND status=?",
+        (sid, STATUS_AWAITING),
+    ).fetchone()[0]
     assert n == 1
 
 
 def test_explicit_handoff_priority_over_pending_interrupt(tmp_path):
-    """D6（C4）：approval 挂起时显式转人工优先——直接转人工，approval 保持 pending。"""
+    """approval 挂起时显式转人工优先——挂起申请（mode 仍 ai），approval 保持 pending。"""
     client = TestClient(create_app(str(tmp_path / "s.db"), model=ApprovalFlowFakeModel(responses=[])))
     r = client.post("/sessions", json={"user_id": "u1"})
     sid = r.json()["session_id"]
-    # 触发 approval_required 挂起
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "订单ORD-PAID-1申请退款"}) as resp:
         types = [e["type"] for e in _parse_sse("".join(resp.iter_text()))]
     assert "approval_required" in types
-    # 显式转人工 -> 不进 resume，直接 human
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
         types2 = [e["type"] for e in _parse_sse("".join(resp.iter_text()))]
-    assert "handoff_created" in types2
-    assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "human"
-    # auth-off GET /approvals 不倾倒；pending 归宿改查 Approval Service / DB
+    assert "handoff_requested" in types2
+    assert ConversationStatusStore(sqlite3.connect(str(tmp_path / "s.db"))).get_mode(sid) == "ai"
     from ai_service_agent.harness.approvals import ApprovalService
 
     conn = sqlite3.connect(str(tmp_path / "s.db"))

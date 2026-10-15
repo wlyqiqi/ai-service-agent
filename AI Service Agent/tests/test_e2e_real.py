@@ -404,18 +404,18 @@ class TestCoreScenarios:
         assert rec["status"] == "rejected"
 
     def test_handoff_flow(self, client, server):
-        """Handoff：转人工 -> handoff_created -> mode=human -> resolve -> mode=ai。"""
+        """Handoff：转人工 -> handoff_requested（mode 仍 ai）-> resolve -> mode=ai。"""
         sid = new_session(client)
         code1, ev1 = chat_sse(client, sid, "我要转人工")
-        created = next((e for e in ev1 if e.get("type") == "handoff_created"), None)
-        handoff_id = (created or {}).get("data", {}).get("handoff_id")
+        requested = next((e for e in ev1 if e.get("type") == "handoff_requested"), None)
+        handoff_id = (requested or {}).get("data", {}).get("handoff_id")
 
         assert code1 == 200
-        assert created is not None
+        assert requested is not None
         assert handoff_id
 
         st = open_status(server["db_path"], sid)
-        assert st["mode"] == "human"
+        assert st["mode"] == "ai"
 
         r = client.post(f"/handoffs/{handoff_id}/resolve")
         assert r.status_code == 200

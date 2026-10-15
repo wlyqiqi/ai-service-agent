@@ -205,6 +205,6 @@ def test_approval_resume_follow_on_handoff_interrupt_is_persisted(tmp_path, monk
     mode = ConversationStatusStore(conn).get_mode(session_id)
     conn.close()
     assert handoff is not None
-    assert handoff["status"] == "active"
+    assert handoff["status"] == "awaiting_seat"
     assert handoff["reason"] == "follow_on_after_approve"
-    assert mode == "human"
+    assert mode == "ai"
