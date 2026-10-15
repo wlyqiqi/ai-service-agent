@@ -79,3 +79,27 @@ _Avoid_: 申请人自批；用「有审批能力」绕过身份分离
 **Approval Side-Channel**:
 HighRisk 审批在坐席端旁路完成（表单/卡片 → Runtime）；不因此把 `conversation_mode` 切为 `human`。Handoff 仍是会话接管，与审批 gate 分离。坐席决策后立即图 resume + Message Store；出站消息仍受 `conversation_mode==ai` 门控。
 _Avoid_: 进入审批必须先转人工；坐席聊天接管等同于审批通过；human 期间批准却跳过出站门控直接推给用户
+
+**Conversation Mode**:
+会话车道两态：`ai`（进 Graph）与 `human`（人工车道，不跑 Graph）。与 Chatwoot 会话 status、handoff 申请挂起不是同一概念。Seat-gated 决策见 `docs/adr/0003-seat-gated-handoff.md`；生命周期权威 `docs/specs/handoff-spec.md`。
+_Avoid_: 用第三态表示「等坐席」；把 Chatwoot `pending`/`open` 直接当成 Conversation Mode
+
+**Handoff Request**:
+客户或图内信号发起的转人工**申请**；Runtime 记为挂起（如 `awaiting_seat`），**不**因此把 Conversation Mode 切为 `human`；挂起期间后续未命中门控的消息仍走 AI（含 Router）。客户显式申请由**入口层** `detect_handoff_intent` 命中（不经 Router）；与子图 `handoff_request` 同一挂起门控。申请时 Chatwoot **强提示** = private note + label slug **`handoff-request`**，不改会话 status。入口命中申请的本 turn **只**回挂起确认后结束，不顺带跑 Router。
+_Avoid_: 一请求就切 human；显式申请进 Router；显式转人工与图内 handoff 两套挂起语义；仅靠备注无标签；申请 turn 里夹带业务问答
+
+**Handoff Joined Notice**:
+Seat Takeover 成功后由 Bot 发给客户的短提示（人工已接入）；与挂起申请文案区分。
+_Avoid_: 与 HANDOFF_NOTICE 旧「已转接请稍候」混用同一句在申请阶段停 AI
+
+**Seat Takeover**:
+坐席用 Chatwoot 官方 **Take over**（或等价：派给人 / 状态 `open`）接手会话；此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。
+_Avoid_: 自定义「同意」卡当作主路径；把 assignee 变更当成唯一真相而忽略 status=`open`
+
+**Handoff Resolve**:
+坐席用官方 **Resolve / 已解决**（status=`resolved`）结束人工；Conversation Mode 回 `ai`，Chatwoot 再回到 `pending` 交回 Bot。
+_Avoid_: 只改 Chatwoot 已解决却不回切 Runtime mode；用客户「结束会话」代替坐席 Resolve 主路径
+
+**Handoff Cancel**:
+坐席 Take over 之前，客户取消挂起的 Handoff Request；与申请同属**入口层确定性检测**（`detect_handoff_cancel`，无 Router/LLM），清挂起且不切 Conversation Mode。之后坐席仍可主动 Seat Takeover。
+_Avoid_: 仅靠坐席忽略申请；把 Implicit Cancel（表单）与取消转人工混为一谈；用 Router 自由文本理解取消；申请走入口、取消走 Router 的不对称门控

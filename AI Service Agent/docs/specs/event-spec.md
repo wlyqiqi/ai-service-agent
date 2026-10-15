@@ -1,13 +1,17 @@
 # 事件规格（event-spec.md）
 
-- 关联：`architecture.md`（传输层）· `graph-spec.md`（事件来源）· `approval-spec.md`（审批事件）· `safety-spec.md`（拒绝/转人工事件）
+- 关联：`architecture.md`（传输层）· `graph-spec.md`（事件来源）· `approval-spec.md`（审批事件）· `safety-spec.md`（拒绝/转人工事件）· `handoff-spec.md`（Seat-gated 生命周期）· [ADR-0003](../adr/0003-seat-gated-handoff.md)
+- 术语：根目录 `CONTEXT.md`（Handoff Request / Seat Takeover / Handoff Resolve）
 
 ## 1. 传输
 
 - SSE（REST 长连接）与 WebSocket 双通道，同一归一化事件格式。
 - 由 `harness/streaming.py` 将 `graph.astream(stream_mode=["messages","updates","custom"])` 转成事件。
 - `tool_call` / `tool_result` 等工具事件由 harness hook 在工具执行前后挂接发出，源头不在子图 / 工具内部（见 `architecture.md` §8.1）。
-- `handoff_created` / `handoff_resolved` 由**外层（Conversation Runtime）**在接管 / Resolve 时发出（见 `handoff-spec.md` §3），子图自身不直接发出 `handoff_created`。
+- `handoff_requested` / `handoff_created` / `handoff_resolved` 由**外层（Conversation Runtime）**发出（见 `handoff-spec.md` §4）；子图自身不直接发出这些事件。
+  - `handoff_requested`：Handoff Request 挂起建立后（Conversation Mode 仍为 `ai`）。
+  - `handoff_created`：**仅** Seat Takeover 完成后（真正进入 `human` 车道）；不得在申请挂起时发出。
+  - `handoff_resolved`：Handoff Resolve 回切 `ai` 后。
 - resolve 动作触发的**服务端主动 resume** 不产生 SSE 事件流（无长连接上下文），仅更新图状态；用户下一条消息仍按正常 turn 输出事件。
 
 ## 2. 事件类型
@@ -25,8 +29,9 @@
 | `confirmation_updated` | `{action}` | 旧 Mutation 确认结果（confirm / cancel）；主路径由 Form Resume 取代，不再作为 Mutation happy path 事件 |
 | `form_required` | 见 §2.2 | Mutation **Form Interrupt** 首次挂起的 SSE 投影（权威挂起态仍是 checkpointer `__interrupt__`，见 `mutation-form-interrupt-spec.md` / `CONTEXT.md`） |
 | `form_rejected` | 见 §2.2 | 同一 Mutation Form 会话上校验 / 业务预检失败后**再次 Form Interrupt** 的 SSE 投影（原地更新错误，不新开无关表单会话） |
-| `handoff_created` | `{handoff_id?, reason, summary?, ticket_id?}` | 转人工接管完成（Conversation Runtime 外层发出，见 handoff-spec.md §3） |
-| `handoff_resolved` | `{handoff_id?, conversation_id?}` | 人工 Resolve 完成、mode 回切 ai（Conversation Runtime 发出） |
+| `handoff_requested` | `{handoff_id?, reason?, summary?}` | Handoff Request 挂起确认（mode 仍为 `ai`；Conversation Runtime 发出，见 handoff-spec.md §2 / §4） |
+| `handoff_created` | `{handoff_id?, reason?, summary?, ticket_id?}` | **Seat Takeover** 完成、进入 human 车道（Conversation Runtime 发出，见 handoff-spec.md §1.2）；**不是**申请挂起时发出；无事先申请的单边 Take over 时 `reason` 可缺省 |
+| `handoff_resolved` | `{handoff_id?, conversation_id?}` | Handoff Resolve 完成、mode 回切 ai（Conversation Runtime 发出，见 handoff-spec.md §1.3） |
 | `done` | `{final, message_id?}` | 本 turn 结束（`message_id` = 最后一条 assistant 消息的 langchain id，供 Message Store 对账持久化，见 `handoff-spec.md` §5.2） |
 | `error` | `{code, message, detail?}` | 归一化错误；`message` 为用户可读文案，`detail` 可选（节点异常原文，供观测/eval，前端可忽略） |
 
@@ -40,7 +45,7 @@
 | MutationGraph | `tool_call` / `tool_result` / `form_required` / `form_rejected` / `token` / `error` / `done`（可选遗留：`clarification_required` 仅 `tier_mismatch`；**不得**再发 `confirmation_required` / `confirmation_updated`） |
 | HighRiskGraph | `tool_call` / `tool_result` / `clarification_required` / `approval_required` / `approval_updated` / `token` / `error` / `done` |
 
-- 任意子图触发 Handoff 时额外可能发出 `handoff_created`：**由外层统一发出**，子图自身不直接发出这个事件。
+- 任意子图触发 Handoff 时，外层先发 `handoff_requested`（挂起、mode 仍 `ai`）；`handoff_created` **仅**在后续 Seat Takeover 时发出。子图自身不直接发出这些事件。
 - 安全预检失败时由预检节点发出 `safety_rejected`（见 `safety-spec.md` §1.3），不改变上述子图事件集合。
 
 ## 2.2 Form Interrupt → `form_required` / `form_rejected` 映射

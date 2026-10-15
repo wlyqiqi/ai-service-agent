@@ -14,7 +14,7 @@
 | `event-spec.md` | 归一化事件协议（SSE/WS）；含 `form_required` / `form_rejected`（Form Interrupt 投影） | 前后端对接的人 |
 | `mutation-form-interrupt-spec.md` | Mutation Form / Form Interrupt / Form Resume 产品与实现决策 | 改 Mutation 写路径 / 表单事件的人 |
 | `safety-spec.md` | 安全预检 + handoff 触发规则 | 安全相关改动 |
-| `handoff-spec.md` | conversation_mode 状态机 + Handoff 生命周期 + 轻量判断 | 做会话入口 / handoff 的人 |
+| `handoff-spec.md` | conversation_mode 状态机 + Seat-gated Handoff 生命周期 + 轻量判断（ADR-0003） | 做会话入口 / handoff 的人 |
 | `mvp-first-mile.md` | MVP 第一公里实现范围与里程碑（brainstorming 定稿） | 做 MVP 实现 / 执行计划的人 |
 | `user-page-spec.md` | ~~自建 SSE 用户页~~（**已废止**；见 ADR 0001 / Widget 主入口） | 一般不读；仅查历史 |
 
@@ -30,9 +30,10 @@
 | 加一个新工具 | `tool-spec.md` + `safety-spec.md` |
 | 接前端流式 | `event-spec.md` + `architecture.md`（可观测性章节） |
 | 会话/记忆持久化 | `architecture.md`（持久化章节）+ `state-spec.md` |
-| 会话入口 / conversation_mode 判断 | `handoff-spec.md` + `architecture.md` + `event-spec.md` |
+| 会话入口 / conversation_mode 判断 | `handoff-spec.md` + `architecture.md` + `event-spec.md` + `CONTEXT.md` + [ADR-0003](../adr/0003-seat-gated-handoff.md) |
+| Seat-gated handoff（申请挂起 / Take over / Resolve） | `handoff-spec.md` + `event-spec.md` + `docs/ops/chatwoot-widget-agentbot-setup.md` §4.1 + `CONTEXT.md` + [ADR-0003](../adr/0003-seat-gated-handoff.md) |
 | C 端 Widget / AgentBot Form | `docs/adr/0001-widget-agentbot-form-contract.md` + `event-spec.md` + `mutation-form-interrupt-spec.md` |
-| Chatwoot 控制台接线 / `.env` | `docs/ops/chatwoot-widget-agentbot-setup.md`（官方文档引用 + `CHATWOOT_*` 映射） |
+| Chatwoot 控制台接线 / `.env` | `docs/ops/chatwoot-widget-agentbot-setup.md`（官方文档引用 + `CHATWOOT_*` 映射；Account Webhook ≠ AgentBot） |
 
 - 决策记录见 `docs/decisions/`（架构决策留痕）。
 
