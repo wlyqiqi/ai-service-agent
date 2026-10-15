@@ -156,6 +156,43 @@ def update_address_current_address_display(current: str | None) -> str:
     return text if text else _UPDATE_ADDRESS_CURRENT_EMPTY
 
 
+# update_address success card (#73 / plan §2④).
+_UPDATE_ADDRESS_SUCCESS_STATUS = "已完成"
+_UPDATE_ADDRESS_SUCCESS_TITLE = "地址已修改成功"
+_UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED = "账户收货地址已更新"
+_UPDATE_ADDRESS_SUCCESS_FOLLOWUP = (
+    "已帮您更新。发货前都会按新地址安排，有问题随时找我。"
+)
+
+
+def update_address_success_status_text() -> str:
+    return _UPDATE_ADDRESS_SUCCESS_STATUS
+
+
+def update_address_success_card_title_text() -> str:
+    return _UPDATE_ADDRESS_SUCCESS_TITLE
+
+
+def update_address_success_account_updated_text() -> str:
+    return _UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED
+
+
+def update_address_success_followup_text() -> str:
+    return _UPDATE_ADDRESS_SUCCESS_FOLLOWUP
+
+
+def update_address_success_card_description(order_id: str, address: str) -> str:
+    """Chatwoot cards description: status first (no native badge), then blocks."""
+    return "\n".join(
+        [
+            _UPDATE_ADDRESS_SUCCESS_STATUS,
+            f"订单号：{order_id}",
+            f"新收货地址：{address}",
+            _UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED,
+        ]
+    )
+
+
 def human_mode_tip_text() -> str:
     """conversation_mode=human 时 AgentBot / Widget 固定 tip（不跑 Graph）。"""
     return "当前由人工客服接待，坐席正在处理您的问题，请稍候。"
