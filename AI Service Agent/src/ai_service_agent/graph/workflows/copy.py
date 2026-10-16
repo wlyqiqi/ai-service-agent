@@ -5,6 +5,8 @@
 """
 
 import hashlib
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 
 RUNTIME_ERROR_TEXT = (
@@ -156,13 +158,173 @@ def update_address_current_address_display(current: str | None) -> str:
     return text if text else _UPDATE_ADDRESS_CURRENT_EMPTY
 
 
-# update_address success card (#73 / plan §2④).
-_UPDATE_ADDRESS_SUCCESS_STATUS = "已完成"
+# Shared write-success card (#73 address card, now all seven write tools).
+# Widget often collapses a single ``\\n`` into one paragraph, so each fact is a
+# ``• `` bullet with a blank line between bullets.
+_SUCCESS_STATUS_LABEL = "状态"
+_SUCCESS_STATUS_VALUE = "已完成"
+_UPDATE_ADDRESS_SUCCESS_STATUS = _SUCCESS_STATUS_VALUE
 _UPDATE_ADDRESS_SUCCESS_TITLE = "地址已修改成功"
-_UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED = "账户收货地址已更新"
+_UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED = "已同步更新"
 _UPDATE_ADDRESS_SUCCESS_FOLLOWUP = (
     "已帮您更新。发货前都会按新地址安排，有问题随时找我。"
 )
+
+_SUCCESS_CARD_TITLES = {
+    "update_address": _UPDATE_ADDRESS_SUCCESS_TITLE,
+    "update_phone": "手机号已修改成功",
+    "update_order_note": "订单备注已更新",
+    "create_invoice": "发票已开具成功",
+    "create_service_ticket": "售后工单已创建",
+    "cancel_order": "订单已取消成功",
+    "refund_apply": "退款申请已提交",
+}
+
+_SUCCESS_CARD_BUTTON = "知道了"
+
+
+def _format_card_value(value: object) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, int):
+        return str(value)
+    return str(value).strip()
+
+
+def _inner_tool_result(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        return inner
+    return result
+
+
+def _success_facts(args: dict | None, result: dict | None) -> dict[str, object]:
+    facts: dict[str, object] = {}
+    for key, value in (args or {}).items():
+        if key in ("request_id", "field", "ok", "replayed"):
+            continue
+        if _format_card_value(value):
+            facts[key] = value
+    for key, value in _inner_tool_result(result).items():
+        if key in ("request_id", "field", "ok", "replayed"):
+            continue
+        if _format_card_value(value):
+            facts[key] = value
+    return facts
+
+
+def format_success_card_description(lines: Sequence[tuple[str, str]]) -> str:
+    """Bullet + blank line so a Widget that eats ``\\n`` still separates rows."""
+    bullets: list[str] = []
+    for label, value in lines:
+        text = value.strip() if isinstance(value, str) else _format_card_value(value)
+        if not text:
+            continue
+        bullets.append(f"• {label}：{text}")
+    return "\n\n".join(bullets)
+
+
+def mutation_success_followup_text(tool: str) -> str:
+    """Short bubble under the card. Address keeps the #73 tweak; others reuse completion copy."""
+    if tool == "update_address":
+        return _UPDATE_ADDRESS_SUCCESS_FOLLOWUP
+    return _COMPLETION_TEXTS.get(tool, f"好的，您的{_label(tool)}已办理完成。")
+
+
+def _optional(facts: dict[str, object], key: str) -> str:
+    return _format_card_value(facts.get(key))
+
+
+def _success_detail_lines(tool: str, facts: dict[str, object]) -> list[tuple[str, str]]:
+    if tool == "update_address":
+        return [
+            ("订单号", _optional(facts, "order_id")),
+            ("新收货地址", _optional(facts, "address")),
+            ("账户地址", _UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED),
+        ]
+    if tool == "update_phone":
+        return [
+            ("订单号", _optional(facts, "order_id")),
+            ("新手机号", _optional(facts, "phone")),
+            ("通知号码", "已切换"),
+        ]
+    if tool == "update_order_note":
+        return [
+            ("订单号", _optional(facts, "order_id")),
+            ("备注内容", _optional(facts, "note")),
+        ]
+    if tool == "create_invoice":
+        return [
+            ("订单号", _optional(facts, "order_id")),
+            ("发票号", _optional(facts, "invoice_id")),
+            ("抬头", _optional(facts, "company")),
+            ("税号", _optional(facts, "tax_no")),
+            ("金额", _optional(facts, "amount")),
+            ("下载提示", "可在订单详情中下载查看"),
+        ]
+    if tool == "create_service_ticket":
+        return [
+            ("工单号", _optional(facts, "ticket_id")),
+            ("订单号", _optional(facts, "order_id")),
+            ("问题描述", _optional(facts, "reason")),
+            ("后续联系", "工程师会尽快与您联系，请保持电话畅通"),
+        ]
+    if tool == "cancel_order":
+        return [
+            ("订单号", _optional(facts, "order_id")),
+            ("取消原因", _optional(facts, "reason")),
+            ("退款路径提示", "退款将按原支付路径退回"),
+        ]
+    if tool == "refund_apply":
+        return [
+            ("订单号", _optional(facts, "order_id")),
+            ("申请金额", _optional(facts, "amount")),
+            ("原因", _optional(facts, "reason")),
+            ("进度提示", "请留意到账通知"),
+        ]
+    return []
+
+
+@dataclass(frozen=True)
+class MutationSuccessCardSpec:
+    """One Chatwoot success card: title, bullet description, 「知道了」, follow-up bubble."""
+
+    tool: str
+    title: str
+    lines: tuple[tuple[str, str], ...]
+    followup: str
+    button_text: str = _SUCCESS_CARD_BUTTON
+
+    @property
+    def description(self) -> str:
+        return format_success_card_description(self.lines)
+
+    @property
+    def ack_payload(self) -> str:
+        return f"{self.tool}_success_ack"
+
+
+def build_mutation_success_card(
+    tool: str,
+    args: dict | None = None,
+    result: dict | None = None,
+) -> MutationSuccessCardSpec | None:
+    """Build the shared success card for a write tool. Unknown tools return None."""
+    title = _SUCCESS_CARD_TITLES.get(tool)
+    if title is None:
+        return None
+    facts = _success_facts(args, result)
+    lines = [(_SUCCESS_STATUS_LABEL, _SUCCESS_STATUS_VALUE), *_success_detail_lines(tool, facts)]
+    return MutationSuccessCardSpec(
+        tool=tool,
+        title=title,
+        lines=tuple(lines),
+        followup=mutation_success_followup_text(tool),
+    )
 
 
 def update_address_success_status_text() -> str:
@@ -182,15 +344,14 @@ def update_address_success_followup_text() -> str:
 
 
 def update_address_success_card_description(order_id: str, address: str) -> str:
-    """Chatwoot cards description: status first (no native badge), then blocks."""
-    return "\n".join(
-        [
-            _UPDATE_ADDRESS_SUCCESS_STATUS,
-            f"订单号：{order_id}",
-            f"新收货地址：{address}",
-            _UPDATE_ADDRESS_SUCCESS_ACCOUNT_UPDATED,
-        ]
+    """Chatwoot cards description: status first, then ``标签：值`` bullets."""
+    spec = build_mutation_success_card(
+        "update_address",
+        {"order_id": order_id, "address": address},
+        None,
     )
+    assert spec is not None
+    return spec.description
 
 
 def human_service_header_text() -> str:

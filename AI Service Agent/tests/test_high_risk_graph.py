@@ -545,9 +545,12 @@ def test_refund_missing_order_id_auto_resolves_single(monkeypatch, tmp_path):
         {"configurable": {"thread_id": thread_id}},
     )
 
-    assert not out.get("__interrupt__")
-    assert out["context"]["clarify_missing"] == ["order_id"]
-    assert {item["order_id"] for item in out["context"]["cancellation_candidates"]} == {order_id}
+    assert out.get("__interrupt__")
+    value = out["__interrupt__"][0].value
+    assert value.get("tool") == "refund_apply"
+    assert value.get("type") != "approval_required"
+    assert {item["order_id"] for item in value["order_candidates"]} == {order_id}
+    assert not (value.get("prefills") or {}).get("order_id")
 
 
 def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
@@ -585,9 +588,11 @@ def test_refund_missing_order_id_clarifies_multiple(monkeypatch, tmp_path):
         {"configurable": {"thread_id": thread_id}},
     )
 
-    assert out["context"]["clarify_missing"] == ["order_id"]
-    assert {item["order_id"] for item in out["context"]["cancellation_candidates"]} <= set(order_ids.split(","))
-    assert "多笔符合条件的订单" in out["messages"][-1].content
+    assert out.get("__interrupt__")
+    value = out["__interrupt__"][0].value
+    assert value.get("tool") == "refund_apply"
+    assert {item["order_id"] for item in value["order_candidates"]} <= set(order_ids.split(","))
+    assert len(value["order_candidates"]) >= 2
 
 
 def test_high_risk_refund_unknown_order_still_approval():

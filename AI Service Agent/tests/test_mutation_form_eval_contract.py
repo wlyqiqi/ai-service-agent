@@ -66,14 +66,17 @@ def test_functional_tool_known_missing_fields_open_form_not_chat_clarify():
         assert "clarification_required" in case.get("forbidden_events", []), case_id
 
 
-def test_functional_operation_clarify_and_highrisk_clarify_unchanged():
+def test_functional_operation_clarify_stays_chat_highrisk_missing_order_opens_form():
     cases = {c["id"]: c for c in _load_jsonl(FUNCTIONAL)}
     assert cases["F26"]["turns"][0]["message"] == "我要改一下订单"
     assert cases["F26"]["expected_events"] == ["clarification_required", "done"]
     assert "form_required" in cases["F26"]["forbidden_events"]
     for case_id in ("F35", "F36"):
-        assert "clarification_required" in cases[case_id]["expected_events"]
         assert cases[case_id]["suite"] == "high_risk"
+        assert "form_required" in cases[case_id]["expected_events"]
+        assert "clarification_required" not in cases[case_id]["expected_events"]
+        assert "clarification_required" in cases[case_id].get("forbidden_events", [])
+        assert "approval_required" in cases[case_id].get("forbidden_events", [])
 
 
 def test_functional_form_rejected_case_present():

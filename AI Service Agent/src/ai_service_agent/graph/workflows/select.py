@@ -2,7 +2,7 @@
 
 LLM 负责理解，确定性代码负责校验：工具必须在档内。
 Mutation：tool 已知即写 pending_tool（字段可不全 → Form Interrupt prefills）。
-HighRisk：缺参写 clarify_missing → 聊天 clarify；完整则 pending_tool。
+HighRisk：有可操作订单但缺 order_id → pending_tool（Form Interrupt 收集）；零候选仍 clarify；完整则 pending_tool。
 真 schema 类型/未知字段错误 -> safety_rejected，不进入 interrupt。
 """
 
@@ -234,7 +234,8 @@ def make_select_node(
     def _clarify(state: dict, missing: list[str]) -> dict:
         # 参数不完整 != 拒绝（D1）：只写 clarify_missing，由条件边路由到 clarify 节点（普通轮）。
         # 不发 safety_rejected；execution_status 由 clarify 节点置 clarifying。
-        # Mutation 主路径不再走此分支（见 _pending_for_form）；HighRisk 仍用聊天补参。
+        # Mutation 主路径不再走此分支（见 _pending_for_form）。
+        # HighRisk 有候选时走 Form；零候选或非本档工具仍聊天补参。
         return {"context": {**state.get("context", {}), "clarify_missing": missing}}
 
     def _tier_clarify(state: dict, tool_name: str) -> dict:
@@ -328,6 +329,12 @@ def make_select_node(
                     candidates = []
             if not candidates:
                 return _clarify(state, ["order_id"])
+            if tier == "high_risk":
+                meta = registry.meta_for(tool_name)
+                if meta is not None and meta.schema is not None:
+                    return _pending_for_form(
+                        state, tool_name, _partial_args_for_form(args, meta)
+                    )
             return {
                 "context": {
                     **state.get("context", {}),

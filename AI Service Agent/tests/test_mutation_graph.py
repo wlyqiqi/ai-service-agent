@@ -290,9 +290,12 @@ def test_cancel_order_without_id_clarifies_even_with_single_paid_order(monkeypat
         },
         {"configurable": {"thread_id": thread_id}},
     )
-    assert not out.get("__interrupt__")
-    assert out["context"]["clarify_missing"] == ["order_id"]
-    assert {item["order_id"] for item in out["context"]["cancellation_candidates"]} == {order_id}
+    assert out.get("__interrupt__")
+    value = out["__interrupt__"][0].value
+    assert value.get("tool") == "cancel_order"
+    assert value.get("type") != "approval_required"
+    assert {item["order_id"] for item in value["order_candidates"]} == {order_id}
+    assert not (value.get("prefills") or {}).get("order_id")
 
 
 def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
@@ -324,8 +327,10 @@ def test_cancel_order_without_id_handles_multiple_and_empty(monkeypatch, seed):
         },
         {"configurable": {"thread_id": thread_id}},
     )
-    assert out["context"]["cancellation_candidates"]
-    assert out["context"]["clarify_missing"] == ["order_id"]
+    assert out.get("__interrupt__")
+    value = out["__interrupt__"][0].value
+    assert value.get("tool") == "cancel_order"
+    assert len(value["order_candidates"]) >= 2
 
     thread_id = "cancel-empty"
     out = ainvoke_graph(graph,

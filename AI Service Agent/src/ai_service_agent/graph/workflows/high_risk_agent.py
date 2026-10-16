@@ -10,6 +10,7 @@ dict，由条件边函数路由，规避该冲突——与 mutation_agent.py 同
 """
 
 import json
+import uuid
 
 import langgraph.types as _lg_types
 from langchain_core.messages import AIMessage
@@ -17,8 +18,10 @@ from langchain_core.messages import ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.runtime import Runtime
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.domain.orders import OrderRepositoryUnavailable
 from ai_service_agent.graph.approval import make_approval_request
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
@@ -33,10 +36,20 @@ from ai_service_agent.graph.workflows.copy import (
     approval_expired_text,
     approval_failed_text,
     approval_rejected_text,
+    clarify_no_candidates_text,
+    confirmation_summary,
+    operation_cancelled_text,
     recheck_failed_text,
     RUNTIME_ERROR_TEXT,
 )
+from ai_service_agent.graph.workflows.form_resume import (
+    form_resume_model,
+    resume_action,
+    resume_field_values,
+    schema_field_args,
+)
 from ai_service_agent.graph.workflows.safety import (
+    incomplete_business_fields,
     make_precheck_fetch_node,
     make_recheck_node,
     make_safety_check_node,
@@ -54,6 +67,85 @@ def make_high_risk_graph(
     tool_hooks=None,
     order_repository=None,
 ):
+    def _order_repository(runtime: Runtime[GraphContext] | None):
+        if runtime is not None and runtime.context is not None:
+            repository = getattr(runtime.context, "order_repository", None)
+            if repository is not None:
+                return repository
+        return order_repository
+
+    def prepare_form(state: dict) -> dict:
+        ctx = {
+            key: item
+            for key, item in dict(state.get("context") or {}).items()
+            if key not in ("form_errors", "recheck_reason", "confirm_result")
+        }
+        ctx["form_session_id"] = str(uuid.uuid4())
+        return {"execution_status": "waiting_confirmation", "context": ctx}
+
+    def form_interrupt(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
+        """Missing-arg collection for cancel/refund. Confirm continues to approval, not a write."""
+        ctx = dict(state.get("context") or {})
+        pending = ctx["pending_tool"]
+        form_session_id = ctx.get("form_session_id") or str(uuid.uuid4())
+        repository = _order_repository(runtime)
+        user_id = state.get("user_id") or ""
+        candidates: list[dict] = []
+        if repository is not None and user_id:
+            try:
+                candidates = repository.list_actionable_orders(user_id, pending["tool"])
+            except (OrderRepositoryUnavailable, ValueError):
+                candidates = []
+        if not candidates:
+            next_ctx = {
+                key: item
+                for key, item in ctx.items()
+                if key not in ("form_errors", "recheck_reason", "confirm_result", "form_session_id")
+            }
+            next_ctx["confirm_result"] = "empty"
+            return {
+                "messages": [AIMessage(content=clarify_no_candidates_text())],
+                "execution_status": "completed",
+                "context": next_ctx,
+            }
+        meta = registry.meta_for(pending["tool"])
+        schema = None if meta is None else meta.schema
+        prefills = {
+            key: value
+            for key, value in (pending.get("args") or {}).items()
+            if key != "request_id" and value not in (None, "")
+        }
+        value = {
+            "tool": pending["tool"],
+            "order_candidates": candidates,
+            "summary": confirmation_summary(pending["tool"], pending["args"]),
+            "form_session_id": form_session_id,
+            "prefills": prefills,
+        }
+        resume = _lg_types.interrupt(value, response_schema=form_resume_model(schema))
+        action = resume_action(resume)
+        accepted = action == "confirm"
+        next_ctx = {
+            key: item
+            for key, item in ctx.items()
+            if key not in ("form_errors", "recheck_reason", "confirm_result")
+        }
+        next_ctx["form_session_id"] = form_session_id
+        next_ctx["confirm_result"] = "confirm" if accepted else "cancel"
+        if not accepted:
+            next_ctx.pop("form_session_id", None)
+            return {"context": next_ctx, "execution_status": "completed"}
+        request_id = pending.get("request_id") or str(uuid.uuid4())
+        next_ctx["pending_tool"] = {
+            "tool": pending["tool"],
+            "args": {
+                **schema_field_args(resume_field_values(resume), schema),
+                "request_id": request_id,
+            },
+            "request_id": request_id,
+        }
+        return {"context": next_ctx, "execution_status": "waiting_confirmation"}
+
     def prepare_approval(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
         if pending["tool"] == "cancel_order":
@@ -186,6 +278,9 @@ def make_high_risk_graph(
         pending = state["context"]["pending_tool"]
         return {"messages": [AIMessage(content=approval_expired_text(pending["tool"]))], "execution_status": "completed"}
 
+    def finalize_form_cancelled(state: dict) -> dict:
+        return {"messages": [AIMessage(content=operation_cancelled_text())], "execution_status": "completed"}
+
     def finalize_aborted(state: dict) -> dict:
         return {"messages": [AIMessage(content=recheck_failed_text())], "execution_status": "completed"}
 
@@ -196,9 +291,21 @@ def make_high_risk_graph(
         ctx = state.get("context", {})
         if "clarify_missing" in ctx or ctx.get("tier_clarify"):
             return "clarify"
-        if "pending_tool" in ctx:
+        pending = ctx.get("pending_tool")
+        if pending:
+            meta = registry.meta_for(pending.get("tool")) if isinstance(pending.get("tool"), str) else None
+            if incomplete_business_fields(pending.get("args") or {}, meta):
+                return "prepare_form"
             return "precheck_fetch"
         return "safety_final"
+
+    def _form_target(state: dict) -> str:
+        result = state.get("context", {}).get("confirm_result")
+        if result == "confirm":
+            return "precheck_fetch"
+        if result == "empty":
+            return "end"
+        return "finalize_form_cancelled"
 
     def _safety_target(state: dict) -> str:
         return "safety_final" if state.get("context", {}).get("precheck_reason") else "prepare_approval"
@@ -222,6 +329,8 @@ def make_high_risk_graph(
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
     builder.add_node("clarify", make_clarify_node())
+    builder.add_node("prepare_form", prepare_form)
+    builder.add_node("form_interrupt", form_interrupt)
     builder.add_node("precheck_fetch", make_precheck_fetch_node(order_repository))
     builder.add_node("safety_check", make_safety_check_node("high_risk", registry))
     builder.add_node("safety_final", safety_final)
@@ -243,6 +352,7 @@ def make_high_risk_graph(
         ),
     )
     builder.add_node("finalize_ok", finalize_ok)
+    builder.add_node("finalize_form_cancelled", finalize_form_cancelled)
     builder.add_node("finalize_failed", finalize_failed)
     builder.add_node("finalize_rejected", finalize_rejected)
     builder.add_node("finalize_expired", finalize_expired)
@@ -250,9 +360,25 @@ def make_high_risk_graph(
     builder.add_edge(START, "select_llm")
     builder.add_conditional_edges(
         "select_llm", _select_target,
-        {"clarify": "clarify", "precheck_fetch": "precheck_fetch", "safety_final": "safety_final"},
+        {
+            "clarify": "clarify",
+            "prepare_form": "prepare_form",
+            "precheck_fetch": "precheck_fetch",
+            "safety_final": "safety_final",
+        },
     )
     builder.add_edge("clarify", END)
+    builder.add_edge("prepare_form", "form_interrupt")
+    builder.add_conditional_edges(
+        "form_interrupt",
+        _form_target,
+        {
+            "precheck_fetch": "precheck_fetch",
+            "finalize_form_cancelled": "finalize_form_cancelled",
+            "end": END,
+        },
+    )
+    builder.add_edge("finalize_form_cancelled", END)
     builder.add_edge("precheck_fetch", "safety_check")
     builder.add_conditional_edges(
         "safety_check", _safety_target, {"prepare_approval": "prepare_approval", "safety_final": "safety_final"}

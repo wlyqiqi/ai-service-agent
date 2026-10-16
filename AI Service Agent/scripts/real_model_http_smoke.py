@@ -311,25 +311,26 @@ def scenario_faq(client: httpx.Client, db_path: str) -> dict:
 
 
 def scenario_clarify_0076(client: httpx.Client, db_path: str) -> dict:
-    """CT-RL-0076（D2+D3 探针）：明确退款请求 -> clarification_required、不得出现 approval_required。
+    """明确退款但未给订单号：有候选则 form_required，不得直接 approval_required。
 
-    若真实模型为缺参输入编造 order_id 导致 select 放行 -> approval_required 出现 -> 本场景 FAIL，
-    即暴露 D3 残余风险（模型编造必填参数），不是纯代码回归。
+    若真实模型为缺参输入编造 order_id 导致 select 放行 -> approval_required 出现 -> 本场景 FAIL。
     """
     sid, sess = new_session(client)
     code, events = chat_sse(client, sid, "我要申请退款")
     types = event_types(events)
+    form_required = any(e.get("type") == "form_required" for e in events)
     clarification = any(e.get("type") == "clarification_required" for e in events)
     approval = any(e.get("type") == "approval_required" for e in events)
     done = next((e for e in reversed(events) if e.get("type") == "done"), None)
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     pass_ = (
-        code == 200 and clarification and not approval
-        and done is not None and st["execution_status"] == "clarifying"
+        code == 200 and form_required and not clarification and not approval
+        and done is not None and bool(st["interrupts"])
     )
     return {
-        "name": "Clarify0076", "pass": pass_, "session_id": sid,
+        "name": "HighRiskForm", "pass": pass_, "session_id": sid,
         "chat": {"http": code, "timeline": types,
+                 "form_required": form_required,
                  "clarification_required": clarification, "approval_required": approval,
                  "done_final": (done or {}).get("data")},
         "thread_id": open_status(db_path, sid)["thread_id"],
