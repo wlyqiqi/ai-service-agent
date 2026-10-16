@@ -2,16 +2,27 @@
 
 import importlib.util
 import json
+import sqlite3
+import uuid
 from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.types import Command
 
+from ai_service_agent.domain.orders import SQLiteOrderRepository
+from ai_service_agent.graph import builder as builder_mod
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.agents.tool_args import ToolArgumentNormalizationMiddleware
-from ai_service_agent.testing import ToolCallingFakeModel
+from ai_service_agent.graph.builder import build_graph
+from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools import orders as orders_mod
+from ai_service_agent.tools import write as write_mod
+from ai_service_agent.tools.kb import kb_search
 from ai_service_agent.tools.orders import my_orders, order_lookup, shipment_query
 from ai_service_agent.tools.params import is_absent_sentinel, normalize_absent_args
 from conftest import ainvoke_graph
@@ -113,7 +124,14 @@ def _use_orders_db(monkeypatch, db_path: Path) -> None:
     class _Settings:
         mock_ecommerce_db_path = str(db_path)
 
-    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    settings = _Settings()
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(write_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        builder_mod,
+        "SQLiteOrderRepository",
+        lambda path: SQLiteOrderRepository(str(db_path)),
+    )
 
 
 class _SpyHook:
@@ -227,3 +245,116 @@ def test_order_lookup_order_id_null_is_a_missing_argument_not_not_found(monkeypa
     assert "null" not in body
     assert "order_id" in body
     assert "missing" in body.lower() or "required" in body.lower()
+
+
+def _mutation_select(args: dict):
+    model = ToolCallingFakeModel(responses=[select_json_message("update_order_note", args)])
+    return make_select_node(
+        model,
+        "mutation",
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+
+
+def test_select_replaces_non_uuid_request_id_before_the_write_is_pending():
+    import asyncio
+
+    node = _mutation_select({
+        "order_id": "ORD-1",
+        "note": "放驿站",
+        "request_id": "null",
+    })
+    out = asyncio.run(node({
+        "messages": [HumanMessage(content="给订单加备注")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    request_id = out["context"]["pending_tool"]["request_id"]
+    assert request_id != "null"
+    assert uuid.UUID(request_id).version == 4
+    assert out["context"]["pending_tool"]["args"]["request_id"] == request_id
+    assert out["context"]["pending_tool"]["args"]["note"] == "放驿站"
+
+
+def test_select_keeps_an_existing_uuid4_request_id():
+    import asyncio
+
+    kept = "11111111-1111-4111-8111-111111111111"
+    node = _mutation_select({
+        "order_id": "ORD-1",
+        "note": "放驿站",
+        "request_id": kept,
+    })
+    import asyncio
+    out = asyncio.run(node({
+        "messages": [HumanMessage(content="给订单加备注")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    assert out["context"]["pending_tool"]["request_id"] == kept
+
+
+def _confirm_note(order_id: str, note: str) -> dict:
+    return {"action": "confirm", "order_id": order_id, "note": note}
+
+
+def _note_for(db_path: Path, order_id: str) -> str | None:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT note FROM orders WHERE order_id=?", (order_id,)).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else row[0]
+
+
+def test_null_request_id_writes_two_different_orders(monkeypatch, tmp_path):
+    db_path = _seed_db(tmp_path)
+    _use_orders_db(monkeypatch, db_path)
+    writes = (
+        ("ORD-1", "放驿站", "note-null-1"),
+        ("ORD-10086", "另一条备注", "note-null-2"),
+    )
+    for order_id, note, thread_id in writes:
+        model = ToolCallingFakeModel(responses=[
+            router_json_message("order_mutation", 0.9),
+            select_json_message("update_order_note", {
+                "order_id": order_id,
+                "note": note,
+                "request_id": "null",
+            }),
+        ])
+        graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+        pending = ainvoke_graph(
+            graph,
+            {
+                "messages": [HumanMessage(content=f"给订单 {order_id} 加备注")],
+                "user_id": "u1",
+                "session_id": thread_id,
+                "context": {},
+            },
+            {"configurable": {"thread_id": thread_id}},
+        )
+        assert pending.get("__interrupt__")
+        out = ainvoke_graph(
+            graph,
+            Command(resume=_confirm_note(order_id, note)),
+            {"configurable": {"thread_id": thread_id}},
+        )
+        tool_message = next(message for message in out["messages"] if getattr(message, "type", None) == "tool")
+        payload = json.loads(tool_message.content)
+        assert payload["replayed"] is False
+        assert payload["result"]["order_id"] == order_id
+        assert payload["result"]["note"] == note
+        assert _note_for(db_path, order_id) == note
+
+    conn = sqlite3.connect(db_path)
+    try:
+        keys = conn.execute(
+            "SELECT request_id FROM idempotency WHERE tool_name='update_order_note'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(keys) == 2
+    assert all(uuid.UUID(row[0]).version == 4 for row in keys)
+    assert keys[0][0] != keys[1][0]
