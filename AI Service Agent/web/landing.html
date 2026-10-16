@@ -137,13 +137,30 @@
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } * { transition:none !important; } }
     .woot-widget-holder.woot-widget-holder--opened { width:420px !important; height:620px !important; }
     .woot-widget-holder iframe { width:420px !important; height:620px !important; }
-    .human-service-bar { display:none; align-items:center; justify-content:center; flex:0 0 36px; height:36px; background:#1f2937; color:#fff; font-size:14px; font-weight:600; }
+    .human-service-bar { display:none; align-items:center; justify-content:center; align-self:stretch; flex:0 0 36px; box-sizing:border-box; width:100%; margin:0; height:36px; background:#1f2937; color:#fff; font-size:14px; font-weight:600; }
     .woot-widget-holder.human-service:not(.woot--hide),
-    .woot-widget-holder.human-service.woot-widget-holder--opened { display:flex !important; flex-direction:column; width:420px !important; height:620px !important; }
+    .woot-widget-holder.human-service.woot-widget-holder--opened { display:flex !important; flex-direction:column; align-items:stretch !important; width:420px !important; height:620px !important; }
     .woot-widget-holder.human-service:not(.woot--hide) .human-service-bar,
-    .woot-widget-holder.human-service.woot-widget-holder--opened .human-service-bar { display:flex; }
+    .woot-widget-holder.human-service.woot-widget-holder--opened .human-service-bar { display:flex; width:100%; }
     .woot-widget-holder.human-service:not(.woot--hide) iframe,
-    .woot-widget-holder.human-service.woot-widget-holder--opened iframe { flex:1 1 auto; height:auto !important; min-height:0; }
+    .woot-widget-holder.human-service.woot-widget-holder--opened iframe { flex:1 1 auto; width:100% !important; max-width:100% !important; height:auto !important; min-height:0; }
+    /* Desktop (≥1025px, above the page's 1024px layout breakpoint): floating holder is half the viewport, capped at 960px. Height stays 620px. */
+    @media (min-width:1025px) {
+      body .woot-widget-holder.woot-widget-holder--opened,
+      body .woot-widget-holder.human-service:not(.woot--hide),
+      body .woot-widget-holder.human-service.woot-widget-holder--opened {
+        width:min(50vw, 960px) !important;
+        max-width:min(50vw, 960px) !important;
+        height:620px !important;
+        max-height:620px !important;
+      }
+      body .woot-widget-holder.woot-widget-holder--opened iframe,
+      body .woot-widget-holder.human-service:not(.woot--hide) iframe,
+      body .woot-widget-holder.human-service.woot-widget-holder--opened iframe {
+        width:100% !important;
+        max-width:100% !important;
+      }
+    }
     @media (max-width:480px) {
       .woot-widget-holder.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; }
       .woot-widget-holder iframe { width:100vw !important; height:calc(100vh - 72px) !important; }
