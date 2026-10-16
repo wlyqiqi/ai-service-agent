@@ -22,6 +22,7 @@ from langgraph.runtime import Runtime
 
 from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
 from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_business_fields
+from ai_service_agent.tools.params import is_absent_sentinel
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
@@ -101,12 +102,20 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
+def _is_uuid4(value: str) -> bool:
+    try:
+        return uuid.UUID(value).version == 4
+    except (ValueError, AttributeError):
+        return False
+
+
 def _normalize_placeholder_args(args: dict, meta) -> dict:
     """将模型占位符归一为「未提供」，供 D1 缺参澄清（不把空参当 schema 拒绝）。
 
-    - None / 空白字符串 → 删除字段
+    - None / 空白字符串 / 缺省哨兵（"null" 等）→ 删除字段
     - int/float <= 0 → 删除字段（如 amount=0 的开票占位）
     真类型错误（如 amount=\"abc\"）保留，仍由 schema 走 invalid_args。
+    request_id 原样保留；非 UUID 在进入缺参表单前由 select 换成新的 uuid4。
     """
     if meta is None or meta.schema is None:
         return dict(args)
@@ -122,6 +131,8 @@ def _normalize_placeholder_args(args: dict, meta) -> dict:
         if value is None:
             continue
         if isinstance(value, str) and not value.strip():
+            continue
+        if is_absent_sentinel(value):
             continue
         if isinstance(value, bool):
             normalized[key] = value
@@ -324,7 +335,9 @@ def make_select_node(
                     "cancellation_candidates": candidates,
                 }
             }
-        args.setdefault("request_id", str(uuid.uuid4()))  # 幂等键（tool-spec §2）；先补再校验
+        existing = args.get("request_id")
+        if not isinstance(existing, str) or not _is_uuid4(existing):
+            args["request_id"] = str(uuid.uuid4())
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:
             return _reject(state, "unknown_tool")

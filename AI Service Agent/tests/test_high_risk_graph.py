@@ -818,9 +818,9 @@ def test_cancel_order_approved_writes_db_once(monkeypatch, tmp_path):
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "approved")
     _use_cancel_db(monkeypatch, db_path)
     cancel_order = make_cancel_order_tool(SQLiteOrderRepository(str(db_path)))
-    graph = _cancel_graph(order_id, "cancel-approved")
+    graph = _cancel_graph(order_id, "11111111-1111-4111-8111-111111111111")
     thread_id = "cancel-approved"
-    request_id = "cancel-approved"
+    request_id = "11111111-1111-4111-8111-111111111111"
 
     out = _invoke_cancel(graph, owner, thread_id)
     approval_values = [
@@ -897,9 +897,9 @@ def test_refund_order_approved_writes_db_once(monkeypatch, tmp_path):
     _, db_path, owner, order_id, before = _load_cancel_seed(tmp_path, "refund-approved")
     _use_cancel_db(monkeypatch, db_path)
     refund_apply = make_refund_apply_tool(SQLiteOrderRepository(str(db_path)))
-    graph = _refund_graph(order_id, "refund-approved")
+    graph = _refund_graph(order_id, "22222222-2222-4222-8222-222222222222")
     thread_id = "refund-approved"
-    request_id = "refund-approved"
+    request_id = "22222222-2222-4222-8222-222222222222"
 
     out = _invoke_refund(graph, owner, thread_id)
     approvals = [
@@ -971,9 +971,9 @@ def test_signed_refund_approval_path_writes_db_once(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    graph = _refund_graph(order_id, "signed-refund-approved")
+    graph = _refund_graph(order_id, "33333333-3333-4333-8333-333333333333")
     thread_id = "signed-refund-approved"
-    request_id = "signed-refund-approved"
+    request_id = "33333333-3333-4333-8333-333333333333"
 
     out = _invoke_refund(graph, owner, thread_id)
     approvals = [

@@ -17,6 +17,7 @@ from ai_service_agent.graph.fault_tolerance import (
     make_subgraph_error_handler,
     make_timeout_policy,
 )
+from ai_service_agent.graph.agents.tool_args import ToolArgumentNormalizationMiddleware
 from ai_service_agent.harness.tool_hooks import ToolHookMiddleware
 from ai_service_agent.prompts import READ_SYSTEM_PROMPT
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
@@ -33,6 +34,7 @@ def make_read_graph(model, tools: list, tool_hooks=None):
     """ReadGraph：create_agent + 只读工具集（graph-spec.md §6.1），无业务 interrupt。
     传入 state_schema 使 ToolNode 能注入 user_id（InjectedState），属主校验留在工具层。"""
     middleware = [
+        ToolArgumentNormalizationMiddleware(),
         ContextBudgetMiddleware(make_read_policy(get_settings())),
         AllowedToolsMiddleware(),
         ModelCallLimitMiddleware(run_limit=READ_MODEL_CALL_LIMIT, exit_behavior="end"),
