@@ -267,6 +267,19 @@ class ChatwootClient:
         await self.send_bot_message(conversation_id, note, private=True)
         await self.add_conversation_label(conversation_id, "handoff-request")
 
+    async def clear_typing(self, conversation_id: str) -> None:
+        """关掉 Agent Bot 自动打出的输入中。坐席输入用 Chatwoot 自己的 typing 事件。"""
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return
+        cw_id = rec["chatwoot_conversation_id"]
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/toggle_typing_status",
+            headers=self._headers(),
+            json={"typing_status": "off"},
+        )
+        r.raise_for_status()
+
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
         rec = self.mapping.get(conversation_id)
         body = {"content": content, "sender_type": "Contact", "message_type": "incoming"}

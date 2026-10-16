@@ -109,6 +109,35 @@ def test_chatwoot_identity_fails_closed_without_hmac(tmp_path):
     assert client.get("/me/chatwoot_identity", headers={"Authorization": f"Bearer {token}"}).status_code == 503
 
 
+def test_conversation_mode_header_while_human(tmp_path):
+    import sqlite3
+
+    from ai_service_agent.harness.auth import UserStore
+    from ai_service_agent.harness.messages import MessageStore
+    from ai_service_agent.harness.session import ConversationStatusStore
+
+    db = str(tmp_path / "mode-header.db")
+    conn = sqlite3.connect(db)
+    UserStore(conn).upsert("u1", "+65-81234567", "张伟", "123456")
+    status = ConversationStatusStore(conn)
+    info = status.create_session("u1")
+    MessageStore(conn).append(info["conversation_id"], "user", "你好")
+    conn.close()
+    client = TestClient(
+        create_app(db, model="fake", auth_enabled=True, jwt_secret="test-secret-with-at-least-32-bytes!!")
+    )
+    token = client.post("/auth/login", json={"phone": "+65-81234567", "password": "123456"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/me/conversation_mode", headers=headers).json() == {"mode": "ai", "header": None}
+    conn = sqlite3.connect(db)
+    ConversationStatusStore(conn).set_mode(info["conversation_id"], "human")
+    conn.close()
+    assert client.get("/me/conversation_mode", headers=headers).json() == {
+        "mode": "human",
+        "header": "人工服务中",
+    }
+
+
 def test_agent_bot_webhook_requires_valid_signature(tmp_path):
     import hashlib
     import hmac
@@ -239,7 +268,8 @@ def test_human_lane_after_handoff(tmp_path):
     client = TestClient(create_app(str(tmp_path / "s.db"), model="fake"))
     with client.stream("POST", "/chat", json={"session_id": info["conversation_id"], "message": "在吗"}) as r:
         text = "".join(r.iter_text())
-    assert "人工" in text  # 不触图，返回人工车道占位
+    assert "已转人工" not in text
+    assert '"done"' in text
 
     # 人工车道消息落 Message Store（唯一真相源）
     conn2 = sqlite3.connect(tmp_path / "s.db")

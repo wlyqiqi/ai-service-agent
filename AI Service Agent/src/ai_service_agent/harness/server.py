@@ -29,6 +29,7 @@ from ai_service_agent.graph.workflows.copy import (
     handoff_request_idempotent_tip_text,
     handoff_request_private_note_text,
     handoff_returned_to_bot_text,
+    human_service_header_text,
 )
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
@@ -698,16 +699,17 @@ def create_app(
             return _sse_response(unknown_stream())
 
         if status.get_mode(conv_id) == "human":
-            # 人工车道：写 Message Store（唯一真相源）+ 同步推送 Chatwoot（失败只记日志）
+            # 人工车道：只写 Message Store。不发 bot 气泡，也不把客户话再 create_message 一次。
             messages_store.append(conv_id, "user", body.message)
-            if chatwoot is not None:
+            clear = getattr(chatwoot, "clear_typing", None) if chatwoot is not None else None
+            if clear is not None:
                 try:
-                    await chatwoot.send_as_contact(conv_id, body.message)
+                    await clear(conv_id)
                 except Exception:
-                    logger.exception("chatwoot send failed: conv=%s", conv_id)
+                    logger.exception("chatwoot clear typing failed: conv=%s", conv_id)
 
             def human_stream():
-                yield {"type": "done", "data": {"final": "已转人工，坐席将尽快回复。", "message_id": None}}
+                yield {"type": "done", "data": {"final": None, "message_id": None}}
 
             return _sse_response(human_stream())
 
@@ -753,11 +755,8 @@ def create_app(
             lock = await _thread_lock(thread_id)
             async with lock:
                 if status.get_mode(conv_id) != "ai":
-                    # Takeover won the lock: do not start a graph turn that could write.
-                    yield {
-                        "type": "done",
-                        "data": {"final": "已转人工，坐席将尽快回复。", "message_id": None},
-                    }
+                    # Takeover won the lock: do not start a graph turn or send a bot bubble.
+                    yield {"type": "done", "data": {"final": None, "message_id": None}}
                     return
                 async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                     graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
@@ -892,6 +891,16 @@ def create_app(
         if failed:
             raise HTTPException(status_code=502, detail="resume execution failed")
         return {"ok": True, "action": normalized, "final": final, "events": events}
+
+    @app.get("/me/conversation_mode")
+    def me_conversation_mode(request: Request):
+        """Widget 顶栏：该用户当前会话为 human 时返回「人工服务中」。"""
+        user_id = _require_auth_user(request)
+        mode = status.active_mode_for_user(user_id)
+        return {
+            "mode": mode,
+            "header": human_service_header_text() if mode == "human" else None,
+        }
 
     @app.get("/conversations/{conversation_id}/messages")
     def get_messages(conversation_id: str, _: None = Depends(_conversation_ownership)):

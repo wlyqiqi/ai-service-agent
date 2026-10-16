@@ -9,7 +9,9 @@ from ai_service_agent.graph.workflows.copy import (
     clarify_no_candidates_text,
     clarify_tier_text,
     form_plain_text_refuse_text,
-    human_mode_tip_text,
+    handoff_joined_notice_text,
+    handoff_returned_to_bot_text,
+    human_service_header_text,
     operation_clarify_text,
     completion_text,
     confirmation_summary,
@@ -72,9 +74,10 @@ def test_completion_text_address_shows_order_and_new_address():
     assert "已修改成功" in text
 
 
-def test_human_mode_tip_text():
-    text = human_mode_tip_text()
-    assert "坐席" in text and ("处理" in text or "接待" in text)
+def test_handoff_system_notice_copy():
+    assert handoff_joined_notice_text() == "人工客服已接入，接下来将由人工为您服务。"
+    assert handoff_returned_to_bot_text() == "已交回AI客服助手"
+    assert human_service_header_text() == "人工服务中"
 
 
 def test_form_plain_text_refuse_text():

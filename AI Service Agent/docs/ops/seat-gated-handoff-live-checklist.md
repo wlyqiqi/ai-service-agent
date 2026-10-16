@@ -38,8 +38,8 @@ uv run --no-sync python scripts/live_seat_gated_triangular.py
 | A | Customer | 说「我要转人工」（或等价申请语） | 仅挂起确认 tip；**Conversation Mode 仍为 `ai`**；Chatwoot 出现 private note + label `handoff-request`；会话 status 保持 `pending` |
 | B | Customer | 再问一条 FAQ（如「退货政策是什么」） | **AI 仍回复**（非 human 车道静默） |
 | C | Seat | **Take over**（官方按钮先 open 再 self-assign；脚本先 assign API 用户再 open） | 客户收到 **Handoff Joined Notice**；Runtime mode=`human`；事件 `handoff_created` |
-| D | Customer | 再发一条消息 | human 车道 tip / 无 AI Graph 回复（坐席侧可继续聊） |
-| E | Seat | 把 status 设回 **pending**（官方交回 Bot） | Runtime mode=`ai`；**不再** toggle（已经是 pending）；双方可见「已交回助手」；事件 `handoff_resolved` |
+| D | Customer | 再发一条消息 | 只进 Message Store；**没有** bot 气泡；Widget 顶栏「人工服务中」；坐席输入是 Chatwoot typing，不是假气泡 |
+| E | Seat | 把 status 设回 **pending**（官方交回 Bot） | Runtime mode=`ai`；**不再** toggle（已经是 pending）；双方可见「已交回AI客服助手」；事件 `handoff_resolved` |
 | E2 | Seat | （兼容）**Resolve**（status → `resolved`） | Runtime mode=`ai`，并 `toggle_status(pending)`；随后的 pending 回声不再切一次 |
 | F | Customer | 再问一条 FAQ | **AI 再次回复** |
 
@@ -62,7 +62,7 @@ Login:
 | B AI still replies | | |
 | C Take over + Joined Notice | | |
 | D Human lane tip | | |
-| E pending → ai + 已交回助手 | | |
+| E pending → ai + 已交回AI客服助手 | | |
 | F AI resumes | | |
 ```
 

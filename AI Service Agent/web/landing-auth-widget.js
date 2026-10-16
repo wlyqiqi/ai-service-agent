@@ -146,9 +146,67 @@
   let auth = loadAuth();
   let conversationId = readConversationId();
   let widgetLoading = false;
+  let modePoll = null;
   let api = config.mock
     ? createMockApi()
     : createApi(window.fetch ? window.fetch.bind(window) : null, config.baseUrl);
+
+  function setHumanHeader(text) {
+    const holder = document.querySelector(".woot-widget-holder");
+    if (!holder) return;
+    let bar = holder.querySelector(".human-service-bar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "human-service-bar";
+      bar.setAttribute("role", "status");
+      holder.prepend(bar);
+    }
+    if (text) {
+      bar.textContent = text;
+      holder.classList.add("human-service");
+    } else {
+      bar.textContent = "";
+      holder.classList.remove("human-service");
+    }
+  }
+
+  async function refreshHumanBar() {
+    if (!auth || !auth.token) {
+      setHumanHeader("");
+      return;
+    }
+    try {
+      const response = await fetch("/me/conversation_mode", {
+        headers: { Authorization: `Bearer ${auth.token}` }
+      });
+      if (!response.ok) {
+        setHumanHeader("");
+        return;
+      }
+      const body = await response.json();
+      setHumanHeader(body && body.header ? body.header : "");
+    } catch (error) {
+      /* header is optional if the runtime is briefly unreachable */
+    }
+  }
+
+  function startModePoll() {
+    if (modePoll) return;
+    refreshHumanBar();
+    modePoll = window.setInterval(refreshHumanBar, 2000);
+  }
+
+  function stopModePoll() {
+    if (modePoll) {
+      window.clearInterval(modePoll);
+      modePoll = null;
+    }
+    setHumanHeader("");
+  }
+
+  window.addEventListener("chatwoot:on-message", () => {
+    refreshHumanBar();
+  });
 
   function updateSession() {
     const authed = !!auth;
@@ -157,6 +215,8 @@
     if (sessionName) sessionName.textContent = name;
     if (sessionAvatar) sessionAvatar.textContent = name.slice(0, 1) || "客";
     if (loginTrigger) loginTrigger.textContent = authed ? "打开客服" : "登录";
+    if (authed) startModePoll();
+    else stopModePoll();
   }
 
   function updateServiceStatus(message, state) {
@@ -349,6 +409,7 @@
     saveConversationId(null);
     auth = null;
     conversationId = null;
+    stopModePoll();
     updateSession();
     updateServiceStatus("", "");
     if (window.$chatwoot) {

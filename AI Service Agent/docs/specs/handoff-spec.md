@@ -33,7 +33,7 @@
 
 ### 1.3 Handoff Resolve：`human` → `ai`
 
-- **权威交回（官方 Agent Bot）**：Account Webhook `conversation_status_changed` 且新 status = `pending`，并且 Runtime 当前 mode 为 `human`。此时 **不再** `toggle_status(pending)`（已经是 pending，避免环）。mode 回 `ai`，发出 `handoff_resolved`，并发送双方可见短提示「已交回助手」。
+- **权威交回（官方 Agent Bot）**：Account Webhook `conversation_status_changed` 且新 status = `pending`，并且 Runtime 当前 mode 为 `human`。此时 **不再** `toggle_status(pending)`（已经是 pending，避免环）。mode 回 `ai`，发出 `handoff_resolved`，并发送双方可见短提示「已交回AI客服助手」。
 - **兼容**：坐席官方 **Resolve / 已解决**（status=`resolved`）同样走完成路径，随后 Runtime `toggle_status(pending)` 把会话交回 Bot；紧接着的 `pending` webhook 因 mode 已是 `ai` 而忽略。HTTP `POST /handoffs/{id}/resolve` 与 webhook resolve **共用同一完成路径**，行为不得漂移。
 - mode 已是 `ai` 时收到 `pending`：**忽略**（Bot 本就持有会话，或刚 toggle 回来的回声）。
 - 转换前**必须校验**该 `conversation_id` 名下是否存在状态为 `pending` 的、与某个 HighRiskGraph / MutationGraph interrupt 关联的审批（校验本身保留；审批**归宿**见下条 supersede）。
@@ -49,6 +49,7 @@
 
 - 任何一次 AI 回复发送前，必须**重新读取当前 `conversation_mode`**，只有仍为 `"ai"` 才允许发送。
 - 如果在生成过程中已被切换为 `"human"`，必须**丢弃该回复，不得发送**。
+- mode 为 `human` 时，客户消息只写入 Message Store，不调用 Chatwoot `create_message` 发 bot 气泡。坐席正在输入时用 Chatwoot 官方 typing（`conversation.typing_on`）；Runtime 只在客户发言后把 Agent Bot 的 typing 关掉，不另造气泡。Widget 顶栏在此期间显示「人工服务中」。系统通知只有两条：进入 human 的「人工客服已接入，接下来将由人工为您服务。」，以及交回时的「已交回AI客服助手」。
 - 不允许用"生成时刻的 mode 值"代替"发送前的实时值"。
 - 挂起（`awaiting_seat`）期间 mode 仍为 `ai`，本门控**允许**继续发 AI 回复（这是 Seat-gated 的产品意图）。
 

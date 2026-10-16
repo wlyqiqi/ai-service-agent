@@ -305,7 +305,7 @@ def main() -> int:
                 "joined_notice": has_joined,
             })
 
-            # D — human lane tip on further chat (no Graph / no token stream)
+            # D — human lane stores the message and sends no bot bubble
             code, ev = chat_sse(client, sid, "人工还在吗")
             mode = get_mode(client, sid)
             types = event_types(ev)
@@ -322,7 +322,7 @@ def main() -> int:
                 and mode == "human"
                 and "done" in types
                 and "token" not in types
-                and human_tip == "已转人工，坐席将尽快回复。"
+                and not human_tip
             )
             results.append({
                 "name": "D.human_lane_further_chat",

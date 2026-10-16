@@ -283,10 +283,22 @@ def test_human_lane_end_to_end(tmp_path):
     ).status_code == 200
     assert _mode(db, sid) == "human"
 
-    # 3) Human lane message
+    # 3) Human lane message: store only, no further bot outbound
+    posts_before = [
+        json.loads(body).get("content")
+        for method, url, body in calls
+        if method == "POST" and "/messages" in url and body
+    ]
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "在吗"}) as r:
         events = parse_sse("".join(r.iter_text()))
     assert events[-1]["type"] == "done"
+    assert events[-1]["data"].get("final") is None
+    posts_after = [
+        json.loads(body).get("content")
+        for method, url, body in calls
+        if method == "POST" and "/messages" in url and body
+    ]
+    assert posts_after == posts_before
     rows3 = _rows(db, sid)
     assert any(m["role"] == "user" and m["content"] == "在吗" for m in rows3)
     assert sum(m["content"] == confirm for m in rows3) == 1

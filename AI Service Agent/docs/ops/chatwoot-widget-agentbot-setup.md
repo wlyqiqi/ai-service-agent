@@ -163,7 +163,7 @@ Seat Takeover / 交回 Bot **不**走 AgentBot Outgoing URL。须在 Chatwoot **
    - `pending` 且 mode 已是 `ai`：Bot 持有，**忽略**（防环）
    - `open` 且人工 assignee（或随后的 self-assign / `Assigned to` activity）：Seat Takeover（mode=`human` + `handoff_created` + Handoff Joined Notice）。若有未提交的 Mutation Form，先 cancel（不写库），客户看到「尚未提交的修改已取消」
    - `open` 且没有人工 assignee：不是接手。Agent Bot 读超时后系统会自动打开，并写 “error with the agent bot”。不发「人工客服已接入」、不切 human。裸 open 先等 `CHATWOOT_BOT_ERROR_OPEN_GRACE_SECONDS`（默认 2），宽限内没有人工信号则在 `CHATWOOT_REVERT_BOT_ERROR_OPEN`（默认 true）时 `toggle_status(pending)`
-   - `pending` 且 mode 为 `human`：交回 Bot（mode=`ai` + `handoff_resolved` + 双方可见「已交回助手」）。**不再** toggle（status 已经是 pending）
+   - `pending` 且 mode 为 `human`：交回 Bot（mode=`ai` + `handoff_resolved` + 双方可见「已交回AI客服助手」）。**不再** toggle（status 已经是 pending）
    - `resolved`：兼容路径，同样交回，并由 Runtime `toggle_status(pending)`；随后的 `pending` 回声忽略
 
 坐席 Take over（官方按钮先 open 再 self-assign）或把会话派给人工后再 open，才会进 human。Bot 与客户申请路径不会调用 `toggle_status(open)`。
@@ -192,7 +192,7 @@ SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
 
 1. 客户在 Widget 说话，会话 status 为 **pending**，助手能回复。
 2. 坐席 **Take over**（status → **open**）：助手不再跑图；客户收到人工已接入。
-3. 坐席把 status 设回 **pending**：助手恢复回复，双方可见「已交回助手」。
+3. 坐席把 status 设回 **pending**：助手恢复回复，双方可见「已交回AI客服助手」。人工期间客户再发消息不会出现 bot 气泡；顶栏显示「人工服务中」；坐席输入用 Chatwoot 自己的 typing。
 
 脚本（读 `.env` 的 `CHATWOOT_*` + `RUNTIME_BASE`）：
 

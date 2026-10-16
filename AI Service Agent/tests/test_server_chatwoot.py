@@ -26,7 +26,7 @@ class FakeChatwoot:
         self.calls.append(("send", conversation_id, content))
 
 
-def test_human_lane_pushes_to_chatwoot(tmp_path):
+def test_human_lane_does_not_send_bot_message(tmp_path):
     conn = sqlite3.connect(tmp_path / "s.db")
     status = ConversationStatusStore(conn)
     info = status.create_session("u1")
@@ -38,9 +38,11 @@ def test_human_lane_pushes_to_chatwoot(tmp_path):
     with client.stream("POST", "/chat", json={"session_id": info["conversation_id"], "message": "在吗"}) as r:
         text = "".join(r.iter_text())
     assert '"done"' in text
-    assert ("send", info["conversation_id"], "在吗") in cw.calls
+    assert "已转人工" not in text
+    assert cw.calls == []
     rows = MessageStore(sqlite3.connect(tmp_path / "s.db")).list(info["conversation_id"])
-    assert rows[0]["role"] == "user" and rows[0]["content"] == "在吗"
+    assert [row["role"] for row in rows] == ["user"]
+    assert rows[0]["content"] == "在吗"
 
 
 def test_chatwoot_failure_degrades_human_lane(tmp_path):
