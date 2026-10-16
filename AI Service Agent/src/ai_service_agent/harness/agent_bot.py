@@ -1,5 +1,6 @@
 """Chatwoot AgentBot webhook handler（Transport/harness 层）。"""
 
+import logging
 import uuid
 from typing import Any
 
@@ -12,7 +13,6 @@ from ai_service_agent.graph.workflows.copy import (
     handoff_cancel_confirm_text,
     handoff_request_confirm_text,
     handoff_request_private_note_text,
-    human_mode_tip_text,
     update_address_current_address_display,
     update_address_empty_state_text,
     update_address_form_footnote_text,
@@ -27,6 +27,20 @@ from ai_service_agent.graph.workflows.copy import (
 from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
+
+logger = logging.getLogger("ai_service_agent")
+
+
+async def _clear_agent_typing(chatwoot, conversation_id: str) -> None:
+    """Drop the Agent Bot typing bubble. Seat typing stays on Chatwoot's own event."""
+    clear = getattr(chatwoot, "clear_typing", None)
+    if clear is None:
+        return
+    try:
+        await clear(conversation_id)
+    except Exception:
+        logger.exception("chatwoot clear typing failed: conv=%s", conversation_id)
+
 
 # Form Resume schema keys that are not Mutation Form input widgets.
 # ``action`` is appended explicitly as Confirm/Cancel control (not from schema loop).
@@ -517,18 +531,17 @@ async def _handle_locked_agent_bot_message(
             mapping.put(conversation_id, cw_conv_id, contact_id)
 
     if status is not None and status.get_mode(conversation_id) != "ai":
-        # Human lane (handoff-spec §2): Message Store only + fixed tip; no Graph.
+        # Human lane: Message Store only. No bot bubble, no Graph.
         if messages_store is not None:
             message_id = chatwoot_message_id(payload)
             if message_id and messages_store.get_by_message_id(message_id):
                 return None
             messages_store.append(conversation_id, "user", content, message_id=message_id or None)
-        tip = human_mode_tip_text()
-        await chatwoot.send_bot_message(conversation_id, tip)
+        await _clear_agent_typing(chatwoot, conversation_id)
         return {
             "conversation_id": conversation_id,
             "chatwoot_conversation_id": cw_conv_id,
-            "response": tip,
+            "response": None,
         }
 
     if callbacks_factory is not None:
@@ -589,6 +602,7 @@ async def _handle_locked_agent_bot_message(
     # #73: capture update_address confirm fields for success-card projection.
     address_success: dict[str, str] | None = None
     address_write_ok = False
+    aborted_for_human = False
 
     if graph is None:
         final_text = (
@@ -695,6 +709,21 @@ async def _handle_locked_agent_bot_message(
 
         async def run_graph():
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
+            nonlocal aborted_for_human
+            if status is not None and status.get_mode(conversation_id) != "ai":
+                # Takeover cancelled the form under this lock: do not Form Resume
+                # and do not send a bot bubble.
+                aborted_for_human = True
+                final_text = None
+                return
+            if (
+                isinstance(resume_payload, dict)
+                and resume_payload.get("action") == "confirm"
+                and getattr(graph, "checkpointer", None)
+            ):
+                fresh = await graph.aget_state(config)
+                if not fresh.interrupts or not is_form_interrupt(fresh.interrupts[0].value):
+                    return
             if implicit_cancel:
                 # Phase 1: official cancel resume only — drain events; do not project
                 # cancel tip or re-push the old form (silent Implicit Cancel).
@@ -722,6 +751,14 @@ async def _handle_locked_agent_bot_message(
                 await run_graph()
         else:
             await run_graph()
+
+    if aborted_for_human:
+        await _clear_agent_typing(chatwoot, conversation_id)
+        return {
+            "conversation_id": conversation_id,
+            "chatwoot_conversation_id": cw_conv_id,
+            "response": None,
+        }
 
     # #73: confirm write ok + no new form → cards (+ short bubble); suppress long done.
     if (

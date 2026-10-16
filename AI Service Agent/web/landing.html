@@ -137,7 +137,19 @@
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } * { transition:none !important; } }
     .woot-widget-holder.woot-widget-holder--opened { width:420px !important; height:620px !important; }
     .woot-widget-holder iframe { width:420px !important; height:620px !important; }
-    @media (max-width:480px) { .woot-widget-holder.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; } .woot-widget-holder iframe { width:100vw !important; height:calc(100vh - 72px) !important; } }
+    .human-service-bar { display:none; align-items:center; justify-content:center; flex:0 0 36px; height:36px; background:#1f2937; color:#fff; font-size:14px; font-weight:600; }
+    .woot-widget-holder.human-service:not(.woot--hide),
+    .woot-widget-holder.human-service.woot-widget-holder--opened { display:flex !important; flex-direction:column; width:420px !important; height:620px !important; }
+    .woot-widget-holder.human-service:not(.woot--hide) .human-service-bar,
+    .woot-widget-holder.human-service.woot-widget-holder--opened .human-service-bar { display:flex; }
+    .woot-widget-holder.human-service:not(.woot--hide) iframe,
+    .woot-widget-holder.human-service.woot-widget-holder--opened iframe { flex:1 1 auto; height:auto !important; min-height:0; }
+    @media (max-width:480px) {
+      .woot-widget-holder.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; }
+      .woot-widget-holder iframe { width:100vw !important; height:calc(100vh - 72px) !important; }
+      .woot-widget-holder.human-service:not(.woot--hide),
+      .woot-widget-holder.human-service.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; }
+    }
   </style>
 </head>
   <body>

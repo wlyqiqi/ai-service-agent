@@ -193,9 +193,9 @@ def update_address_success_card_description(order_id: str, address: str) -> str:
     )
 
 
-def human_mode_tip_text() -> str:
-    """conversation_mode=human 时 AgentBot / Widget 固定 tip（不跑 Graph）。"""
-    return "当前由人工客服接待，坐席正在处理您的问题，请稍候。"
+def human_service_header_text() -> str:
+    """Widget 顶栏：仅 conversation_mode=human 时显示。"""
+    return "人工服务中"
 
 
 def handoff_request_confirm_text() -> str:
@@ -227,6 +227,21 @@ def handoff_request_private_note_text(summary: str = "") -> str:
     if summary:
         return f"{base}\n摘要：{summary}"
     return base
+
+
+def handoff_form_cancelled_customer_text() -> str:
+    """进入 human 时取消未提交 Mutation Form 的客户可见提示。"""
+    return "人工客服已接入。尚未提交的修改已取消，不会写入订单。"
+
+
+def handoff_form_cancelled_seat_note_text() -> str:
+    """进入 human 时取消未提交表单的坐席 private note。"""
+    return "【未提交表单已取消】客户有未完成的修改表单，接入人工时已取消，迟到的提交不会写入。"
+
+
+def handoff_returned_to_bot_text() -> str:
+    """交回 Bot（status pending / Resolve）时客户与坐席都可见的短提示。"""
+    return "已交回AI客服助手"
 
 def approval_approved_text(tool: str) -> str:
     return f"您的{_label(tool)}申请已通过审核并执行完成，相关结果可以在订单详情中查看。"

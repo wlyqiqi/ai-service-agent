@@ -14,8 +14,11 @@ from fastapi.testclient import TestClient
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel
 from ai_service_agent.graph.workflows.copy import (
     handoff_cancel_confirm_text,
+    handoff_form_cancelled_customer_text,
+    handoff_form_cancelled_seat_note_text,
     handoff_joined_notice_text,
     handoff_request_confirm_text,
+    handoff_returned_to_bot_text,
 )
 from ai_service_agent.harness.chatwoot import ChatwootMappingStore
 from ai_service_agent.harness.handoff import STATUS_AWAITING, HandoffService
@@ -26,6 +29,28 @@ from ai_service_agent.testing import ToolCallingFakeModel
 
 
 TS = str(int(time.time()))
+
+
+BOT_ERROR = "Conversation was marked open by system due to an error with the agent bot."
+
+
+def _human_open(cw_id: int, *, nested: bool = False) -> dict:
+    """Status open that carries a human assignee — a real seat Take over."""
+    meta = {
+        "assignee_type": "User",
+        "assignee": {"id": 7, "name": "Seat", "type": "user"},
+    }
+    if nested:
+        return {
+            "event": "conversation_status_changed",
+            "conversation": {"id": cw_id, "status": "open", "meta": meta},
+        }
+    return {
+        "event": "conversation_status_changed",
+        "id": cw_id,
+        "status": "open",
+        "meta": meta,
+    }
 
 
 def _sig(payload: bytes, secret: str = "sec") -> str:
@@ -151,7 +176,7 @@ def test_webhook_open_seat_takeover(tmp_path):
         "".join(resp.iter_text())
     ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
 
-    body = {"event": "conversation_status_changed", "id": 555, "status": "open"}
+    body = _human_open(555)
     raw = json.dumps(body).encode()
     r = client.post(
         "/webhooks/chatwoot",
@@ -178,7 +203,7 @@ def test_webhook_open_unilateral_takeover(tmp_path):
     client = TestClient(create_app(db, model="fake", chatwoot=cw, chatwoot_webhook_secret="sec"))
     sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     ChatwootMappingStore(sqlite3.connect(db)).put(sid, 777)
-    body = {"event": "conversation_status_changed", "conversation": {"id": 777, "status": "open"}}
+    body = _human_open(777, nested=True)
     raw = json.dumps(body).encode()
     assert client.post(
         "/webhooks/chatwoot",
@@ -197,7 +222,7 @@ def test_webhook_resolved_returns_ai_via_toggle_status(tmp_path):
     # request + takeover
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
         "".join(resp.iter_text())
-    raw_open = json.dumps({"event": "conversation_status_changed", "id": 555, "status": "open"}).encode()
+    raw_open = json.dumps(_human_open(555)).encode()
     client.post(
         "/webhooks/chatwoot",
         content=raw_open,
@@ -217,7 +242,8 @@ def test_webhook_resolved_returns_ai_via_toggle_status(tmp_path):
     cw.set_conversation_status.assert_awaited_with(sid, "pending")
 
 
-def test_webhook_pending_ignored(tmp_path):
+def test_webhook_pending_ignored_when_already_ai(tmp_path):
+    """pending while mode is ai is the anti-loop (baseline or echo after toggle)."""
     db = str(tmp_path / "s.db")
     client = TestClient(create_app(db, model="fake", chatwoot_webhook_secret="sec"))
     sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
@@ -229,6 +255,185 @@ def test_webhook_pending_ignored(tmp_path):
         headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
     ).status_code == 200
     assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+
+
+def test_webhook_pending_returns_human_to_ai_without_toggle(tmp_path):
+    """Official return: status pending while human → mode ai, no second toggle."""
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(create_app(db, model="fake", chatwoot=cw, chatwoot_webhook_secret="sec"))
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
+        "".join(resp.iter_text())
+    raw_open = json.dumps(_human_open(555)).encode()
+    client.post(
+        "/webhooks/chatwoot",
+        content=raw_open,
+        headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
+    )
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
+    cw.set_conversation_status.reset_mock()
+    raw_pending = json.dumps(
+        {"event": "conversation_status_changed", "id": 555, "status": "pending"}
+    ).encode()
+    r = client.post(
+        "/webhooks/chatwoot",
+        content=raw_pending,
+        headers={"X-Chatwoot-Signature": _sig(raw_pending), "X-Chatwoot-Timestamp": TS},
+    )
+    assert r.status_code == 200
+    assert r.json()["event"]["type"] == "handoff_resolved"
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    cw.set_conversation_status.assert_not_awaited()
+    rows = MessageStore(sqlite3.connect(db)).list(sid)
+    assert any(m["content"] == handoff_returned_to_bot_text() for m in rows)
+    # Echo while already ai must not tip again.
+    client.post(
+        "/webhooks/chatwoot",
+        content=raw_pending,
+        headers={"X-Chatwoot-Signature": _sig(raw_pending), "X-Chatwoot-Timestamp": TS},
+    )
+    rows = MessageStore(sqlite3.connect(db)).list(sid)
+    assert sum(1 for m in rows if m["content"] == handoff_returned_to_bot_text()) == 1
+
+
+def _post_webhook(client: TestClient, body: dict):
+    raw = json.dumps(body).encode()
+    return client.post(
+        "/webhooks/chatwoot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+    )
+
+
+def test_open_cancels_pending_form_so_late_submit_cannot_write(tmp_path, monkeypatch):
+    """Enter human clears a Mutation Form Interrupt; late confirm does not write."""
+    import asyncio
+    import importlib.util
+    from pathlib import Path
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from ai_service_agent.domain.orders import SQLiteOrderRepository
+    from ai_service_agent.harness.graph import make_ai_graph
+    from ai_service_agent.testing import router_json_message, select_json_message
+    from ai_service_agent.tools import write as write_mod
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_handoff", root / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    business_db = tmp_path / "mock_ecommerce.db"
+    module.build_database(str(business_db))
+
+    class _WriteSettings:
+        mock_ecommerce_db_path = str(business_db)
+
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _WriteSettings())
+
+    def customer_address() -> str:
+        conn = sqlite3.connect(business_db)
+        try:
+            row = conn.execute(
+                "SELECT address FROM customers WHERE customer_id = ?", ("u1",)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    original = customer_address()
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message(
+            "update_address",
+            {"order_id": "ORD-PAID-1", "address": "不应在接管前写入"},
+        ),
+    ])
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    repo = SQLiteOrderRepository(str(business_db))
+    client = TestClient(
+        create_app(
+            db,
+            model=model,
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_agent_bot_secret="sec",
+            order_repository=repo,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "改收货地址"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+    assert any(e.get("type") == "form_required" for e in events)
+    assert customer_address() == original
+
+    conn = sqlite3.connect(db)
+    thread_id = conn.execute(
+        "SELECT thread_id FROM conversation_status WHERE conversation_id = ?",
+        (sid,),
+    ).fetchone()[0]
+    conn.close()
+
+    async def pending_form():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(model, saver, order_repository=repo)
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return state.interrupts
+
+    assert asyncio.run(pending_form())
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    opened = _post_webhook(
+        client, _human_open(555)
+    )
+    assert opened.status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
+    assert list(asyncio.run(pending_form())) == []
+    assert customer_address() == original
+    rows = MessageStore(sqlite3.connect(db)).list(sid)
+    assert any(m["content"] == handoff_form_cancelled_customer_text() for m in rows)
+    cw.send_bot_message.assert_any_await(
+        sid, handoff_form_cancelled_seat_note_text(), private=True
+    )
+
+    late = client.post(
+        "/actions/confirm",
+        json={
+            "conversation_id": sid,
+            "action": "confirm",
+            "fields": {"order_id": "ORD-PAID-1", "address": "迟到提交不应写入"},
+        },
+    )
+    assert late.status_code == 409
+    assert customer_address() == original
+
+    form_body = {
+        "event": "message_updated",
+        "id": 9002,
+        "message_type": "incoming",
+        "content_type": "form",
+        "content_attributes": {
+            "submitted_values": [
+                {"name": "order_id", "value": "ORD-PAID-1"},
+                {"name": "address", "value": "Widget迟到提交不应写入"},
+                {"name": "action", "value": "confirm"},
+            ]
+        },
+        "conversation": {"id": 555},
+        "contact": {"id": 1, "identifier": "u1", "name": "u"},
+    }
+    raw_form = json.dumps(form_body).encode()
+    bot = client.post(
+        "/webhooks/agent_bot",
+        content=raw_form,
+        headers={"X-Chatwoot-Signature": _sig(raw_form), "X-Chatwoot-Timestamp": TS},
+    )
+    assert bot.status_code == 200
+    assert customer_address() == original
+    assert list(asyncio.run(pending_form())) == []
 
 
 def test_http_resolve_shares_toggle_pending(tmp_path):
@@ -322,3 +527,261 @@ async def test_toggle_status_uses_post_not_patch(tmp_path):
     assert calls[0][0] == "POST"
     assert calls[0][1].endswith("/conversations/555/toggle_status")
     assert calls[0][2] == {"status": "pending"}
+
+
+def test_bot_error_activity_does_not_enter_human(tmp_path):
+    """Timeout auto-open + system activity: no toast, stay ai, revert pending."""
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_bot_error_open_grace_seconds=30,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    opened = _post_webhook(
+        client, {"event": "conversation_status_changed", "id": 555, "status": "open"}
+    )
+    assert opened.status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    assert not any(
+        m["content"] == handoff_joined_notice_text()
+        for m in MessageStore(sqlite3.connect(db)).list(sid)
+    )
+    cw.set_conversation_status.assert_not_awaited()
+
+    activity = {
+        "event": "message_created",
+        "id": 90,
+        "message_type": "activity",
+        "content": BOT_ERROR,
+        "private": False,
+        "conversation": {
+            "id": 555,
+            "status": "open",
+            "meta": {"assignee_type": "AgentBot"},
+        },
+    }
+    assert _post_webhook(client, activity).status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    assert not any(
+        m["content"] == handoff_joined_notice_text()
+        for m in MessageStore(sqlite3.connect(db)).list(sid)
+    )
+    cw.set_conversation_status.assert_awaited_once_with(sid, "pending")
+
+
+def test_unassigned_open_reverts_when_grace_is_zero(tmp_path):
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_bot_error_open_grace_seconds=0,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    assert _post_webhook(
+        client, {"event": "conversation_status_changed", "id": 555, "status": "open"}
+    ).status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    assert not any(
+        m["content"] == handoff_joined_notice_text()
+        for m in MessageStore(sqlite3.connect(db)).list(sid)
+    )
+    cw.set_conversation_status.assert_awaited_once_with(sid, "pending")
+    cw.set_conversation_status.reset_mock()
+    assert _post_webhook(
+        client, {"event": "conversation_status_changed", "id": 555, "status": "pending"}
+    ).status_code == 200
+    cw.set_conversation_status.assert_not_awaited()
+    assert not any(
+        m["content"] == handoff_returned_to_bot_text()
+        for m in MessageStore(sqlite3.connect(db)).list(sid)
+    )
+
+
+def test_bot_error_sentence_on_open_reverts_without_waiting(tmp_path):
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_bot_error_open_grace_seconds=30,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    assert _post_webhook(
+        client,
+        {
+            "event": "conversation_status_changed",
+            "id": 555,
+            "status": "open",
+            "meta": {"assignee_type": "AgentBot"},
+            "messages": [{"message_type": "activity", "content": BOT_ERROR}],
+        },
+    ).status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    cw.set_conversation_status.assert_awaited_once_with(sid, "pending")
+
+
+def test_bot_error_revert_can_be_disabled(tmp_path):
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_revert_bot_error_open=False,
+            chatwoot_bot_error_open_grace_seconds=0,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    assert _post_webhook(
+        client, {"event": "conversation_status_changed", "id": 555, "status": "open"}
+    ).status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    assert not any(
+        m["content"] == handoff_joined_notice_text()
+        for m in MessageStore(sqlite3.connect(db)).list(sid)
+    )
+    cw.set_conversation_status.assert_not_awaited()
+
+
+def test_self_assign_activity_enters_human(tmp_path):
+    """Take over UI: open first (no assignee), then the self-assign activity."""
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_bot_error_open_grace_seconds=30,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    assert _post_webhook(
+        client, {"event": "conversation_status_changed", "id": 555, "status": "open"}
+    ).status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    activity = {
+        "event": "message_created",
+        "id": 91,
+        "message_type": "activity",
+        "content": "Qi self-assigned this conversation",
+        "conversation": {"id": 555, "status": "open"},
+    }
+    assert _post_webhook(client, activity).status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
+    assert any(
+        m["content"] == handoff_joined_notice_text()
+        for m in MessageStore(sqlite3.connect(db)).list(sid)
+    )
+    cw.set_conversation_status.assert_not_awaited()
+
+
+def test_conversation_updated_with_user_assignee_enters_human(tmp_path):
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_bot_error_open_grace_seconds=30,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+    assert _post_webhook(
+        client, {"event": "conversation_status_changed", "id": 555, "status": "open"}
+    ).status_code == 200
+    updated = _post_webhook(
+        client,
+        {
+            "event": "conversation_updated",
+            "id": 555,
+            "status": "open",
+            "meta": {
+                "assignee_type": "User",
+                "assignee": {"id": 7, "name": "Qi", "type": "user"},
+            },
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["event"]["type"] == "handoff_created"
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
+    cw.set_conversation_status.assert_not_awaited()
+
+
+def test_agent_bot_webhook_acks_before_work(tmp_path, monkeypatch):
+    from fastapi import BackgroundTasks
+
+    queued: list = []
+
+    def capture(self, func, *args, **kwargs):
+        queued.append(func)
+
+    monkeypatch.setattr(BackgroundTasks, "add_task", capture)
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            str(tmp_path / "ack.db"),
+            model="fake",
+            chatwoot=cw,
+            chatwoot_agent_bot_secret="sec",
+        )
+    )
+    body = {
+        "event": "message_created",
+        "id": 1,
+        "content": "你好",
+        "message_type": "incoming",
+        "content_type": "text",
+        "conversation": {"id": 555},
+        "contact": {"id": 1, "identifier": "u1"},
+    }
+    raw = json.dumps(body).encode()
+    denied = client.post("/webhooks/agent_bot", content=raw)
+    assert denied.status_code == 401
+    assert queued == []
+    ok = client.post(
+        "/webhooks/agent_bot",
+        content=raw,
+        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["ok"] is True
+    assert len(queued) == 1
+    cw.send_bot_message.assert_not_awaited()
+
+
+def test_runtime_never_calls_toggle_status_open():
+    """Bot and customer paths must not request Chatwoot status open."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src"
+    pattern = re.compile(r"set_conversation_status\([^)]*[\"']open[\"']", re.S)
+    offenders = [str(path.relative_to(root)) for path in root.rglob("*.py") if pattern.search(path.read_text())]
+    assert offenders == []

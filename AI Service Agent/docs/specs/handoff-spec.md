@@ -21,17 +21,21 @@
 ### 1.2 Seat Takeover：`ai` → `human`（激活 Handoff，非申请本身）
 
 > **Superseded for the request step by [ADR-0003](../adr/0003-seat-gated-handoff.md).**  
-> 历史 MVP：「创建 Handoff Record」即与 `mode=human` 同事务。Seat-gated 后：**Handoff Request 只挂起、不切 mode**；仅 **Seat Takeover**（Chatwoot Take over / status `open`）才切 `human`。
+> 历史 MVP：「创建 Handoff Record」即与 `mode=human` 同事务。Seat-gated 后：**Handoff Request 只挂起、不切 mode**；仅 **Seat Takeover**（坐席接手后的 status `open`）才切 `human`。
 
 - **Seat Takeover** 时：将挂起的 Handoff Request 转为接入中（或无申请时懒创建 active handoff），并与切 `conversation_mode=human` **绑定为同一数据库事务**，不允许分两步先后执行。
-- 触发来源（权威）：Account Webhook `conversation_status_changed` 且新 status = `open`（坐席官方 Take over / 等价派给人）。见 §3.1 / ops runbook。
-- **不得**在 `request_handoff` / 创建挂起 Record / 发 `handoff_requested` 时切 `mode=human`。
+- 触发来源（权威）：Account Webhook 上能确认是坐席接手的 `open`。见 §3.1 / ops runbook。信号是 `meta.assignee_type=User`（或 `changed_attributes.assignee_id`），或 status 仍为 `open` 时的 self-assign / `Assigned to` activity，或 `conversation_updated` 带人工 assignee。
+- **不是 Take over**：没有人工 assignee 的 `open`。Agent Bot webhook 读超时后，Chatwoot 会把 pending 会话标成 open，并写 activity「Conversation was marked open by system due to an error with the agent bot」。这条不发 Joined Notice、不切 `human`。默认 `toggle_status(pending)` 拉回 Bot（`CHATWOOT_REVERT_BOT_ERROR_OPEN`，默认 true）。裸 open 先等 `CHATWOOT_BOT_ERROR_OPEN_GRACE_SECONDS`（默认 2），以便官方 Take over「先 open、再 self-assign」落到人工信号上。
+- **不得**在 `request_handoff` / 创建挂起 Record / 发 `handoff_requested` 时切 `mode=human`。Bot 与客户路径不得调用 `toggle_status(open)`。
 - 无事先 Handoff Request 时，坐席主动 Take over **仍**切 `human`（允许懒建 active handoff）。
 - 成功后发出 `handoff_created`（真正进入 human 车道），并由 Bot 发送 **Handoff Joined Notice**（短提示：人工已接入；与挂起确认文案区分）。
+- **未提交的 Mutation Form**：进入 human 之前，若该会话线程上仍有 Form Interrupt，Runtime 在同一 thread lock 内以 `Command(resume={"action":"cancel"})` 清掉（不写库）。客户可见提示「尚未提交的修改已取消」；可选坐席 private note。审批 interrupt（HighRisk）不在此取消。清掉之后，迟到的 Form Resume（`/actions/confirm` 或 AgentBot 表单提交）不得写库。客户自己的 Implicit Cancel / 表单确认路径不变。
 
 ### 1.3 Handoff Resolve：`human` → `ai`
 
-- 权威触发：坐席官方 **Resolve / 已解决**（Chatwoot status=`resolved`），经 Account Webhook `conversation_status_changed`；HTTP `POST /handoffs/{id}/resolve` 与 webhook resolve **共用同一完成路径**，行为不得漂移。
+- **权威交回（官方 Agent Bot）**：Account Webhook `conversation_status_changed` 且新 status = `pending`，并且 Runtime 当前 mode 为 `human`。此时 **不再** `toggle_status(pending)`（已经是 pending，避免环）。mode 回 `ai`，发出 `handoff_resolved`，并发送双方可见短提示「已交回AI客服助手」。
+- **兼容**：坐席官方 **Resolve / 已解决**（status=`resolved`）同样走完成路径，随后 Runtime `toggle_status(pending)` 把会话交回 Bot；紧接着的 `pending` webhook 因 mode 已是 `ai` 而忽略。HTTP `POST /handoffs/{id}/resolve` 与 webhook resolve **共用同一完成路径**，行为不得漂移。
+- mode 已是 `ai` 时收到 `pending`：**忽略**（Bot 本就持有会话，或刚 toggle 回来的回声）。
 - 转换前**必须校验**该 `conversation_id` 名下是否存在状态为 `pending` 的、与某个 HighRiskGraph / MutationGraph interrupt 关联的审批（校验本身保留；审批**归宿**见下条 supersede）。
 - **归宿定案（MVP）**：
   > **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md).** 审批由 Seat Approver 经 Approval Side-Channel 决策；不再要求「坐席不代为审批 / 等 AI 接管后才收尾」。以下为历史 MVP 原文，仅供追溯。
@@ -45,6 +49,7 @@
 
 - 任何一次 AI 回复发送前，必须**重新读取当前 `conversation_mode`**，只有仍为 `"ai"` 才允许发送。
 - 如果在生成过程中已被切换为 `"human"`，必须**丢弃该回复，不得发送**。
+- mode 为 `human` 时，客户消息只写入 Message Store，不调用 Chatwoot `create_message` 发 bot 气泡。坐席正在输入时用 Chatwoot 官方 typing（`conversation.typing_on`）；Runtime 只在客户发言后把 Agent Bot 的 typing 关掉，不另造气泡。Widget 顶栏在此期间显示「人工服务中」。系统通知只有两条：进入 human 的「人工客服已接入，接下来将由人工为您服务。」，以及交回时的「已交回AI客服助手」。
 - 不允许用"生成时刻的 mode 值"代替"发送前的实时值"。
 - 挂起（`awaiting_seat`）期间 mode 仍为 `ai`，本门控**允许**继续发 AI 回复（这是 Seat-gated 的产品意图）。
 
@@ -77,10 +82,12 @@
 ### 3.1 Account Webhook（Take over / Resolve 同步）
 
 - 入口：`POST /webhooks/chatwoot`（与 AgentBot `outgoing_url` **不是同一通道**；secret 为 `CHATWOOT_WEBHOOK_SECRET`）。
-- 必须处理 `conversation_status_changed`：
-  - status → `open`：**Seat Takeover**（§1.2）
-  - status → `resolved`：**Handoff Resolve**（§1.3）
-  - status → `pending`：**忽略**（避免与 Resolve 后 `toggle_status(pending)` 形成环）
+- 必须处理 `conversation_status_changed`（**不是** AgentBot Outgoing URL）：
+  - status → `open` 且人工 assignee（或随后的 self-assign activity）：**Seat Takeover**（§1.2）；若有未提交 Form Interrupt，先 cancel 再切 `human`
+  - status → `open` 且没有人工 assignee：不是接手。Bot 失败系统自动打开时拉回 `pending`（§1.2），不发 Joined Notice
+  - status → `pending` 且 mode=`human`：**交回 Bot**（§1.3），不再 toggle
+  - status → `pending` 且 mode=`ai`：**忽略**（防环 / Bot 本就持有）
+  - status → `resolved`：兼容的 Handoff Resolve（§1.3），再 `toggle_status(pending)`
 - 运维要求见 `docs/ops/chatwoot-widget-agentbot-setup.md`（Account Webhook 须订阅 `conversation_status_changed`）。
 
 ## 4. 事件

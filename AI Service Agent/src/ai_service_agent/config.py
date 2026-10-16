@@ -122,6 +122,14 @@ class Settings(BaseSettings):
     chatwoot_agent_bot_secret: str | None = Field(default=None, validation_alias="CHATWOOT_AGENT_BOT_SECRET")
     chatwoot_website_token: str | None = Field(default=None, validation_alias="CHATWOOT_WEBSITE_TOKEN")
     chatwoot_hmac_secret: str | None = Field(default=None, validation_alias="CHATWOOT_HMAC_SECRET")
+    # Agent Bot 读超时后 Chatwoot 会把 pending 会话 open。没有人工 assignee 时
+    # 默认拉回 pending。宽限留给 Take over「先 open、再 self-assign」。
+    chatwoot_revert_bot_error_open: bool = Field(
+        default=True, validation_alias="CHATWOOT_REVERT_BOT_ERROR_OPEN"
+    )
+    chatwoot_bot_error_open_grace_seconds: float = Field(
+        default=2.0, ge=0, validation_alias="CHATWOOT_BOT_ERROR_OPEN_GRACE_SECONDS"
+    )
     # LightRAG-chengyuan（read 档 kb_search 数据源，OQ-1 naive / OQ-3 不加缓存 / OQ-4 不做自动同步）
     lightrag_base_url: str = "http://localhost:9621"
     lightrag_timeout_seconds: float = 15.0

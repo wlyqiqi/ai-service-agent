@@ -1,6 +1,6 @@
 # Seat-gated handoff (request ≠ human lane)
 
-客户或图内转人工先落 **Handoff Request**（挂起），Conversation Mode 仍为 `ai`；仅当坐席 **Seat Takeover**（Chatwoot Take over / `open`）才进 `human`；**Handoff Resolve**（已解决）回切 `ai` 并交回 Bot（`pending`）。无申请时坐席主动 Take over 同样进 `human`。客户申请/取消均入口层确定性检测（无 Router）；申请 turn 只回挂起确认。强提示 = private note + label `handoff-request`。事件：`handoff_requested` / `handoff_created` / `handoff_resolved`。Take over 后发 Handoff Joined Notice。
+客户或图内转人工先落 **Handoff Request**（挂起），Conversation Mode 仍为 `ai`；仅当坐席 **Seat Takeover**（Chatwoot Take over：status `open` 且人工 assignee）才进 `human`；交回 Bot 是 status 回到 `pending`（兼容：Resolve 后再 `toggle_status(pending)`）。无申请时坐席主动 Take over 同样进 `human`。没有人工 assignee 的 `open`（Agent Bot 失败后系统自动打开）不是接手。客户申请/取消均入口层确定性检测（无 Router）；申请 turn 只回挂起确认。强提示 = private note + label `handoff-request`。事件：`handoff_requested` / `handoff_created` / `handoff_resolved`。Take over 后发 Handoff Joined Notice。进入 human 时取消未提交的 Mutation Form。
 
 选用 Seat-gated（申请挂起 ≠ human）而非「一请求就切 human」、亦非「申请/取消进 Router」，使 AI 未接入前不断档、意图门控保持确定性，并对齐 Chatwoot Take over / Resolve。
 
@@ -26,3 +26,12 @@
 - Runtime `request_handoff` 不得切 mode；Seat Takeover 与激活 handoff 同事务切 `human`
 - HTTP resolve 与 webhook `resolved` 共用完成路径；status 变更用 `toggle_status`
 - 客户端不得在挂起阶段把 `handoff_created` 当成已接入
+
+## Amendment（2026-10-15）：官方 pending ↔ open
+
+Chatwoot Agent Bot 的持有关系以会话 status 为准，经 **Account Webhook** `conversation_status_changed` 同步 Conversation Mode（不是 AgentBot Outgoing URL）：
+
+- `pending` = Bot 持有（mode `ai`）。mode 已是 `ai` 时忽略，避免 `toggle_status(pending)` 回声成环。
+- `open` 且坐席已接手（`assignee_type=User`，或 self-assign / `Assigned to` activity）= 人工持有（mode `human`）。没有人工 assignee 的 `open` 不是接手。Agent Bot 读超时导致的系统自动 open 默认 `toggle_status(pending)` 拉回 Bot。Bot / 客户路径不得 `toggle_status(open)`。
+- 交回 Bot 的权威信号是 status 回到 `pending`（不再 toggle）。`resolved` 仍走同一完成路径并 `toggle_status(pending)`，作为兼容。
+- 进入 `human` 时取消未提交的 Mutation Form Interrupt（不写库）。不改 HighRisk 审批，也不改客户表单 UX。

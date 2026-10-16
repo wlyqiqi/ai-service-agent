@@ -25,6 +25,22 @@ def test_mode_is_two_state(tmp_path):
     conn.close()
 
 
+def test_active_mode_for_user_follows_latest_message(tmp_path):
+    from ai_service_agent.harness.messages import MessageStore
+
+    store, conn = _store(tmp_path)
+    MessageStore(conn)
+    older = store.create_session("u1")
+    store.set_mode(older["conversation_id"], "human")
+    newer = store.create_session("u1")
+    MessageStore(conn).append(newer["conversation_id"], "user", "还在问助手")
+    assert store.active_mode_for_user("u1") == "ai"
+    MessageStore(conn).append(older["conversation_id"], "user", "转给坐席后的话")
+    assert store.active_mode_for_user("u1") == "human"
+    assert store.active_mode_for_user("nobody") == "ai"
+    conn.close()
+
+
 def test_missing_session_fail_open_ai(tmp_path):
     store, conn = _store(tmp_path)
     assert store.get_mode("nope") == "ai"

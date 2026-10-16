@@ -1183,13 +1183,8 @@ async def test_legacy_clarify_form_interactive_disabled_for_missing_fields(
 
 
 @pytest.mark.asyncio
-async def test_human_mode_sends_fixed_tip_without_graph(tmp_path):
-    """#48: conversation_mode=human → no Graph; fixed tip via Chatwoot.
-
-    Seam: handle_agent_bot_message + mock Chatwoot (graph must not be invoked).
-    """
-    from ai_service_agent.graph.workflows.copy import human_mode_tip_text
-
+async def test_human_mode_stores_message_without_bot_outbound(tmp_path):
+    """conversation_mode=human → Message Store only; no bot bubble and no Graph."""
     status, mapping, _conn = _contact_first_stores(tmp_path)
     chatwoot = AsyncMock()
     contact = {"id": 33, "identifier": "u-human", "name": "人工用户"}
@@ -1235,15 +1230,14 @@ async def test_human_mode_sends_fixed_tip_without_graph(tmp_path):
         messages_store=store,
     )
 
-    tip = human_mode_tip_text()
     assert result is not None
-    assert result["response"] == tip
-    assert "坐席" in tip and ("处理" in tip or "接待" in tip)
-    chatwoot.send_bot_message.assert_awaited_once()
-    assert chatwoot.send_bot_message.await_args.args[1] == tip
+    assert result["response"] is None
+    chatwoot.send_bot_message.assert_not_awaited()
     chatwoot.send_interactive_message.assert_not_awaited()
+    chatwoot.clear_typing.assert_awaited_once_with(conversation_id)
     graph.aget_state.assert_not_awaited()
     graph.ainvoke.assert_not_awaited()
     rows = store.list(conversation_id)
     assert rows[-1]["role"] == "user"
     assert rows[-1]["content"] == "坐席还在吗"
+    assert all(row["role"] == "user" for row in rows)

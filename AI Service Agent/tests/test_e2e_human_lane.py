@@ -1,7 +1,7 @@
 """人工车道端到端单链路（离线）：申请挂起 → Take over → 坐席消息 → resolve。
 
 用真实 ChatwootClient + httpx.MockTransport；Seat-gated：显式转人工只挂起，
-Account Webhook open 才进 human + Joined Notice。
+带人工 assignee 的 Account Webhook open 才进 human + Joined Notice。
 """
 
 import hashlib
@@ -115,11 +115,24 @@ def _rows(db_path, conv_id) -> list[dict]:
     return MessageStore(sqlite3.connect(db_path)).list(conv_id)
 
 
+def _seat_open(cw_id: int) -> bytes:
+    body = {
+        "event": "conversation_status_changed",
+        "id": cw_id,
+        "status": "open",
+        "meta": {
+            "assignee_type": "User",
+            "assignee": {"id": 7, "name": "Seat", "type": "user"},
+        },
+    }
+    return json.dumps(body).encode()
+
+
 def _request_then_takeover(client, session_id: str) -> str:
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
         events = parse_sse("".join(r.iter_text()))
     handoff_id = next(e["data"]["handoff_id"] for e in events if e["type"] == "handoff_requested")
-    raw_open = json.dumps({"event": "conversation_status_changed", "id": 111, "status": "open"}).encode()
+    raw_open = _seat_open(111)
     assert client.post(
         "/webhooks/chatwoot",
         content=raw_open,
@@ -206,7 +219,7 @@ def test_resolve_sync_does_not_duplicate_webhook_persisted_agent_message(tmp_pat
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "我要转人工"}) as r:
         events = parse_sse("".join(r.iter_text()))
     handoff_id = next(e["data"]["handoff_id"] for e in events if e["type"] == "handoff_requested")
-    raw_open = json.dumps({"event": "conversation_status_changed", "id": 111, "status": "open"}).encode()
+    raw_open = _seat_open(111)
     assert client.post(
         "/webhooks/chatwoot", content=raw_open,
         headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
@@ -263,17 +276,29 @@ def test_human_lane_end_to_end(tmp_path):
     assert row is not None and row[0] == 111
 
     # 2) Seat Takeover via Account Webhook open
-    raw_open = json.dumps({"event": "conversation_status_changed", "id": 111, "status": "open"}).encode()
+    raw_open = _seat_open(111)
     assert client.post(
         "/webhooks/chatwoot", content=raw_open,
         headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
     ).status_code == 200
     assert _mode(db, sid) == "human"
 
-    # 3) Human lane message
+    # 3) Human lane message: store only, no further bot outbound
+    posts_before = [
+        json.loads(body).get("content")
+        for method, url, body in calls
+        if method == "POST" and "/messages" in url and body
+    ]
     with client.stream("POST", "/chat", json={"session_id": sid, "message": "在吗"}) as r:
         events = parse_sse("".join(r.iter_text()))
     assert events[-1]["type"] == "done"
+    assert events[-1]["data"].get("final") is None
+    posts_after = [
+        json.loads(body).get("content")
+        for method, url, body in calls
+        if method == "POST" and "/messages" in url and body
+    ]
+    assert posts_after == posts_before
     rows3 = _rows(db, sid)
     assert any(m["role"] == "user" and m["content"] == "在吗" for m in rows3)
     assert sum(m["content"] == confirm for m in rows3) == 1

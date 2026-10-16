@@ -55,6 +55,32 @@ class ConversationStatusStore:
         ).fetchone()
         return row[0] if row else None
 
+    def active_mode_for_user(self, user_id: str) -> str:
+        """该用户最近有消息的会话 mode；没有消息时用最新会话。没有会话则 ai。"""
+        try:
+            row = self.conn.execute(
+                """
+                SELECT cs.mode
+                FROM conversation_status cs
+                LEFT JOIN (
+                    SELECT conversation_id, MAX(id) AS last_id
+                    FROM conversation_message
+                    GROUP BY conversation_id
+                ) m ON m.conversation_id = cs.conversation_id
+                WHERE cs.user_id = ?
+                ORDER BY m.last_id DESC, cs.created_at DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = self.conn.execute(
+                "SELECT mode FROM conversation_status WHERE user_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return "human" if row and row[0] == "human" else "ai"
+
     def get_user_id(self, conversation_id: str) -> str | None:
         row = self.conn.execute(
             "SELECT user_id FROM conversation_status WHERE conversation_id = ?", (conversation_id,)
