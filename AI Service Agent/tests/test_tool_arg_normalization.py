@@ -1,10 +1,22 @@
 """占位串归一化：哨兵识别、读路径 middleware、写路径幂等键。"""
 
+import importlib.util
+import json
+from pathlib import Path
+
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
+from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.agents.tool_args import ToolArgumentNormalizationMiddleware
+from ai_service_agent.testing import ToolCallingFakeModel
+from ai_service_agent.tools import orders as orders_mod
+from ai_service_agent.tools.orders import my_orders
 from ai_service_agent.tools.params import is_absent_sentinel, normalize_absent_args
+from conftest import ainvoke_graph
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_absent_sentinels_match_case_and_whitespace():
@@ -84,3 +96,65 @@ async def test_async_middleware_strips_placeholder_args():
     result = await ToolArgumentNormalizationMiddleware().awrap_tool_call(request, handler)
     assert result == "ran"
     assert seen["args"] == {}
+
+
+def _seed_db(tmp_path: Path) -> Path:
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_arg_norm", ROOT / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "orders.db"
+    module.build_database(str(db_path))
+    return db_path
+
+
+def _use_orders_db(monkeypatch, db_path: Path) -> None:
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+
+
+class _SpyHook:
+    def __init__(self):
+        self.args = None
+
+    def on_before(self, context):
+        self.args = dict(context.args)
+
+    def on_after(self, context, outcome):
+        return None
+
+
+def test_my_orders_status_null_returns_all_orders_for_the_caller(monkeypatch, tmp_path):
+    _use_orders_db(monkeypatch, _seed_db(tmp_path))
+    hook = _SpyHook()
+    model = ToolCallingFakeModel(responses=[
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "my_orders",
+                "args": {"status": "null"},
+                "id": "call-orders",
+                "type": "tool_call",
+            }],
+        ),
+        AIMessage(content="这是您的订单。"),
+    ])
+    graph = make_read_graph(model, tools=[my_orders], tool_hooks=[hook])
+    out = ainvoke_graph(
+        graph,
+        {
+            "messages": [HumanMessage(content="我的订单")],
+            "user_id": "u1",
+            "session_id": "orders-null",
+            "context": {},
+        },
+        {"configurable": {"thread_id": "orders-null"}},
+    )
+    tool_message = next(message for message in out["messages"] if getattr(message, "type", None) == "tool")
+    payload = json.loads(tool_message.content)
+    assert payload["count"] == 5
+    assert "error" not in payload
+    assert hook.args == {}
