@@ -63,6 +63,16 @@ def test_list_user_orders_filters_address_editable(tmp_path):
     ]
 
 
+def test_invoice_picker_candidates_include_status_display(tmp_path):
+    repo = SQLiteOrderRepository(str(_seed_db(tmp_path)))
+
+    orders = repo.list_order_picker_candidates("u0010", "create_invoice")
+    match = next(item for item in orders if item["order_id"] == "ORD-2026-10119")
+
+    assert match["status"] == "paid"
+    assert match["status_display"] == "已付款"
+
+
 def test_list_user_orders_returns_none_for_unknown_user(tmp_path):
     repo = SQLiteOrderRepository(str(_seed_db(tmp_path)))
 

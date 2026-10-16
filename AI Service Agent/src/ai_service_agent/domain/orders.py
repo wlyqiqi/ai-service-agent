@@ -295,13 +295,13 @@ class SQLiteOrderRepository(OrderRepository):
         try:
             rows = conn.execute(
                 f"""
-                SELECT o.order_id, o.total_amount, o.ordered_at,
+                SELECT o.order_id, o.status, o.total_amount, o.ordered_at,
                        COALESCE(GROUP_CONCAT(p.product_name || ' x' || oi.quantity), '')
                   FROM orders o
                   LEFT JOIN order_items oi ON oi.order_id = o.order_id
                   LEFT JOIN products p ON p.product_id = oi.product_id
                  WHERE o.customer_id = ? AND o.status IN ({placeholders})
-                 GROUP BY o.order_id, o.total_amount, o.ordered_at
+                 GROUP BY o.order_id, o.status, o.total_amount, o.ordered_at
                  ORDER BY o.ordered_at DESC
                  LIMIT 10
                 """,
@@ -314,9 +314,11 @@ class SQLiteOrderRepository(OrderRepository):
         return [
             {
                 "order_id": row[0],
-                "total_amount": float(row[1]),
-                "ordered_at": row[2],
-                "product_summary": row[3] or "商品信息不可用",
+                "status": row[1],
+                "status_display": ORDER_DISPLAY_STATUS.get(row[1], row[1]),
+                "total_amount": float(row[2]),
+                "ordered_at": row[3],
+                "product_summary": row[4] or "商品信息不可用",
             }
             for row in rows
         ]

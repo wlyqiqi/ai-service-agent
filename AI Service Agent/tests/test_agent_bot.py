@@ -577,13 +577,43 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
     orders_loader.assert_not_called()
 
 
+def test_create_invoice_order_picker_labels_show_order_id_and_status():
+    """Invoice Order Picker shows order id and status, not the product line."""
+    from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
+
+    items = mutation_form_items_from_form_data(
+        {
+            "tool": "create_invoice",
+            "order_candidates": [
+                {
+                    "order_id": "ORD-2026-10151",
+                    "status_display": "已付款",
+                    "product_summary": "澄元智能破壁机 标准版 07 x1, 澄元无线吸尘器 标准版 01 x2",
+                },
+                {"order_id": "ORD-2026-10059", "status": "completed"},
+            ],
+            "fields": [
+                {"name": "amount", "label": "开票金额", "type": "text"},
+            ],
+        }
+    )
+
+    order_picker = next(item for item in items if item["name"] == "order_id")
+    assert order_picker["options"] == [
+        {"label": "ORD-2026-10151 · 已付款", "value": "ORD-2026-10151"},
+        {"label": "ORD-2026-10059 · 已完成", "value": "ORD-2026-10059"},
+    ]
+
+
 def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
     """#44 AC: Chatwoot items can be derived from interrupt ``fields`` + prefills."""
     from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
 
     items = mutation_form_items_from_form_data(
         {
-            "order_candidates": [{"order_id": "ORD-1", "product_summary": "鞋 x1"}],
+            "order_candidates": [
+                {"order_id": "ORD-1", "status": "shipped", "product_summary": "鞋 x1"},
+            ],
             "prefills": {"note": "工作日配送"},
             "fields": [
                 {"name": "note", "label": "订单备注", "type": "text"},
@@ -599,7 +629,7 @@ def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
     )
 
     assert [item["name"] for item in items] == ["order_id", "note", "action"]
-    assert items[0]["options"] == [{"label": "ORD-1 · 鞋 x1", "value": "ORD-1"}]
+    assert items[0]["options"] == [{"label": "ORD-1 · 已发货", "value": "ORD-1"}]
     assert items[1]["default"] == "工作日配送"
     assert items[1]["label"] == "订单备注"
     assert items[2]["options"] == [

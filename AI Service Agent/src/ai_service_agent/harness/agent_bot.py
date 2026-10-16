@@ -5,6 +5,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
+from ai_service_agent.domain.orders import ORDER_DISPLAY_STATUS
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
@@ -131,6 +132,19 @@ def _apply_errors_to_mutation_form_items(
     return items
 
 
+def _mutation_order_option_label(candidate: dict[str, Any]) -> str:
+    """Order Picker label for invoice/note/ticket forms: order id and status only."""
+    order_id = str(candidate.get("order_id") or "")
+    status = str(candidate.get("status_display") or "").strip()
+    if not status:
+        raw = candidate.get("status")
+        if raw:
+            status = ORDER_DISPLAY_STATUS.get(str(raw), str(raw))
+    if status:
+        return f"{order_id} · {status}"
+    return order_id
+
+
 def _update_address_order_option_label(candidate: dict[str, Any]) -> str:
     order_id = str(candidate.get("order_id") or "")
     product = (candidate.get("product_summary") or "").strip()
@@ -214,9 +228,9 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
         order_id = candidate.get("order_id")
         if not order_id:
             continue
-        detail = candidate.get("product_summary") or candidate.get("status_display") or ""
-        label = f"{order_id} · {detail}" if detail else str(order_id)
-        options.append({"label": label, "value": str(order_id)})
+        options.append(
+            {"label": _mutation_order_option_label(candidate), "value": str(order_id)}
+        )
     order_item: dict[str, Any] = {
         "name": "order_id",
         "label": "选择订单",
