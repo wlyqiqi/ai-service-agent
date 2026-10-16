@@ -442,9 +442,15 @@
   });
 
   updateSession();
+  // Already logged in (localStorage): always re-open Widget.
+  // conversation_id is sessionStorage-only and missing on a fresh tab/window;
+  // enterService will bootstrapSession when needed.
+  if (auth && auth.token && !window.$chatwoot && !widgetLoading) {
+    enterService();
+  }
   window.addEventListener("pageshow", () => {
     updateSession();
-    if (auth && auth.token && conversationId && !window.$chatwoot && !widgetLoading) {
+    if (auth && auth.token && !window.$chatwoot && !widgetLoading) {
       enterService();
     }
   });
