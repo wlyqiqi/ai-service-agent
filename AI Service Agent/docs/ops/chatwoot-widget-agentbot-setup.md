@@ -115,6 +115,8 @@ POST {RUNTIME_BASE}/webhooks/chatwoot
 | AgentBot webhook 签名密钥 | `CHATWOOT_AGENT_BOT_SECRET` | `chatwoot_agent_bot_secret` |
 | Outgoing URL | （填在 Chatwoot，不进 `.env`） | → `POST /webhooks/agent_bot` |
 
+Runtime 校验签名并接受 payload 后立刻返回 200。LLM、Graph、出站 Chatwoot 调用在后台执行，避免 Chatwoot 默认 5 秒读超时把会话标成 open。
+
 本仓校验（Chatwoot v4.x 契约）：
 
 - Headers：`X-Chatwoot-Signature: sha256=<hex>`、`X-Chatwoot-Timestamp`
@@ -159,11 +161,12 @@ Seat Takeover / 交回 Bot **不**走 AgentBot Outgoing URL。须在 Chatwoot **
 3. **订阅事件必须包含** `conversation_status_changed`（以及既有坐席回写所需的 `message_created` 等）
 4. Runtime 语义（官方 Agent Bot）：
    - `pending` 且 mode 已是 `ai`：Bot 持有，**忽略**（防环）
-   - `open`：Seat Takeover（mode=`human` + `handoff_created` + Handoff Joined Notice）。若有未提交的 Mutation Form，先 cancel（不写库），客户看到「尚未提交的修改已取消」
+   - `open` 且人工 assignee（或随后的 self-assign / `Assigned to` activity）：Seat Takeover（mode=`human` + `handoff_created` + Handoff Joined Notice）。若有未提交的 Mutation Form，先 cancel（不写库），客户看到「尚未提交的修改已取消」
+   - `open` 且没有人工 assignee：不是接手。Agent Bot 读超时后系统会自动打开，并写 “error with the agent bot”。不发「人工客服已接入」、不切 human。裸 open 先等 `CHATWOOT_BOT_ERROR_OPEN_GRACE_SECONDS`（默认 2），宽限内没有人工信号则在 `CHATWOOT_REVERT_BOT_ERROR_OPEN`（默认 true）时 `toggle_status(pending)`
    - `pending` 且 mode 为 `human`：交回 Bot（mode=`ai` + `handoff_resolved` + 双方可见「已交回助手」）。**不再** toggle（status 已经是 pending）
    - `resolved`：兼容路径，同样交回，并由 Runtime `toggle_status(pending)`；随后的 `pending` 回声忽略
 
-Bot 自己 `toggle_status(open)`、坐席 Take over、或把会话派给人工，都会变成 `open`，走同一条 webhook。
+坐席 Take over（官方按钮先 open 再 self-assign）或把会话派给人工后再 open，才会进 human。Bot 与客户申请路径不会调用 `toggle_status(open)`。
 
 验收：用 Account API / 控制台确认该 webhook 的 subscriptions **含** `conversation_status_changed`。缺订则 Take over / 交回 pending 不会同步 Conversation Mode。
 

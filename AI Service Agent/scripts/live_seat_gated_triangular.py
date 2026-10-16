@@ -5,7 +5,7 @@ Account Webhook URL host.docker.internal:8766), then:
 
   A) customer request hang → mode stays ai + Chatwoot note/label
   B) FAQ still AI
-  C) Chatwoot toggle_status(open) → webhook Takeover → Joined Notice + mode human
+  C) assign API user, then toggle_status(open) → webhook Takeover → Joined Notice + mode human
   D) further chat stays human tip
   E) Chatwoot toggle_status(pending) → webhook return-to-bot → mode ai
   F) FAQ AI again
@@ -131,6 +131,28 @@ class ChatwootSeat:
         if r.status_code != 200:
             return []
         return r.json().get("payload") or []
+
+    def profile(self) -> dict:
+        r = httpx.get(
+            f"{self.base}/api/v1/profile",
+            headers=self._headers(),
+            timeout=15,
+            trust_env=False,
+        )
+        if r.status_code != 200:
+            return {}
+        body = r.json()
+        return body if isinstance(body, dict) else {}
+
+    def assign(self, cw_id: int, assignee_id: int) -> bool:
+        r = httpx.post(
+            f"{self.base}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/assignments",
+            headers=self._headers(),
+            json={"assignee_id": assignee_id},
+            timeout=15,
+            trust_env=False,
+        )
+        return r.status_code == 200
 
     def toggle_status(self, cw_id: int, status: str) -> bool:
         r = httpx.post(
@@ -260,7 +282,12 @@ def main() -> int:
                 "mode": mode_after_pending,
             })
 
-            # C — Seat Takeover via Chatwoot open (live Account Webhook)
+            # C — real seat Take over. Assign first so the open webhook carries
+            # meta.assignee_type=User. A bare toggle_status(open) matches the
+            # Agent Bot timeout fallback and must not enter human.
+            me = seat.profile()
+            assignee_id = me.get("id")
+            assigned = bool(assignee_id) and seat.assign(cw_id, int(assignee_id))
             toggled = seat.toggle_status(cw_id, "open")
             mode = wait_mode(client, sid, "human")
             msgs = client.get(f"{BASE}/conversations/{sid}/messages").json().get("items") or []
@@ -270,7 +297,9 @@ def main() -> int:
             )
             results.append({
                 "name": "C.takeover_joined_notice",
-                "pass": toggled and mode == "human" and has_joined,
+                "pass": assigned and toggled and mode == "human" and has_joined,
+                "assigned": assigned,
+                "assignee_id": assignee_id,
                 "toggle_ok": toggled,
                 "mode": mode,
                 "joined_notice": has_joined,

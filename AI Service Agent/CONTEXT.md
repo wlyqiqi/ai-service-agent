@@ -93,8 +93,8 @@ Seat Takeover 成功后由 Bot 发给客户的短提示（人工已接入）；�
 _Avoid_: 与 HANDOFF_NOTICE 旧「已转接请稍候」混用同一句在申请阶段停 AI
 
 **Seat Takeover**:
-坐席用 Chatwoot 官方 **Take over**（或等价：派给人 / Bot `toggle_status(open)` / 状态 `open`）接手会话；此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。若当时有未提交的 Mutation Form Interrupt，先 cancel（不写库）再进 human。
-_Avoid_: 自定义「同意」卡当作主路径；把 assignee 变更当成唯一真相而忽略 status=`open`；接管后仍让迟到的表单提交写库
+坐席用 Chatwoot 官方 **Take over** 接手：status `open` 且能看到人工 assignee（`assignee_type=User` 或 self-assign）。此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。没有人工 assignee 的 `open`（Agent Bot 失败后系统自动打开）不是接手。若当时有未提交的 Mutation Form Interrupt，先 cancel（不写库）再进 human。
+_Avoid_: 自定义「同意」卡当作主路径；把系统 bot-error 自动 open 当成人工接入；Bot 或客户路径 `toggle_status(open)`；接管后仍让迟到的表单提交写库
 
 **Handoff Resolve**:
 交回 Bot：Chatwoot status 回到 `pending`（官方 Agent Bot），Conversation Mode 回 `ai`。兼容路径是官方 **Resolve / 已解决**（status=`resolved`），Runtime 再 `toggle_status(pending)`。mode 已是 `ai` 时的 `pending` 忽略，防止环。

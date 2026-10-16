@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +58,7 @@ from ai_service_agent.harness.handoff import (
     STATUS_AWAITING,
     HandoffService,
 )
+from ai_service_agent.harness.handoff_signal import human_takeover_signal, is_bot_error_signal
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.resume import (
     HANDOFF_RESUME_ACTION,
@@ -205,6 +206,8 @@ def create_app(
     seat_approval_secret: str | None = None,
     profile_db_path: str | None = None,
     order_repository=None,
+    chatwoot_revert_bot_error_open: bool | None = None,
+    chatwoot_bot_error_open_grace_seconds: float | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -242,6 +245,18 @@ def create_app(
     webhook_secret = chatwoot_webhook_secret or settings_chatwoot.chatwoot_webhook_secret
     widget_hmac_secret = chatwoot_hmac_secret or settings_chatwoot.chatwoot_hmac_secret
     agent_bot_secret = chatwoot_agent_bot_secret or settings_chatwoot.chatwoot_agent_bot_secret
+    revert_bot_error_open = (
+        settings_chatwoot.chatwoot_revert_bot_error_open
+        if chatwoot_revert_bot_error_open is None
+        else chatwoot_revert_bot_error_open
+    )
+    bot_error_open_grace_seconds = (
+        settings_chatwoot.chatwoot_bot_error_open_grace_seconds
+        if chatwoot_bot_error_open_grace_seconds is None
+        else chatwoot_bot_error_open_grace_seconds
+    )
+    # Generation token so a late grace-revert cannot undo a real Take over.
+    _open_watch: dict[str, int] = {}
     approvals = ApprovalService(conn, simulate_approval=sim)
 
     def _runtime_context(user_id: str = "") -> GraphContext:
@@ -518,6 +533,52 @@ def create_app(
         if cancelled:
             await _emit_form_cancelled_on_handoff(conv_id)
         return {"type": "handoff_created", "data": rec}
+
+    def _cancel_open_watch(conv_id: str) -> int:
+        token = _open_watch.get(conv_id, 0) + 1
+        _open_watch[conv_id] = token
+        return token
+
+    async def _revert_unassigned_open(conv_id: str, token: int) -> None:
+        """Pull a system auto-open back to pending. Never called for a real Take over."""
+        if _open_watch.get(conv_id) != token:
+            return
+        if status.get_mode(conv_id) == "human":
+            return
+        if not revert_bot_error_open or chatwoot is None:
+            return
+        try:
+            await chatwoot.set_conversation_status(conv_id, "pending")
+        except Exception:
+            logger.exception("chatwoot revert bot-error open failed: conv=%s", conv_id)
+
+    async def _arm_bot_error_revert(conv_id: str, *, immediate: bool) -> None:
+        token = _cancel_open_watch(conv_id)
+        grace = 0.0 if immediate else float(bot_error_open_grace_seconds)
+        if grace <= 0:
+            await _revert_unassigned_open(conv_id, token)
+            return
+
+        async def _later() -> None:
+            try:
+                await asyncio.sleep(grace)
+                await _revert_unassigned_open(conv_id, token)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("bot-error open revert failed: conv=%s", conv_id)
+
+        asyncio.create_task(_later())
+
+    async def _enter_human(conv_id: str) -> dict:
+        _cancel_open_watch(conv_id)
+        created = await _seat_takeover_for_conversation(conv_id)
+        logger.info(
+            "event handoff_created conv=%s handoff=%s",
+            conv_id,
+            (created.get("data") or {}).get("handoff_id"),
+        )
+        return {"ok": True, "event": created}
 
     def _webhook_conversation_status(data: dict) -> tuple[int | None, str | None]:
         """Parse conversation_status_changed → (chatwoot_conversation_id, status)."""
@@ -1054,13 +1115,18 @@ def create_app(
                 return {"ok": True}
             conv_id = rec["conversation_id"]
             if new_status == "open":
-                created = await _seat_takeover_for_conversation(conv_id)
+                # User assignee = real Take over. A bare open is the same shape
+                # as Chatwoot's Agent Bot timeout fallback (activity arrives later).
+                if human_takeover_signal(data):
+                    return await _enter_human(conv_id)
+                immediate = is_bot_error_signal(data) or float(bot_error_open_grace_seconds) <= 0
+                await _arm_bot_error_revert(conv_id, immediate=immediate)
                 logger.info(
-                    "event handoff_created conv=%s handoff=%s",
+                    "ignore unassigned open conv=%s immediate=%s",
                     conv_id,
-                    (created.get("data") or {}).get("handoff_id"),
+                    immediate,
                 )
-                return {"ok": True, "event": created}
+                return {"ok": True}
             if new_status == "pending":
                 # Official return-to-bot. Already-ai is a no-op (anti-loop after
                 # our own toggle_status(pending) or a pending baseline).
@@ -1089,6 +1155,34 @@ def create_app(
                     except KeyError:
                         pass
             return {"ok": True}
+
+        if event_name == "conversation_updated":
+            cw_id, conv_status = _webhook_conversation_status(data)
+            updated = mapping.find(cw_id) if cw_id is not None else None
+            if (
+                updated is not None
+                and conv_status == "open"
+                and human_takeover_signal(data)
+            ):
+                return await _enter_human(updated["conversation_id"])
+            return {"ok": True}
+
+        if event_name == "message_created":
+            cw_id, conv_status = _webhook_conversation_status(data)
+            activity_rec = mapping.find(cw_id) if cw_id is not None else None
+            if activity_rec is not None:
+                activity_conv = activity_rec["conversation_id"]
+                # System activity after Net::ReadTimeout. Do not toast, do not
+                # enter human. A seat who already took over is left in place.
+                if is_bot_error_signal(data) and not human_takeover_signal(data):
+                    if status.get_mode(activity_conv) == "human":
+                        _cancel_open_watch(activity_conv)
+                    else:
+                        await _arm_bot_error_revert(activity_conv, immediate=True)
+                        logger.info("ignore bot-error auto-open conv=%s", activity_conv)
+                    return {"ok": True}
+                if conv_status == "open" and human_takeover_signal(data) and not is_agent_message(data):
+                    return await _enter_human(activity_conv)
 
         if event_name != "message_created" or not is_agent_message(data):
             return {"ok": True}
@@ -1123,30 +1217,13 @@ def create_app(
         )
         return {"ok": True}
     _web_dir = Path(__file__).resolve().parents[3] / "web"
-    @app.post("/webhooks/agent_bot")
-    async def agent_bot_webhook(request: Request):
-        payload = await request.body()
-        signature = request.headers.get("X-Chatwoot-Signature")
-        timestamp = request.headers.get("X-Chatwoot-Timestamp")
-        if not agent_bot_secret or not verify_chatwoot_signature(payload, signature, agent_bot_secret, timestamp):
-            raise HTTPException(status_code=401, detail="invalid signature")
+    async def _process_agent_bot(data: dict) -> None:
+        """LLM / Graph / outbound Chatwoot. Runs after the HTTP 200 is sent."""
         try:
-            data = json.loads(payload)
-        except (UnicodeDecodeError, ValueError):
-            return {"ok": True}
-        if chatwoot is not None:
-            if not isinstance(data, dict):
-                return {"ok": True}
-            conversation = data.get("conversation")
-            if not isinstance(conversation, dict):
-                return {"ok": True}
-            try:
-                int(conversation.get("id"))
-            except (TypeError, ValueError):
-                return {"ok": True}
-
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
+                graph = make_ai_graph(
+                    _resolve_model(model), saver, order_repository=resolved_order_repository
+                )
                 await handle_agent_bot_message(
                     data,
                     chatwoot,
@@ -1158,10 +1235,38 @@ def create_app(
                     orders_loader=_address_editable_orders_for_agent_bot,
                     thread_lock_factory=_thread_lock,
                     chatwoot_lock_factory=_thread_lock,
-                    callbacks_factory=_agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store),
+                    callbacks_factory=_agent_bot_callbacks_factory(
+                        handoff, approvals, chatwoot, messages_store
+                    ),
                     handoff=handoff,
                     context=_runtime_context(),
                 )
+        except Exception:
+            logger.exception("agent bot webhook processing failed")
+
+    @app.post("/webhooks/agent_bot")
+    async def agent_bot_webhook(request: Request, background_tasks: BackgroundTasks):
+        payload = await request.body()
+        signature = request.headers.get("X-Chatwoot-Signature")
+        timestamp = request.headers.get("X-Chatwoot-Timestamp")
+        if not agent_bot_secret or not verify_chatwoot_signature(payload, signature, agent_bot_secret, timestamp):
+            raise HTTPException(status_code=401, detail="invalid signature")
+        try:
+            data = json.loads(payload)
+        except (UnicodeDecodeError, ValueError):
+            return {"ok": True}
+        if chatwoot is None or not isinstance(data, dict):
+            return {"ok": True}
+        conversation = data.get("conversation")
+        if not isinstance(conversation, dict):
+            return {"ok": True}
+        try:
+            int(conversation.get("id"))
+        except (TypeError, ValueError):
+            return {"ok": True}
+        # Chatwoot's default webhook read timeout is 5s. ACK before the graph
+        # so a slow turn cannot trip Net::ReadTimeout → system auto-open.
+        background_tasks.add_task(_process_agent_bot, data)
         return {"ok": True}
     if _web_dir.exists():
         # 同源托管 web/ 静态资源（如 landing.html）；自建 SSE 用户页 index.html 已下线。

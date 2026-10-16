@@ -21,11 +21,12 @@
 ### 1.2 Seat Takeover：`ai` → `human`（激活 Handoff，非申请本身）
 
 > **Superseded for the request step by [ADR-0003](../adr/0003-seat-gated-handoff.md).**  
-> 历史 MVP：「创建 Handoff Record」即与 `mode=human` 同事务。Seat-gated 后：**Handoff Request 只挂起、不切 mode**；仅 **Seat Takeover**（Chatwoot Take over / status `open`）才切 `human`。
+> 历史 MVP：「创建 Handoff Record」即与 `mode=human` 同事务。Seat-gated 后：**Handoff Request 只挂起、不切 mode**；仅 **Seat Takeover**（坐席接手后的 status `open`）才切 `human`。
 
 - **Seat Takeover** 时：将挂起的 Handoff Request 转为接入中（或无申请时懒创建 active handoff），并与切 `conversation_mode=human` **绑定为同一数据库事务**，不允许分两步先后执行。
-- 触发来源（权威）：Account Webhook `conversation_status_changed` 且新 status = `open`（坐席官方 Take over / 等价派给人）。见 §3.1 / ops runbook。
-- **不得**在 `request_handoff` / 创建挂起 Record / 发 `handoff_requested` 时切 `mode=human`。
+- 触发来源（权威）：Account Webhook 上能确认是坐席接手的 `open`。见 §3.1 / ops runbook。信号是 `meta.assignee_type=User`（或 `changed_attributes.assignee_id`），或 status 仍为 `open` 时的 self-assign / `Assigned to` activity，或 `conversation_updated` 带人工 assignee。
+- **不是 Take over**：没有人工 assignee 的 `open`。Agent Bot webhook 读超时后，Chatwoot 会把 pending 会话标成 open，并写 activity「Conversation was marked open by system due to an error with the agent bot」。这条不发 Joined Notice、不切 `human`。默认 `toggle_status(pending)` 拉回 Bot（`CHATWOOT_REVERT_BOT_ERROR_OPEN`，默认 true）。裸 open 先等 `CHATWOOT_BOT_ERROR_OPEN_GRACE_SECONDS`（默认 2），以便官方 Take over「先 open、再 self-assign」落到人工信号上。
+- **不得**在 `request_handoff` / 创建挂起 Record / 发 `handoff_requested` 时切 `mode=human`。Bot 与客户路径不得调用 `toggle_status(open)`。
 - 无事先 Handoff Request 时，坐席主动 Take over **仍**切 `human`（允许懒建 active handoff）。
 - 成功后发出 `handoff_created`（真正进入 human 车道），并由 Bot 发送 **Handoff Joined Notice**（短提示：人工已接入；与挂起确认文案区分）。
 - **未提交的 Mutation Form**：进入 human 之前，若该会话线程上仍有 Form Interrupt，Runtime 在同一 thread lock 内以 `Command(resume={"action":"cancel"})` 清掉（不写库）。客户可见提示「尚未提交的修改已取消」；可选坐席 private note。审批 interrupt（HighRisk）不在此取消。清掉之后，迟到的 Form Resume（`/actions/confirm` 或 AgentBot 表单提交）不得写库。客户自己的 Implicit Cancel / 表单确认路径不变。
@@ -81,7 +82,8 @@
 
 - 入口：`POST /webhooks/chatwoot`（与 AgentBot `outgoing_url` **不是同一通道**；secret 为 `CHATWOOT_WEBHOOK_SECRET`）。
 - 必须处理 `conversation_status_changed`（**不是** AgentBot Outgoing URL）：
-  - status → `open`：**Seat Takeover**（§1.2）；若有未提交 Form Interrupt，先 cancel 再切 `human`
+  - status → `open` 且人工 assignee（或随后的 self-assign activity）：**Seat Takeover**（§1.2）；若有未提交 Form Interrupt，先 cancel 再切 `human`
+  - status → `open` 且没有人工 assignee：不是接手。Bot 失败系统自动打开时拉回 `pending`（§1.2），不发 Joined Notice
   - status → `pending` 且 mode=`human`：**交回 Bot**（§1.3），不再 toggle
   - status → `pending` 且 mode=`ai`：**忽略**（防环 / Bot 本就持有）
   - status → `resolved`：兼容的 Handoff Resolve（§1.3），再 `toggle_status(pending)`
