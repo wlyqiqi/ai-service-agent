@@ -162,8 +162,8 @@ def test_update_address_open_form_items_locked_layout_no_action_select():
     assert order_picker["type"] == "select"
     assert "default" not in order_picker  # never auto-preselect, even with prefill
     assert order_picker["options"] == [
-        {"label": "ORD-PAID-1 · 已支付 · 测试商品 x1", "value": "ORD-PAID-1"},
-        {"label": "ORD-PAID-2 · 已支付 · 另一件 x1", "value": "ORD-PAID-2"},
+        {"label": "ORD-PAID-1", "value": "ORD-PAID-1"},
+        {"label": "ORD-PAID-2", "value": "ORD-PAID-2"},
     ]
     assert "请选择" in (order_picker.get("placeholder") or order_picker.get("label") or "")
 
@@ -320,7 +320,8 @@ async def test_fake_graph_open_form_carries_current_address_and_locked_projectio
     assert current.get("default") == expected_address
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert "default" not in order_picker
-    assert any("已支付" in opt["label"] for opt in order_picker["options"])
+    assert order_picker["options"]
+    assert all(opt["label"] == opt["value"] for opt in order_picker["options"])
     assert items[-1]["default"] == update_address_form_footnote_text()
 
 
@@ -422,6 +423,7 @@ def test_update_address_form_rejected_keeps_layout_and_paints_errors():
     assert address.get("placeholder") == "请填写有效地址"
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert "该订单已不可改" in order_picker["label"]
+    assert order_picker["options"] == [{"label": "ORD-PAID-1", "value": "ORD-PAID-1"}]
 
 
 @pytest.mark.asyncio
