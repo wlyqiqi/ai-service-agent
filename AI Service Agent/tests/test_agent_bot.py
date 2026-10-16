@@ -131,7 +131,10 @@ async def test_send_clarify_form_address():
     attrs = args.args[3]
     assert len(attrs["items"]) >= 2
     select_field = next(item for item in attrs["items"] if item.get("type") == "select")
-    assert len(select_field["options"]) == 2
+    assert select_field["options"] == [
+        {"label": "ORD-1", "value": "ORD-1"},
+        {"label": "ORD-2", "value": "ORD-2"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -565,8 +568,8 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["type"] == "select"
     assert order_picker["options"] == [
-        {"label": "ORD-PAID-1 · 已支付 · 测试商品 x1", "value": "ORD-PAID-1"},
-        {"label": "ORD-PAID-2 · 已支付 · 另一件 x1", "value": "ORD-PAID-2"},
+        {"label": "ORD-PAID-1", "value": "ORD-PAID-1"},
+        {"label": "ORD-PAID-2", "value": "ORD-PAID-2"},
     ]
     assert "default" not in order_picker
     address_field = next(item for item in items if item["name"] == "address")
@@ -599,13 +602,54 @@ def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
     )
 
     assert [item["name"] for item in items] == ["order_id", "note", "action"]
-    assert items[0]["options"] == [{"label": "ORD-1 · 鞋 x1", "value": "ORD-1"}]
+    assert items[0]["options"] == [{"label": "ORD-1", "value": "ORD-1"}]
     assert items[1]["default"] == "工作日配送"
     assert items[1]["label"] == "订单备注"
     assert items[2]["options"] == [
         {"label": "确认", "value": "confirm"},
         {"label": "取消", "value": "cancel"},
     ]
+
+
+def test_order_picker_option_labels_are_order_id_only():
+    """Every order select shows the order number only — no product or status."""
+    from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
+
+    invoice_items = mutation_form_items_from_form_data(
+        {
+            "tool": "create_invoice",
+            "summary": "开具发票",
+            "order_candidates": [
+                {
+                    "order_id": "ORD-2026-10151",
+                    "product_summary": "澄元智能破壁机 标准版 07 x1,澄元无线吸尘器 标准版 01 x2",
+                    "status_display": "已支付",
+                },
+                {"order_id": "ORD-2026-10059", "status_display": "待发货"},
+                {"order_id": "", "product_summary": "空订单号"},
+                {"product_summary": "没有订单号"},
+                "not-a-candidate",
+            ],
+            "fields": [{"name": "company", "label": "发票抬头", "type": "text"}],
+        }
+    )
+    invoice_picker = next(item for item in invoice_items if item["name"] == "order_id")
+    assert invoice_picker["options"] == [
+        {"label": "ORD-2026-10151", "value": "ORD-2026-10151"},
+        {"label": "ORD-2026-10059", "value": "ORD-2026-10059"},
+    ]
+
+    address_items = mutation_form_items_from_form_data(
+        {
+            "tool": "update_address",
+            "current_address": "旧址",
+            "order_candidates": [
+                {"order_id": "ORD-PAID-1", "product_summary": "测试商品 x1", "status": "paid"},
+            ],
+        }
+    )
+    address_picker = next(item for item in address_items if item["name"] == "order_id")
+    assert address_picker["options"] == [{"label": "ORD-PAID-1", "value": "ORD-PAID-1"}]
 
 
 def test_mutation_form_projects_form_rejected_errors_into_chatwoot_copy():
@@ -635,6 +679,7 @@ def test_mutation_form_projects_form_rejected_errors_into_chatwoot_copy():
     assert "抱歉，该订单已取消，无需修改地址。" in title
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert "抱歉，该订单已取消，无需修改地址。" in order_picker["label"]
+    assert order_picker["options"] == [{"label": "ORD-PAID-1", "value": "ORD-PAID-1"}]
     address = next(item for item in items if item["name"] == "address")
     assert address["placeholder"] == "请填写有效地址"
 
@@ -791,7 +836,7 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["type"] == "select"
     assert any(opt["value"] == "ORD-PAID-1" for opt in order_picker["options"])
-    assert any("已支付" in opt["label"] for opt in order_picker["options"])
+    assert all(opt["label"] == opt["value"] for opt in order_picker["options"])
     assert any(item["name"] == "address" and item["type"] == "text" for item in items)
     assert all(item["name"] != "action" for item in items)
     profile_loader.assert_not_called()

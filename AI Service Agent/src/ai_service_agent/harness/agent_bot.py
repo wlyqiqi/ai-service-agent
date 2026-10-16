@@ -183,13 +183,24 @@ def _apply_errors_to_mutation_form_items(
     return items
 
 
-def _update_address_order_option_label(candidate: dict[str, Any]) -> str:
-    order_id = str(candidate.get("order_id") or "")
-    product = (candidate.get("product_summary") or "").strip()
-    # Candidates for update_address are paid-only; label locked as 订单号 · 已支付 · 短名.
-    if product:
-        return f"{order_id} · 已支付 · {product}"
-    return f"{order_id} · 已支付"
+def _order_picker_options(candidates: Any) -> list[dict[str, str]]:
+    """Order-select options: ``label`` and ``value`` are the order id only.
+
+    Product and status text overflow the widget's native ``<select>`` menu.
+    The order number alone stays inside the control, left-aligned.
+    """
+    options: list[dict[str, str]] = []
+    if not isinstance(candidates, list):
+        return options
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        order_id = candidate.get("order_id")
+        if not order_id:
+            continue
+        order_id = str(order_id)
+        options.append({"label": order_id, "value": order_id})
+    return options
 
 
 def _update_address_form_items(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -203,16 +214,7 @@ def _update_address_form_items(data: dict[str, Any]) -> list[dict[str, Any]]:
             "default": update_address_current_address_display(data.get("current_address")),
         },
     ]
-    options: list[dict[str, str]] = []
-    for candidate in data.get("order_candidates") or []:
-        if not isinstance(candidate, dict) or not candidate.get("order_id"):
-            continue
-        options.append(
-            {
-                "label": _update_address_order_option_label(candidate),
-                "value": str(candidate["order_id"]),
-            }
-        )
+    options = _order_picker_options(data.get("order_candidates"))
     order_item: dict[str, Any] = {
         "name": "order_id",
         "label": "选择订单",
@@ -259,16 +261,7 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
     prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
     items: list[dict[str, Any]] = []
 
-    options: list[dict[str, str]] = []
-    for candidate in data.get("order_candidates") or []:
-        if not isinstance(candidate, dict):
-            continue
-        order_id = candidate.get("order_id")
-        if not order_id:
-            continue
-        detail = candidate.get("product_summary") or candidate.get("status_display") or ""
-        label = f"{order_id} · {detail}" if detail else str(order_id)
-        options.append({"label": label, "value": str(order_id)})
+    options = _order_picker_options(data.get("order_candidates"))
     order_item: dict[str, Any] = {
         "name": "order_id",
         "label": "选择订单",
@@ -919,10 +912,7 @@ async def send_clarify_form(
     items = []
 
     if "order_id" in missing_fields:
-        options = [
-            {"label": f"{item['order_id']} · {item.get('status_display', '')}", "value": item["order_id"]}
-            for item in (orders or [])
-        ]
+        options = _order_picker_options(orders)
         items.append({"name": "order_id", "label": "选择订单", "type": "select", "options": options})
 
     if "address" in missing_fields:
