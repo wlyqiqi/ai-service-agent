@@ -144,9 +144,11 @@
     .woot-widget-holder.human-service.woot-widget-holder--opened .human-service-bar { display:flex; width:100%; }
     .woot-widget-holder.human-service:not(.woot--hide) iframe,
     .woot-widget-holder.human-service.woot-widget-holder--opened iframe { flex:1 1 auto; width:100% !important; max-width:100% !important; height:auto !important; min-height:0; }
-    /* Desktop (≥1025px, above the page's 1024px layout breakpoint): floating holder is half the viewport, capped at 960px. Height stays 620px. */
+    /* Desktop (≥1025px, above the page's 1024px layout breakpoint): open floating holder is half the viewport, capped at 960px. Height stays 620px.
+       Current Chatwoot drops woot--hide while open and does not add woot-widget-holder--opened; both hooks are covered. Unread preview is left alone. */
     @media (min-width:1025px) {
       body .woot-widget-holder.woot-widget-holder--opened,
+      body .woot-widget-holder:not(.woot--hide):not(.has-unread-view),
       body .woot-widget-holder.human-service:not(.woot--hide),
       body .woot-widget-holder.human-service.woot-widget-holder--opened {
         width:min(50vw, 960px) !important;
@@ -155,6 +157,7 @@
         max-height:620px !important;
       }
       body .woot-widget-holder.woot-widget-holder--opened iframe,
+      body .woot-widget-holder:not(.woot--hide):not(.has-unread-view) iframe,
       body .woot-widget-holder.human-service:not(.woot--hide) iframe,
       body .woot-widget-holder.human-service.woot-widget-holder--opened iframe {
         width:100% !important;
