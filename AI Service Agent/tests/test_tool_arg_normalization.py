@@ -12,7 +12,7 @@ from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.agents.tool_args import ToolArgumentNormalizationMiddleware
 from ai_service_agent.testing import ToolCallingFakeModel
 from ai_service_agent.tools import orders as orders_mod
-from ai_service_agent.tools.orders import my_orders
+from ai_service_agent.tools.orders import my_orders, order_lookup, shipment_query
 from ai_service_agent.tools.params import is_absent_sentinel, normalize_absent_args
 from conftest import ainvoke_graph
 
@@ -158,3 +158,72 @@ def test_my_orders_status_null_returns_all_orders_for_the_caller(monkeypatch, tm
     assert payload["count"] == 5
     assert "error" not in payload
     assert hook.args == {}
+
+
+def _read_tool_payload(graph, text: str, thread_id: str) -> dict:
+    out = ainvoke_graph(
+        graph,
+        {
+            "messages": [HumanMessage(content=text)],
+            "user_id": "u1",
+            "session_id": thread_id,
+            "context": {},
+        },
+        {"configurable": {"thread_id": thread_id}},
+    )
+    tool_message = next(message for message in out["messages"] if getattr(message, "type", None) == "tool")
+    return json.loads(tool_message.content)
+
+
+def test_shipment_query_order_id_null_returns_the_callers_shipments(monkeypatch, tmp_path):
+    _use_orders_db(monkeypatch, _seed_db(tmp_path))
+    model = ToolCallingFakeModel(responses=[
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "shipment_query",
+                "args": {"order_id": "null"},
+                "id": "call-ship",
+                "type": "tool_call",
+            }],
+        ),
+        AIMessage(content="这是您的物流。"),
+    ])
+    graph = make_read_graph(model, tools=[shipment_query])
+    payload = _read_tool_payload(graph, "我的快递到哪了", "ship-null")
+    assert payload["count"] >= 1
+    assert "error" not in payload
+    assert all(item["order_id"] for item in payload["shipments"])
+
+
+def test_order_lookup_order_id_null_is_a_missing_argument_not_not_found(monkeypatch, tmp_path):
+    _use_orders_db(monkeypatch, _seed_db(tmp_path))
+    model = ToolCallingFakeModel(responses=[
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "order_lookup",
+                "args": {"order_id": "null"},
+                "id": "call-lookup",
+                "type": "tool_call",
+            }],
+        ),
+        AIMessage(content="请提供订单号。"),
+    ])
+    graph = make_read_graph(model, tools=[order_lookup])
+    out = ainvoke_graph(
+        graph,
+        {
+            "messages": [HumanMessage(content="查一下订单")],
+            "user_id": "u1",
+            "session_id": "lookup-null",
+            "context": {},
+        },
+        {"configurable": {"thread_id": "lookup-null"}},
+    )
+    tool_message = next(message for message in out["messages"] if getattr(message, "type", None) == "tool")
+    body = tool_message.content
+    assert "not_found" not in body
+    assert "null" not in body
+    assert "order_id" in body
+    assert "missing" in body.lower() or "required" in body.lower()
