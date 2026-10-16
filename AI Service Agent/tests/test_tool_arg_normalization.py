@@ -358,3 +358,121 @@ def test_null_request_id_writes_two_different_orders(monkeypatch, tmp_path):
     assert len(keys) == 2
     assert all(uuid.UUID(row[0]).version == 4 for row in keys)
     assert keys[0][0] != keys[1][0]
+
+
+def _customer_address(db_path: Path, customer_id: str = "u1") -> str | None:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT address FROM customers WHERE customer_id=?", (customer_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else row[0]
+
+
+def test_null_address_and_note_are_missing_fields_not_stored_values():
+    import asyncio
+
+    address = _mutation_select_for("update_address", {
+        "order_id": "ORD-PAID-1",
+        "address": "null",
+        "request_id": "null",
+    })
+    address_out = asyncio.run(address({
+        "messages": [HumanMessage(content="改一下收货地址")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    address_pending = address_out["context"]["pending_tool"]
+    assert address_pending["tool"] == "update_address"
+    assert "address" not in address_pending["args"]
+    assert uuid.UUID(address_pending["request_id"]).version == 4
+    assert "precheck_reason" not in address_out["context"]
+
+    note = _mutation_select_for("update_order_note", {
+        "order_id": "ORD-1",
+        "note": " NULL ",
+        "request_id": "none",
+    })
+    note_out = asyncio.run(note({
+        "messages": [HumanMessage(content="给订单加个备注")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    note_pending = note_out["context"]["pending_tool"]
+    assert note_pending["tool"] == "update_order_note"
+    assert "note" not in note_pending["args"]
+    assert uuid.UUID(note_pending["request_id"]).version == 4
+
+
+def _mutation_select_for(tool_name: str, args: dict):
+    model = ToolCallingFakeModel(responses=[select_json_message(tool_name, args)])
+    return make_select_node(
+        model,
+        "mutation",
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+
+
+def test_null_address_and_note_do_not_land_in_the_database(monkeypatch, tmp_path):
+    db_path = _seed_db(tmp_path)
+    _use_orders_db(monkeypatch, db_path)
+    address_before = _customer_address(db_path)
+    note_before = _note_for(db_path, "ORD-1")
+    cases = (
+        (
+            "update_address",
+            {"order_id": "ORD-PAID-1", "address": "null", "request_id": "null"},
+            "addr-null",
+            "改一下收货地址",
+            "account_profile_update",
+        ),
+        (
+            "update_order_note",
+            {"order_id": "ORD-1", "note": "null", "request_id": "null"},
+            "note-null",
+            "给订单加个备注",
+            "order_mutation",
+        ),
+    )
+    for tool_name, args, thread_id, text, route in cases:
+        model = ToolCallingFakeModel(responses=[
+            router_json_message(route, 0.9),
+            select_json_message(tool_name, args),
+        ])
+        graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+        out = ainvoke_graph(
+            graph,
+            {
+                "messages": [HumanMessage(content=text)],
+                "user_id": "u1",
+                "session_id": thread_id,
+                "context": {},
+            },
+            {"configurable": {"thread_id": thread_id}},
+        )
+        assert out.get("__interrupt__")
+        assert [message for message in out["messages"] if getattr(message, "type", None) == "tool"] == []
+
+    assert _customer_address(db_path) == address_before
+    assert _note_for(db_path, "ORD-1") == note_before
+    assert address_before != "null"
+    assert note_before != "null"
+
+
+def test_select_keeps_a_dash_note():
+    import asyncio
+
+    node = _mutation_select({
+        "order_id": "ORD-1",
+        "note": "-",
+        "request_id": "11111111-1111-4111-8111-111111111111",
+    })
+    out = asyncio.run(node({
+        "messages": [HumanMessage(content="给订单加备注")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    assert out["context"]["pending_tool"]["args"]["note"] == "-"
