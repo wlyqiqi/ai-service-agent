@@ -144,6 +144,14 @@ def test_read_system_prompt_requires_source_citation():
     assert "未查询到" in READ_SYSTEM_PROMPT
 
 
+def test_read_system_prompt_forbids_placeholder_args_and_outage_paraphrase():
+    from ai_service_agent.prompts import READ_SYSTEM_PROMPT
+
+    assert "6. 调用工具时，不需要的筛选条件必须直接省略该参数，禁止填入 \"null\"、\"none\" 等占位字符串；" in READ_SYSTEM_PROMPT
+    assert "7. 工具返回错误时，不得将其转述为\"系统故障/数据源不可用\"。应先核对参数重试一次；" in READ_SYSTEM_PROMPT
+    assert "仍失败则如实告知用户具体原因，或引导其补充信息 / 转人工。" in READ_SYSTEM_PROMPT
+
+
 def test_read_system_prompt_friendly_no_result_tone():
     """知识缺口回复要求专业客服口吻：如实告知 + 表达歉意/引导替代帮助，而非机械复述。"""
     from ai_service_agent.prompts import READ_SYSTEM_PROMPT
