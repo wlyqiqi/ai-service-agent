@@ -18,14 +18,12 @@ dict，由条件边函数路由，规避该冲突）。
 
 import json
 import uuid
-from typing import Any, Literal
 
 import langgraph.types as _lg_types
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, create_model
 
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable
 from ai_service_agent.graph.runtime_context import GraphContext
@@ -37,6 +35,12 @@ from ai_service_agent.graph.allowed_tools import (
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler, make_timeout_policy
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
+from ai_service_agent.graph.workflows.form_resume import (
+    form_resume_model,
+    resume_action,
+    resume_field_values,
+    schema_field_args,
+)
 from ai_service_agent.graph.workflows.copy import (
     completion_text,
     confirmation_summary,
@@ -54,49 +58,6 @@ from ai_service_agent.graph.workflows.safety import (
 from ai_service_agent.graph.workflows.clarify import make_clarify_node
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.tools.registry import ToolRegistry
-
-
-def _form_resume_model(tool_schema: type[BaseModel] | None) -> type[BaseModel]:
-    """Confirm Form Resume shape derived from the tool schema.
-
-    Business fields stay optional so Form Cancel (``{"action": "cancel"}``) still
-    validates. ``request_id`` is not a form field; the graph injects it.
-    """
-    definitions: dict[str, Any] = {
-        "action": (Literal["confirm", "cancel"], ...),
-    }
-    if tool_schema is not None:
-        for name, field in tool_schema.model_fields.items():
-            if name in ("request_id", "action"):
-                continue
-            definitions[name] = (field.annotation | None, None)
-    return create_model("MutationFormResume", **definitions)
-
-
-def _resume_action(resume) -> str | None:
-    if isinstance(resume, BaseModel):
-        action = resume.action
-    elif isinstance(resume, dict):
-        action = resume.get("action")
-    else:
-        return None
-    return action if isinstance(action, str) else None
-
-
-def _resume_field_values(resume) -> dict:
-    """Structured Confirm values. Ignores action and any client request_id."""
-    if isinstance(resume, BaseModel):
-        data = resume.model_dump()
-    elif isinstance(resume, dict):
-        data = dict(resume)
-    else:
-        return {}
-    return {
-        key: value
-        for key, value in data.items()
-        if key not in ("action", "request_id", "current_address", "abandon_footnote")
-        and value is not None
-    }
 
 
 def make_mutation_graph(
@@ -171,6 +132,7 @@ def make_mutation_graph(
                 "context": next_ctx,
             }
         meta = registry.meta_for(pending["tool"])
+        schema = None if meta is None else meta.schema
         value = {
             "tool": pending["tool"],
             "order_candidates": candidates,
@@ -183,9 +145,9 @@ def make_mutation_graph(
             value["errors"] = errors
         resume = _lg_types.interrupt(
             value,
-            response_schema=_form_resume_model(None if meta is None else meta.schema),
+            response_schema=form_resume_model(schema),
         )
-        action = _resume_action(resume)
+        action = resume_action(resume)
         accepted = action == "confirm"
         next_ctx = {
             key: item
@@ -200,7 +162,10 @@ def make_mutation_graph(
         request_id = pending.get("request_id") or str(uuid.uuid4())
         next_ctx["pending_tool"] = {
             "tool": pending["tool"],
-            "args": {**_resume_field_values(resume), "request_id": request_id},
+            "args": {
+                **schema_field_args(resume_field_values(resume), schema),
+                "request_id": request_id,
+            },
             "request_id": request_id,
         }
         return {"context": next_ctx, "execution_status": "waiting_confirmation"}

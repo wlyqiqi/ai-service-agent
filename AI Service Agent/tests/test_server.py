@@ -226,7 +226,7 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
     from unittest.mock import AsyncMock
     from types import SimpleNamespace
 
-    cw = SimpleNamespace(send_bot_message=AsyncMock())
+    cw = SimpleNamespace(send_bot_message=AsyncMock(), send_interactive_message=AsyncMock())
     db = str(tmp_path / "approval.db")
     client = TestClient(
         create_app(
@@ -243,11 +243,23 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
     conn = sqlite3.connect(db)
     approval_id = conn.execute("SELECT approval_id FROM approval_record LIMIT 1").fetchone()[0]
     conn.close()
+    cw.send_bot_message.reset_mock()
+    cw.send_interactive_message.reset_mock()
 
     response = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
     assert response.status_code == 200
+    cw.send_interactive_message.assert_awaited_once()
+    card_args = cw.send_interactive_message.await_args.args
+    assert card_args[2] == "cards"
+    card = card_args[3]["items"][0]
+    assert card["title"] == "退款申请已提交"
+    assert card["description"].startswith("• 状态：已完成")
+    assert "\n\n" in card["description"]
+    assert "ORD-PAID-1" in card["description"]
+    assert card["actions"][0]["text"] == "知道了"
     cw.send_bot_message.assert_awaited_once()
-    assert "通过审核" in cw.send_bot_message.call_args.args[1]
+    assert "退款申请已提交" in cw.send_bot_message.await_args.args[1]
+    assert "通过审核" not in cw.send_bot_message.await_args.args[1]
 
 
 def test_chat_unknown_session_errors(tmp_path):

@@ -465,28 +465,32 @@ def lane_l4_highrisk_approve(client: httpx.Client, db_path: str) -> dict:
 
 
 def lane_l5_highrisk_clarify(client: httpx.Client, db_path: str) -> dict:
+    """Missing order id with candidates opens a Form, not chat clarify or approval."""
     sid = new_session(client)
     code, events = chat_sse(client, sid, "我要申请退款")
     types = event_types(events)
+    form_required = any(e.get("type") == "form_required" for e in events)
     clarify = any(e.get("type") == "clarification_required" for e in events)
     approval = any(e.get("type") == "approval_required" for e in events)
     done = next((e for e in reversed(events) if e.get("type") == "done"), None)
     st = graph_state(db_path, open_status(db_path, sid)["thread_id"])
     passed = (
         code == 200
-        and clarify
+        and form_required
+        and not clarify
         and not approval
         and done is not None
-        and st["execution_status"] == "clarifying"
+        and bool(st["interrupts"])
         and thread_id_consistent(db_path, sid)
     )
     return {
         "id": "L5",
-        "name": "HighRiskClarify",
+        "name": "HighRiskForm",
         "pass": passed,
         "session_id": sid,
         "http_status": code,
         "timeline": types,
+        "form_required": form_required,
         "clarification_required": clarify,
         "approval_required": approval,
         "done_final": (done or {}).get("data", {}).get("final"),

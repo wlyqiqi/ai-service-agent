@@ -110,10 +110,10 @@
 
 ### 6.3 HighRiskGraph
 
-- **select（参数完备性）** → 不完整则 **clarify（普通轮，非 interrupt，D1）**：确定性模板文案 + `execution_status=clarifying` + `clarification_required`；`context["clarify_count"]` 自增，完整成功 select 时清零，超过 N=2 → fallback。完整 → **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。
+- **select（参数完备性）** → 必填未齐且名下**有**可操作订单：与 Mutation 同一 **Form Interrupt**（Chatwoot `form`：Order Picker + 字段 + 确认/取消；不自动选中唯一订单）→ Form Resume Confirm 后进入安全预检与人工审批；Cancel 不写库、不进审批。**零**可操作订单仍 **clarify（普通轮，非 interrupt）**：确定性模板文案 + `execution_status=clarifying` + `clarification_required`；`context["clarify_count"]` 自增，超过 N=2 → fallback。字段已齐 → 不插表单，直接 **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。审批通过且写工具成功时，Chatwoot 出站用与 Mutation 相同的成功 `cards`（`MutationSuccessCardSpec`）加短跟进气泡；拒绝、过期、执行失败仍是纯文本气泡。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
   选中已注册低档工具 → tier_mismatch 澄清（`clarification_required` + `reason:"tier_mismatch"`）。
-- **显式 `order_id`（2026-10-10）**：`cancel_order` / `refund_apply` 必须由当前用户输入或可见上下文显式给出 `order_id`；即使名下只有一笔可操作订单也不自动选中。候选仅用于澄清：多笔列出候选、零笔说明无可操作订单，均继续 `clarification_required`，不进入审批。
+- **显式 `order_id`（2026-10-10，2026-10-16 收集改表单）**：`cancel_order` / `refund_apply` 必须由当前用户输入、可见上下文或 Form Resume 给出 `order_id`；即使名下只有一笔可操作订单也不自动选中。有候选时用 Form Order Picker 收集，零笔仍 `clarification_required` 说明无可操作订单，均不直接进入审批。
 - `cancel_order` 审批摘要展示订单 ID、金额、商品摘要、requester 与当前状态；由于预检只放行 `paid` 订单，进入审批时的状态预期为 `paid`。
 - `refund_apply` 审批摘要展示退款金额、订单总额、商品摘要、requester 与当前状态。
 - 超时由下一 turn 惰性检查处理为过期。
@@ -159,8 +159,9 @@
 | MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
 | HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
 | select（mutation） | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或 `tier_clarify`；成功/进表单时清零 `clarify_count`） |
-| select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（`pending_tool` 或 `clarify_missing` / `tier_clarify` / `cancellation_candidates`；完整 select 时清零 `clarify_count`，非 cancel-order clarify 前清除旧 `cancellation_candidates`） |
-| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（HighRisk 缺参 / 写图 `tier_mismatch`；Mutation 业务缺参不走此节点） |
+| select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`） |
+| prepare_form / form_interrupt（high_risk） | `context`（`pending_tool`、`form_session_id`） | Form Interrupt（缺参收集）；Confirm 后写 `pending_tool.args` 再进安全预检/审批；Cancel / 零候选不进审批 |
+| clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（HighRisk 零候选缺参 / 写图 `tier_mismatch`；有候选的 HighRisk 缺参与 Mutation 业务缺参不走此节点） |
 | prepare_form / form_interrupt（mutation） | `context`（`pending_tool`、`form_session_id`、`form_errors`） | Form Interrupt（对外权威）；子图内 `execution_status=waiting_confirmation`（不并回父图）；Confirm 后写 `pending_tool.args`（Form Resume 真源） |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |

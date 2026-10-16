@@ -218,27 +218,27 @@ def _turn(graph, text, thread_id, user_id="u1"):
     )
 
 
-def test_multi_turn_clarify_then_complete_enters_highrisk():
-    """0076 跨 turn 链路：首轮"退了吧"澄清 -> 用户补订单号 -> 下轮以完整参数进入 HighRisk 审批闸。
+def test_multi_turn_form_then_confirm_enters_highrisk():
+    """有可退款订单时缺 order_id 开 Form；Confirm 后进入审批，审批前不写库。"""
+    from langgraph.types import Command
 
-    Ruling（2026-09-16，ledger）：子图 interrupt 时父图不落子图 context/execution_status 写
-    （LangGraph 语义，mutation 确认闸同；harness 不依赖父图这些字段）。故断言可观测契约：
-    approval_required interrupt 携带完整 args（ORD-UNKNOWN），且本轮不再澄清、工具未执行。
-    clarify_count 清零发生在子图内，父图视图在 resume 完成后才同步。
-    """
     saver = MemorySaver()
-    t1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c7", user_id="u0084")
-    assert t1["execution_status"] == "clarifying"
-    assert t1["context"]["clarify_count"] == 1
-    assert not t1.get("__interrupt__")
+    graph = _build(_highrisk_model({}), saver)
+    t1 = _turn(graph, "退了吧", "c7", user_id="u0084")
+    assert t1.get("__interrupt__")
+    assert t1["__interrupt__"][0].value.get("tool") == "refund_apply"
+    assert not (t1["__interrupt__"][0].value.get("prefills") or {}).get("order_id")
 
-    # 第二轮补参：显式订单号进入审批，模型不得在缺参轮自动补 ID
-    t2 = _turn(_build(_highrisk_model({"order_id": "ORD-2026-10015"}), saver), "订单号是 ORD-2026-10015", "c7", user_id="u0084")
+    t2 = ainvoke_graph(
+        graph,
+        Command(resume={"action": "confirm", "order_id": "ORD-2026-10015"}),
+        {"configurable": {"thread_id": "c7"}},
+    )
     interrupts = [it.value for it in t2.get("__interrupt__", [])]
     approval = next((v for v in interrupts if v.get("type") == "approval_required"), None)
-    assert approval is not None                  # 第二轮正常进入 HighRisk 审批闸
-    assert "ORD-2026-10015" in approval["summary"]  # 完整 select 已被消费（参数进入审批摘要）
-    assert not any(getattr(m, "type", "") == "tool" for m in t2["messages"])  # 审批前工具不执行
+    assert approval is not None
+    assert "ORD-2026-10015" in approval["summary"]
+    assert not any(getattr(m, "type", "") == "tool" for m in t2["messages"])
 
 
 def test_multi_turn_clarify_over_limit_falls_back():

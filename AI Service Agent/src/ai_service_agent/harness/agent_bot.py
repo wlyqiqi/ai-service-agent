@@ -10,6 +10,8 @@ from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_i
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
+    MutationSuccessCardSpec,
+    build_mutation_success_card,
     handoff_cancel_confirm_text,
     handoff_request_confirm_text,
     handoff_request_private_note_text,
@@ -20,15 +22,51 @@ from ai_service_agent.graph.workflows.copy import (
     update_address_form_subtitle_text,
     update_address_form_title_text,
     update_address_new_address_placeholder,
-    update_address_success_card_description,
-    update_address_success_card_title_text,
-    update_address_success_followup_text,
 )
 from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
 logger = logging.getLogger("ai_service_agent")
+
+_WRITE_SUCCESS_TOOLS = frozenset({
+    "update_address",
+    "update_phone",
+    "update_order_note",
+    "create_invoice",
+    "create_service_ticket",
+    "cancel_order",
+    "refund_apply",
+})
+
+
+class WriteSuccessCapture:
+    """Remember the latest successful write in one event stream (args + tool payload)."""
+
+    def __init__(self) -> None:
+        self._args: dict[str, dict[str, Any]] = {}
+        self.tool: str | None = None
+        self.args: dict[str, Any] = {}
+        self.result: dict | None = None
+
+    def observe(self, event: dict) -> None:
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        name = data.get("name")
+        if not isinstance(name, str) or name not in _WRITE_SUCCESS_TOOLS:
+            return
+        if event.get("type") == "tool_call":
+            args = data.get("args") if isinstance(data.get("args"), dict) else {}
+            self._args[name] = args
+        elif event.get("type") == "tool_result" and data.get("ok"):
+            result = data.get("result") if isinstance(data.get("result"), dict) else None
+            self.tool = name
+            self.args = self._args.get(name, {})
+            self.result = result
+
+    def spec(self) -> MutationSuccessCardSpec | None:
+        if self.tool is None:
+            return None
+        return build_mutation_success_card(self.tool, self.args, self.result)
 
 
 async def _clear_agent_typing(chatwoot, conversation_id: str) -> None:
@@ -599,9 +637,7 @@ async def _handle_locked_agent_bot_message(
     mutation_form_data = None
     approval_form_data = None
     final_message_id = None
-    # #73: capture update_address confirm fields for success-card projection.
-    address_success: dict[str, str] | None = None
-    address_write_ok = False
+    write_success = WriteSuccessCapture()
     aborted_for_human = False
 
     if graph is None:
@@ -659,14 +695,6 @@ async def _handle_locked_agent_bot_message(
                             if key in _resume_skip:
                                 continue
                             resume_payload[key] = value
-                        if interrupt_value.get("tool") == "update_address":
-                            order_id = resume_payload.get("order_id")
-                            address = resume_payload.get("address")
-                            if order_id and address:
-                                address_success = {
-                                    "order_id": str(order_id),
-                                    "address": str(address),
-                                }
                     elif action in ("canceled", "cancel"):
                         resume_payload = {"action": "cancel"}
                     else:
@@ -678,7 +706,6 @@ async def _handle_locked_agent_bot_message(
 
         async def _consume_graph_events(*, messages, resume):
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
-            nonlocal address_write_ok
             async for event in event_stream(
                 graph,
                 config,
@@ -688,6 +715,7 @@ async def _handle_locked_agent_bot_message(
                 extra_state={"user_id": user_id},
                 context=context,
             ):
+                write_success.observe(event)
                 if event.get("type") == "done":
                     final_text = event.get("data", {}).get("final")
                     final_message_id = event.get("data", {}).get("message_id")
@@ -695,17 +723,14 @@ async def _handle_locked_agent_bot_message(
                     # form_rejected: same Form Interrupt session with errors
                     # (Closed MutationGraph); Adapter only projects Transport.
                     mutation_form_data = event.get("data") or {}
-                elif event.get("type") == "tool_result":
-                    data = event.get("data") or {}
-                    if data.get("name") == "update_address" and data.get("ok"):
-                        address_write_ok = True
                 elif event.get("type") == "approval_required":
                     # Seat Approver side-channel card (#64); private form, not Widget.
                     approval_form_data = event.get("data") or {}
                 elif event.get("type") == "handoff_requested" and on_handoff_requested is not None:
                     await on_handoff_requested(event)
                 # #48: clarification_required / confirmation_required interactive retired.
-                # Operation Clarify and HighRisk missing-fields stay outbound chat (done.final).
+                # Operation Clarify and zero-candidate HighRisk missing-fields stay chat (done.final).
+                # HighRisk with candidates opens the same Form Interrupt projection as Mutation.
 
         async def run_graph():
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
@@ -760,18 +785,16 @@ async def _handle_locked_agent_bot_message(
             "response": None,
         }
 
-    # #73: confirm write ok + no new form → cards (+ short bubble); suppress long done.
-    if (
-        address_success is not None
-        and address_write_ok
-        and mutation_form_data is None
-        and (status is None or status.get_mode(conversation_id) == "ai")
-    ):
+    # Confirm write ok + no new form/approval card → shared success cards (+ short bubble).
+    # Failures stay on the plain done bubble (no failure cards).
+    success_spec = None
+    if mutation_form_data is None and approval_form_data is None:
+        success_spec = write_success.spec()
+    if success_spec is not None and (status is None or status.get_mode(conversation_id) == "ai"):
         followup = await send_mutation_success_card(
             chatwoot,
             conversation_id,
-            order_id=address_success["order_id"],
-            address=address_success["address"],
+            success_spec,
         )
         final_text = followup
         if followup is not None and messages_store is not None:
@@ -796,52 +819,60 @@ async def _handle_locked_agent_bot_message(
     }
 
 
-def update_address_success_card_items(*, order_id: str, address: str) -> list[dict[str, Any]]:
-    """Chatwoot `cards` items for update_address success (#73 / plan §2④).
+def mutation_success_card_items(spec: MutationSuccessCardSpec) -> list[dict[str, Any]]:
+    """Chatwoot `cards` items. Status is the first description bullet (no native badge).
 
-    Platform has no status badge: put「已完成」on the first description line.
     `actions` is required by Chatwoot card validation (informational ack).
     """
     return [
         {
-            "title": update_address_success_card_title_text(),
-            "description": update_address_success_card_description(order_id, address),
+            "title": spec.title,
+            "description": spec.description,
             "actions": [
                 {
                     "type": "postback",
-                    "text": "知道了",
-                    "payload": "update_address_success_ack",
+                    "text": spec.button_text,
+                    "payload": spec.ack_payload,
                 }
             ],
         }
     ]
 
 
+def update_address_success_card_items(*, order_id: str, address: str) -> list[dict[str, Any]]:
+    """Backward-compatible address card items (#73), now via the shared spec."""
+    spec = build_mutation_success_card(
+        "update_address",
+        {"order_id": order_id, "address": address},
+        None,
+    )
+    assert spec is not None
+    return mutation_success_card_items(spec)
+
+
 async def send_mutation_success_card(
     chatwoot: ChatwootClient,
     conversation_id: str,
+    spec: MutationSuccessCardSpec,
     *,
-    order_id: str,
-    address: str,
     followup: bool = True,
 ) -> str | None:
-    """Project update_address confirm success to Chatwoot `cards` (+ optional short text).
+    """Project a write-tool confirm success to Chatwoot `cards` (+ optional short text).
 
-    Prefer cards over long Graph `done.final`; return the follow-up bubble text
-    (or `None`) so the Adapter can store/return it instead of the long done.
+    Prefer cards over the long Graph `done.final`; return the follow-up bubble
+    (or `None`) so the Adapter can store/return it instead of that long done.
     """
-    items = update_address_success_card_items(order_id=order_id, address=address)
+    items = mutation_success_card_items(spec)
     await chatwoot.send_interactive_message(
         conversation_id,
-        update_address_success_card_title_text(),
+        spec.title,
         "cards",
         {"items": items},
     )
     if not followup:
         return None
-    bubble = update_address_success_followup_text()
-    await chatwoot.send_bot_message(conversation_id, bubble)
-    return bubble
+    await chatwoot.send_bot_message(conversation_id, spec.followup)
+    return spec.followup
 
 
 async def send_mutation_form(

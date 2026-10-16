@@ -39,9 +39,11 @@ from ai_service_agent.harness.approvals import (
 )
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
 from ai_service_agent.harness.agent_bot import (
+    WriteSuccessCapture,
     handle_agent_bot_message,
     parse_approval_form_submission,
     send_approval_form,
+    send_mutation_success_card,
 )
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
@@ -958,6 +960,7 @@ def create_app(
                 cfg = {"configurable": {"thread_id": thread_id}}
                 final: str | None = None
                 final_message_id: str | None = None
+                write_success = WriteSuccessCapture()
                 async for ev in event_stream(
                     graph,
                     cfg,
@@ -966,6 +969,7 @@ def create_app(
                     resume_payload=resume_payload,
                     context=_runtime_context(status.get_user_id(conv_id) or ""),
                 ):
+                    write_success.observe(ev)
                     if ev["type"] == "done":
                         final = ev["data"].get("final")
                         final_message_id = ev["data"].get("message_id")
@@ -982,7 +986,19 @@ def create_app(
                         ):
                             pass
                 # Message Store 始终落库；出站仅当发送前 conversation_mode 仍为 ai（handoff-spec §1.4）
-                if final is not None:
+                # HighRisk confirm success uses the same cards as Mutation; failures stay plain bubbles.
+                success_spec = write_success.spec()
+                if (
+                    success_spec is not None
+                    and chatwoot is not None
+                    and status.get_mode(conv_id) == "ai"
+                ):
+                    bubble = await send_mutation_success_card(chatwoot, conv_id, success_spec)
+                    if bubble:
+                        messages_store.append(
+                            conv_id, "assistant", bubble, message_id=final_message_id
+                        )
+                elif final is not None:
                     messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
                     if chatwoot is not None and status.get_mode(conv_id) == "ai":
                         await chatwoot.send_bot_message(conv_id, final)

@@ -199,11 +199,13 @@ def build() -> list[dict]:
              expected_events=["approval_required", "done"],
              forbidden_events=["tool_call"], expected_tools=[]),
         case("F35", "high_risk", u1, [{"message": "我要申请退款"}],
-             expected_events=["clarification_required", "done"],
-             forbidden_events=["approval_required", "tool_call"], expected_tools=[]),
+             expected_events=["form_required", "done"],
+             forbidden_events=["clarification_required", "approval_required", "tool_call"],
+             expected_tools=[]),
         case("F36", "high_risk", u1, [{"message": "退了吧"}],
-             expected_events=["clarification_required", "done"],
-             forbidden_events=["approval_required", "tool_call"], expected_tools=[]),
+             expected_events=["form_required", "done"],
+             forbidden_events=["clarification_required", "approval_required", "tool_call"],
+             expected_tools=[]),
         case("F37", "high_risk", u1, [{"message": "帮我取消已经取消的 ORD-CANCEL-1"}],
              expected_events=["done"],
              forbidden_events=["approval_required", "tool_call"], expected_tools=[]),
@@ -282,7 +284,8 @@ def build() -> list[dict]:
         case("F56", "multiturn", u1,
              [{"message": "我要申请退款"},
               {"message": "订单是 ORD-REFUND-1，退 100 元，质量问题"}],
-             expected_events=["clarification_required", "done"]),
+             expected_events=["form_required", "done"],
+             forbidden_events=["clarification_required", "tool_call"]),
     ]
 
     # context 4

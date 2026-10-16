@@ -21,6 +21,7 @@ from ai_service_agent.harness.agent_bot import (
     update_address_success_card_items,
 )
 from ai_service_agent.graph.workflows.copy import (
+    build_mutation_success_card,
     update_address_success_account_updated_text,
     update_address_success_card_title_text,
     update_address_success_followup_text,
@@ -72,7 +73,15 @@ def _form_submit_payload(*, message_id: str, cw_conv_id: int, contact: dict, sub
     }
 
 
-def _agent_bot_mutation_form_graph(tmp_path, monkeypatch, *, db_name: str, user_id: str = "u1"):
+def _agent_bot_mutation_form_graph(
+    tmp_path,
+    monkeypatch,
+    *,
+    db_name: str,
+    user_id: str = "u1",
+    tool: str = "update_address",
+    select_args: dict | None = None,
+):
     from langgraph.checkpoint.memory import MemorySaver
 
     from ai_service_agent.domain.orders import SQLiteOrderRepository
@@ -110,7 +119,7 @@ def _agent_bot_mutation_form_graph(tmp_path, monkeypatch, *, db_name: str, user_
         ToolCallingFakeModel(
             responses=[
                 router_json_message("account_profile_update", 0.9),
-                select_json_message("update_address", {}),
+                select_json_message(tool, {} if select_args is None else select_args),
             ]
         ),
         MemorySaver(),
@@ -131,22 +140,24 @@ def test_update_address_success_card_items_locked_copy():
     card = items[0]
     assert card["title"] == update_address_success_card_title_text()
     description = card["description"]
-    assert update_address_success_status_text() in description
+    assert description.startswith(f"• 状态：{update_address_success_status_text()}")
+    assert "\n\n• " in description
     assert "ORD-PAID-1" in description
     assert "山东省青岛市市南区示例路 88 号" in description
-    assert update_address_success_account_updated_text() in description
-    assert card["actions"]  # Chatwoot cards require actions
+    assert f"账户地址：{update_address_success_account_updated_text()}" in description
+    assert card["actions"][0]["text"] == "知道了"
+    assert card["actions"][0]["payload"] == "update_address_success_ack"
 
 
 @pytest.mark.asyncio
 async def test_send_mutation_success_card_emits_cards_then_optional_followup():
     chatwoot = AsyncMock()
-    await send_mutation_success_card(
-        chatwoot,
-        "c1",
-        order_id="ORD-PAID-1",
-        address="北京市朝阳区望京 SOHO",
+    spec = build_mutation_success_card(
+        "update_address",
+        {"order_id": "ORD-PAID-1", "address": "北京市朝阳区望京 SOHO"},
     )
+    assert spec is not None
+    await send_mutation_success_card(chatwoot, "c1", spec)
     chatwoot.send_interactive_message.assert_awaited_once()
     args = chatwoot.send_interactive_message.await_args.args
     assert args[2] == "cards"
@@ -234,7 +245,8 @@ async def test_confirm_success_sends_cards_with_account_updated_not_long_done(
     assert update_address_success_account_updated_text() in card["description"]
     assert "ORD-PAID-1" in card["description"]
     assert new_address in card["description"]
-    assert update_address_success_status_text() in card["description"]
+    assert card["description"].startswith(f"• 状态：{update_address_success_status_text()}")
+    assert "\n\n" in card["description"]
 
     form_calls = [
         call
@@ -248,6 +260,64 @@ async def test_confirm_success_sends_cards_with_account_updated_not_long_done(
     # Long graph done must not be duplicated outbound.
     assert not any("收货地址已修改成功" in text for text in texts)
     assert confirm_result["response"] == update_address_success_followup_text()
+
+
+@pytest.mark.asyncio
+async def test_phone_confirm_success_sends_shared_card_not_plain_bubble_only(
+    tmp_path, monkeypatch
+):
+    """update_phone confirm uses the same cards + follow-up, not only a text bubble."""
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph, repo, _user = _agent_bot_mutation_form_graph(
+        tmp_path, monkeypatch, db_name="agentbot-phone-card", tool="update_phone"
+    )
+    contact = {"id": 83, "identifier": "u1", "name": "郑军"}
+    new_phone = "18600001111"
+
+    await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="phone-card-open",
+            cw_conv_id=9831,
+            contact=contact,
+            content="我要改手机号",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    chatwoot.reset_mock()
+    confirm_result = await handle_agent_bot_message(
+        _form_submit_payload(
+            message_id="phone-card-confirm",
+            cw_conv_id=9831,
+            contact=contact,
+            submitted_values={"phone": new_phone, "action": "confirm"},
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    assert confirm_result is not None
+    assert repo.get_user_profile("u1")["phone"] == new_phone
+    card_calls = [
+        call
+        for call in chatwoot.send_interactive_message.await_args_list
+        if call.args[2] == "cards"
+    ]
+    assert len(card_calls) == 1
+    card = card_calls[0].args[3]["items"][0]
+    assert card["title"] == "手机号已修改成功"
+    assert card["description"].startswith("• 状态：已完成")
+    assert "\n\n• 新手机号：18600001111" in card["description"]
+    assert "• 通知号码：已切换" in card["description"]
+    assert "订单号" not in card["description"]
+    assert card["actions"][0]["text"] == "知道了"
+    texts = [call.args[1] for call in chatwoot.send_bot_message.await_args_list]
+    assert texts == ["好的，您的联系电话已更新，后续通知将发送到新号码。"]
+    assert confirm_result["response"] == texts[0]
 
 
 # --- Seam 3: form_rejected must not emit success cards -----------------------

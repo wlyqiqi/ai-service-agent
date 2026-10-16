@@ -140,9 +140,16 @@ async def event_stream(
                                     isinstance(tool_payload, dict)
                                     and ("error" in tool_payload or tool_payload.get("ok") is False)
                                 )
+                                result_data = {
+                                    "name": msg.name or "tool",
+                                    "ok": ok,
+                                    "summary": str(msg.content)[:80],
+                                }
+                                if isinstance(tool_payload, dict):
+                                    result_data["result"] = tool_payload
                                 yield {
                                     "type": "tool_result",
-                                    "data": {"name": msg.name or "tool", "ok": ok, "summary": str(msg.content)[:80]},
+                                    "data": result_data,
                                 }
         final = "".join(final_text) or None
         if not final:

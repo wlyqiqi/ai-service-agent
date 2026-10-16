@@ -128,8 +128,8 @@ def test_seat_reject_while_human_mode_persists_message_store_without_outbound(tm
 
 
 def test_seat_approve_while_ai_mode_still_sends_outbound(tmp_path):
-    """conversation_mode=ai: outbound Chatwoot send preserved (happy path)."""
-    cw = SimpleNamespace(send_bot_message=AsyncMock())
+    """conversation_mode=ai: success card + follow-up, not the long approval bubble."""
+    cw = SimpleNamespace(send_bot_message=AsyncMock(), send_interactive_message=AsyncMock())
     db = str(tmp_path / "ai-gate.db")
     client = TestClient(
         create_app(
@@ -140,14 +140,19 @@ def test_seat_approve_while_ai_mode_still_sends_outbound(tmp_path):
         )
     )
     session_id, approval_id = _pending_approval_via_chat(client, db)
+    cw.send_bot_message.reset_mock()
+    cw.send_interactive_message.reset_mock()
 
     response = client.post(f"/approvals/{approval_id}/approve", headers=SEAT_HEADERS)
     assert response.status_code == 200
 
     rows = MessageStore(sqlite3.connect(db)).list(session_id)
-    assert any(row["role"] == "assistant" and "通过审核" in row["content"] for row in rows)
+    assert any(row["role"] == "assistant" and "退款申请已提交" in row["content"] for row in rows)
+    assert not any("通过审核" in (row["content"] or "") for row in rows if row["role"] == "assistant")
+    cw.send_interactive_message.assert_awaited_once()
+    assert cw.send_interactive_message.await_args.args[2] == "cards"
     cw.send_bot_message.assert_awaited_once()
-    assert "通过审核" in cw.send_bot_message.call_args.args[1]
+    assert "退款申请已提交" in cw.send_bot_message.call_args.args[1]
 
 
 def test_approval_resume_follow_on_handoff_interrupt_is_persisted(tmp_path, monkeypatch):
