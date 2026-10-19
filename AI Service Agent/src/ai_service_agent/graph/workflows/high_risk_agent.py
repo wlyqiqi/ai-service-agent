@@ -201,32 +201,72 @@ def make_high_risk_graph(
             )]
         }
 
-    def finalize_ok(state: dict) -> dict:
-        pending = state["context"]["pending_tool"]
-        tool_error = read_tool_error(state.get("messages", []), pending["tool"])
+    def finalize(state: dict) -> dict:
+        """单收尾节点：按固定优先级产出文案与 execution_status（逐条等价于原 6 节点）。
+
+        判定顺序（严格）：
+        1. 工具返回 error（成功执行路径 / 执行期异常）-> approval_failed_text，failed
+        2. execution_status == "failed"（无工具 error）-> RUNTIME_ERROR_TEXT，failed
+        3. approval_result == "rejected" -> approval_rejected_text
+        4. approval_result == "expired"  -> approval_expired_text
+        5. confirm_result == "cancel"    -> operation_cancelled_text
+        6. recheck_reason 非空           -> recheck_failed_text
+        7. 其余                          -> approval_approved_text
+        除 1/2 外 execution_status 一律 completed。
+
+        防御：pending_tool 可能不存在（select_llm 崩溃时 error_handler 直接 goto 本节点），
+        故 tool 一律用 `(context.get("pending_tool") or {}).get("tool", "")` 读取。
+        """
+        ctx = state.get("context") or {}
+        pending = ctx.get("pending_tool") or {}
+        tool = pending.get("tool", "")
+        status = state.get("execution_status")
+
+        # 工具结果只在「本轮确实执行过工具」或「执行期异常」时读取：
+        #   - 成功路径：approval_result == "approved" 且未 abort（recheck_reason 为空）
+        #   - 执行期异常：error_handler 已置 failed 后 goto 本节点
+        # 其余收尾路径（rejected / expired / form cancel / recheck abort）不读，
+        # 避免把历史 turn 残留的 ToolMessage error 误判为本轮失败。
+        executed = ctx.get("approval_result") == "approved" and not ctx.get("recheck_reason")
+        tool_error = (
+            read_tool_error(state.get("messages", []), tool)
+            if tool and (executed or status == "failed")
+            else None
+        )
         if tool_error:
             return {
-                "messages": [AIMessage(content=approval_failed_text(pending["tool"], tool_error))],
+                "messages": [AIMessage(content=approval_failed_text(tool, tool_error))],
                 "execution_status": "failed",
             }
-        return {"messages": [AIMessage(content=approval_approved_text(pending["tool"]))], "execution_status": "completed"}
-
-    def finalize_rejected(state: dict) -> dict:
-        pending = state["context"]["pending_tool"]
-        return {"messages": [AIMessage(content=approval_rejected_text(pending["tool"]))], "execution_status": "completed"}
-
-    def finalize_expired(state: dict) -> dict:
-        pending = state["context"]["pending_tool"]
-        return {"messages": [AIMessage(content=approval_expired_text(pending["tool"]))], "execution_status": "completed"}
-
-    def finalize_form_cancelled(state: dict) -> dict:
-        return {"messages": [AIMessage(content=operation_cancelled_text())], "execution_status": "completed"}
-
-    def finalize_aborted(state: dict) -> dict:
-        return {"messages": [AIMessage(content=recheck_failed_text())], "execution_status": "completed"}
-
-    def finalize_failed(state: dict) -> dict:
-        return {"messages": [AIMessage(content=RUNTIME_ERROR_TEXT)], "execution_status": "failed"}
+        if status == "failed":
+            return {
+                "messages": [AIMessage(content=RUNTIME_ERROR_TEXT)],
+                "execution_status": "failed",
+            }
+        if ctx.get("approval_result") == "rejected":
+            return {
+                "messages": [AIMessage(content=approval_rejected_text(tool))],
+                "execution_status": "completed",
+            }
+        if ctx.get("approval_result") == "expired":
+            return {
+                "messages": [AIMessage(content=approval_expired_text(tool))],
+                "execution_status": "completed",
+            }
+        if ctx.get("confirm_result") == "cancel":
+            return {
+                "messages": [AIMessage(content=operation_cancelled_text())],
+                "execution_status": "completed",
+            }
+        if ctx.get("recheck_reason"):
+            return {
+                "messages": [AIMessage(content=recheck_failed_text())],
+                "execution_status": "completed",
+            }
+        return {
+            "messages": [AIMessage(content=approval_approved_text(tool))],
+            "execution_status": "completed",
+        }
 
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})
@@ -261,7 +301,7 @@ def make_high_risk_graph(
         return "finalize_aborted" if state.get("context", {}).get("recheck_reason") else "execute"
 
     builder = StateGraph(CustomerServiceState, context_schema=GraphContext)
-    handler = make_subgraph_error_handler("finalize_failed")
+    handler = make_subgraph_error_handler("finalize")
     builder.set_node_defaults(error_handler=handler)
     builder.add_node(
         "select_llm",
@@ -292,12 +332,7 @@ def make_high_risk_graph(
             awrap_tool_call=boundary_async,
         ),
     )
-    builder.add_node("finalize_ok", finalize_ok)
-    builder.add_node("finalize_form_cancelled", finalize_form_cancelled)
-    builder.add_node("finalize_failed", finalize_failed)
-    builder.add_node("finalize_rejected", finalize_rejected)
-    builder.add_node("finalize_expired", finalize_expired)
-    builder.add_node("finalize_aborted", finalize_aborted)
+    builder.add_node("finalize", finalize)
     builder.add_edge(START, "select_llm")
     builder.add_conditional_edges(
         "select_llm", _select_target,
@@ -315,11 +350,10 @@ def make_high_risk_graph(
         _form_target,
         {
             "precheck_fetch": "precheck_fetch",
-            "finalize_form_cancelled": "finalize_form_cancelled",
+            "finalize_form_cancelled": "finalize",
             "end": END,
         },
     )
-    builder.add_edge("finalize_form_cancelled", END)
     builder.add_edge("precheck_fetch", "safety_check")
     builder.add_conditional_edges(
         "safety_check", _safety_target, {"prepare_approval": "prepare_approval", "safety_final": "safety_final"}
@@ -330,17 +364,13 @@ def make_high_risk_graph(
     )
     builder.add_conditional_edges(
         "approval_pause", _approval_target,
-        {"recheck": "recheck", "finalize_rejected": "finalize_rejected", "finalize_expired": "finalize_expired"},
+        {"recheck": "recheck", "finalize_rejected": "finalize", "finalize_expired": "finalize"},
     )
     builder.add_conditional_edges(
-        "recheck", _recheck_target, {"execute": "execute", "finalize_aborted": "finalize_aborted"}
+        "recheck", _recheck_target, {"execute": "execute", "finalize_aborted": "finalize"}
     )
     builder.add_edge("execute", "tools")
-    builder.add_edge("tools", "finalize_ok")
-    builder.add_edge("finalize_ok", END)
-    builder.add_edge("finalize_failed", END)
-    builder.add_edge("finalize_rejected", END)
-    builder.add_edge("finalize_expired", END)
-    builder.add_edge("finalize_aborted", END)
+    builder.add_edge("tools", "finalize")
+    builder.add_edge("finalize", END)
     builder.add_edge("safety_final", END)
     return builder.compile()
