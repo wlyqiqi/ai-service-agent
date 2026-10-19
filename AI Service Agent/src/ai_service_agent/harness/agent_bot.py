@@ -15,7 +15,6 @@ from ai_service_agent.graph.workflows.copy import (
     MutationSuccessCardSpec,
     build_mutation_success_card,
     handoff_cancel_confirm_text,
-    handoff_request_confirm_text,
     handoff_request_private_note_text,
     update_address_current_address_display,
     update_address_empty_state_text,
@@ -32,6 +31,7 @@ from ai_service_agent.harness.form_gate import (
     decide_form_inbound,
     normalize_submitted_values,
 )
+from ai_service_agent.harness.handoff import handoff_request_tip
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -614,21 +614,23 @@ async def _handle_locked_agent_bot_message(
             }
         if detect_handoff_intent(content):
             ev = handoff.request_handoff(conversation_id, "用户显式请求转人工", content[:80])
+            # created 是唯一判据（handoff-spec §2）：挂起期间重复申请只发短 tip。
+            created = bool(ev.get("created", True))
+            tip = handoff_request_tip(created=created)
             if on_handoff_requested is not None:
                 await on_handoff_requested(ev)
             else:
-                tip = handoff_request_confirm_text()
                 if messages_store is not None:
                     messages_store.append(conversation_id, "assistant", tip)
                 await chatwoot.send_bot_message(conversation_id, tip)
-                try:
-                    await chatwoot.prompt_handoff_request(
-                        conversation_id,
-                        handoff_request_private_note_text((ev.get("data") or {}).get("summary") or ""),
-                    )
-                except Exception:
-                    pass
-            tip = handoff_request_confirm_text()
+                if created:
+                    try:
+                        await chatwoot.prompt_handoff_request(
+                            conversation_id,
+                            handoff_request_private_note_text((ev.get("data") or {}).get("summary") or ""),
+                        )
+                    except Exception:
+                        pass
             return {
                 "conversation_id": conversation_id,
                 "chatwoot_conversation_id": cw_conv_id,
