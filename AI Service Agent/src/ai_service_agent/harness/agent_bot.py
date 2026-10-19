@@ -25,6 +25,12 @@ from ai_service_agent.graph.workflows.copy import (
     update_address_new_address_placeholder,
 )
 from ai_service_agent.harness.form_events import is_form_interrupt
+from ai_service_agent.harness.form_gate import (
+    FormDecisionKind,
+    FormInboundKind,
+    decide_form_inbound,
+    normalize_submitted_values,
+)
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -322,22 +328,6 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
     return _apply_errors_to_mutation_form_items(items, _form_errors_map(data))
 
 
-def _normalize_submitted_values(value: Any) -> dict[str, Any] | None:
-    """兼容 Chatwoot form 提交的 object 与 widget/agent-bot 的 [{name, value}] 数组。"""
-    if isinstance(value, dict):
-        return value
-    if not isinstance(value, list):
-        return None
-    normalized: dict[str, Any] = {}
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name") or item.get("title")
-        if name is not None and "value" in item:
-            normalized[str(name)] = item["value"]
-    return normalized or None
-
-
 def approval_form_title_from_payload(data: dict[str, Any]) -> str:
     """Seat-facing Chatwoot form title: enough summary to decide (#64)."""
     summary = (data.get("summary") or "").strip() or "高风险操作待审批"
@@ -376,7 +366,7 @@ def parse_approval_form_submission(
     submitted: dict[str, Any] | list | None,
 ) -> dict[str, str] | None:
     """Parse seat approval form submit → ``{approval_id, action, note?}`` or None."""
-    values = _normalize_submitted_values(submitted) if not isinstance(submitted, dict) else submitted
+    values = normalize_submitted_values(submitted) if not isinstance(submitted, dict) else submitted
     if not values:
         return None
     approval_id = str(values.get(_APPROVAL_FORM_ID_FIELD) or "").strip()
@@ -474,7 +464,7 @@ async def handle_agent_bot_message(
         return None
 
     raw_submitted = (payload.get("content_attributes") or {}).get("submitted_values")
-    submitted_values = _normalize_submitted_values(raw_submitted)
+    submitted_values = normalize_submitted_values(raw_submitted)
     if event == "message_updated" and submitted_values is None:
         return None
 
@@ -681,41 +671,32 @@ async def _handle_locked_agent_bot_message(
                 if approval_state == "expired":
                     resume_payload = {"result": "expired"}
                 elif is_form_interrupt(interrupt_value):
-                    submitted = submitted_values or {}
-                    action = submitted.get("confirmation") or submitted.get("action")
-                    # #71: update_address primary submit has no action select — business
-                    # fields alone mean confirm. Ignore read-only / footnote echo fields.
-                    _resume_skip = frozenset(
-                        {
-                            "action",
-                            "confirmation",
-                            "request_id",
-                            "current_address",
-                            "abandon_footnote",
-                        }
+                    # Single decision point (harness/form_gate.py). Executing the
+                    # decision — resume + two-phase Implicit Cancel — stays here.
+                    decision = decide_form_inbound(
+                        interrupt_value,
+                        kind=(
+                            FormInboundKind.FORM_SUBMIT
+                            if submitted_values is not None
+                            else FormInboundKind.TEXT
+                        ),
+                        submitted_values=submitted_values,
                     )
-                    write_keys = {
-                        key
-                        for key, value in submitted.items()
-                        if key not in _resume_skip and value not in (None, "")
-                    }
-                    primary_submit_confirm = (
-                        not action
-                        and write_keys
-                        and submitted_values is not None
-                        and interrupt_value.get("tool") == "update_address"
-                    )
-                    if action in ("confirmed", "confirm") or primary_submit_confirm:
-                        resume_payload = {"action": "confirm"}
-                        for key, value in submitted.items():
-                            if key in _resume_skip:
-                                continue
-                            resume_payload[key] = value
-                    elif action in ("canceled", "cancel"):
-                        resume_payload = {"action": "cancel"}
-                    else:
-                        # Non-form inbound while Form Interrupt pending (#72).
+                    if decision.kind is FormDecisionKind.IMPLICIT_CANCEL:
+                        # #72: pending form + non-form inbound -> silent cancel
+                        # resume, then the same message as a new turn.
                         implicit_cancel = True
+                    elif decision.kind is FormDecisionKind.REFUSE:
+                        # Unreachable under the default IMPLICIT_CANCEL policy;
+                        # keep the pre-refactor behaviour rather than drop the message.
+                        logger.warning(
+                            "form_gate refused inbound without an AgentBot refuse path; "
+                            "falling back to implicit cancel (conv=%s)",
+                            conversation_id,
+                        )
+                        implicit_cancel = True
+                    else:
+                        resume_payload = decision.resume_payload
                 else:
                     # #48: legacy confirmation_required interactive retired; no special resume.
                     resume_payload = resolve_resume_payload(interrupt_value, content)
