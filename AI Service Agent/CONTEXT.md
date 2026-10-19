@@ -45,8 +45,8 @@ _Avoid_: 子图内部业务转交；失败后新开无关表单会话
 _Avoid_: 仅靠打字「取消」作为主路径；无 resume 的「口头取消」
 
 **Implicit Cancel**:
-Form Interrupt 挂起时，入站不是合法 Mutation Form 提交 → Transport/Adapter 先对同一 `thread_id` 做官方 `Command(resume={"action":"cancel"})` 清挂起（不写库），再把该消息当普通新 turn 路由；静默、不重推旧表。`form_rejected` 同 session 重推不得走此路径。
-_Avoid_: tip+重推旧表当主路径；用 `Command(update=...)` 绕过 interrupt；把新消息当表单字段写入
+Form Interrupt 挂起时，入站不是合法 Mutation Form 提交 → Transport/Adapter 先对同一 `thread_id` 做官方 `Command(resume={"action":"cancel"})` 清挂起（不写库），再把该消息当普通新 turn 路由；静默、不重推旧表。`form_rejected` 同 session 重推不得走此路径。**所有 Transport 一致**（Widget/AgentBot 与 SSE `/chat`）；决策由 `harness/form_gate.py` 单点产出，不在各 Adapter 内联。
+_Avoid_: tip+重推旧表当主路径；按入口分叉策略；用 `Command(update=...)` 绕过 interrupt；把新消息当表单字段写入
 
 **ToolNode**:
 写工具执行使用 `langgraph.prebuilt.ToolNode`（或等价官方工具执行积木）；execute 节点只构造受控单次 tool_call。

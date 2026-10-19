@@ -17,10 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph import builder as builder_mod
-from ai_service_agent.graph.workflows.copy import (
-    form_plain_text_refuse_text,
-    operation_cancelled_text,
-)
+from ai_service_agent.graph.workflows.copy import operation_cancelled_text
 from ai_service_agent.harness.agent_bot import handle_agent_bot_message
 from ai_service_agent.harness.chatwoot import ChatwootMappingStore
 from ai_service_agent.harness.graph import make_ai_graph
@@ -191,7 +188,7 @@ async def test_pending_form_faq_implicit_cancel_then_new_turn_silent(
     assert result["response"] == faq_reply
     bot_texts = [call.args[1] for call in chatwoot.send_bot_message.await_args_list]
     assert faq_reply in bot_texts
-    assert form_plain_text_refuse_text() not in bot_texts
+    assert "请先完成或取消当前表单" not in bot_texts
     assert operation_cancelled_text() not in bot_texts
     assert all("已按您的要求取消" not in t for t in bot_texts)
     assert form_sends == []
@@ -289,7 +286,7 @@ async def test_pending_form_new_intent_implicit_cancel_no_old_form_repush(
     assert stream_calls[1]["resume_payload"] in (None, {})
 
     bot_texts = [call.args[1] for call in chatwoot.send_bot_message.await_args_list]
-    assert form_plain_text_refuse_text() not in bot_texts
+    assert "请先完成或取消当前表单" not in bot_texts
     assert operation_cancelled_text() not in bot_texts
     # Must not re-push the abandoned update_address form.
     assert not any(f.get("tool") == "update_address" for f in form_sends)

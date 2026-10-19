@@ -27,11 +27,18 @@ from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
 
 import time
 
-TS = str(int(time.time()))
+def _signed_headers(payload: bytes, secret: str = "sec") -> dict[str, str]:
+    """Sign one webhook request with a *fresh* timestamp.
 
-
-def _sig(payload: bytes, secret: str = "sec") -> str:
-    return "sha256=" + hmac.new(secret.encode(), TS.encode() + b"." + payload, hashlib.sha256).hexdigest()
+    The replay window is 300s, so a module-level timestamp goes stale in long
+    full-suite runs and every signed call becomes a 401. Signature and header
+    must share the same timestamp value.
+    """
+    ts = str(int(time.time()))
+    signature = "sha256=" + hmac.new(
+        secret.encode(), ts.encode() + b"." + payload, hashlib.sha256
+    ).hexdigest()
+    return {"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": ts}
 
 
 def parse_sse(text: str) -> list[dict]:
@@ -136,7 +143,7 @@ def _request_then_takeover(client, session_id: str) -> str:
     assert client.post(
         "/webhooks/chatwoot",
         content=raw_open,
-        headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_open),
     ).status_code == 200
     return handoff_id
 
@@ -222,7 +229,7 @@ def test_resolve_sync_does_not_duplicate_webhook_persisted_agent_message(tmp_pat
     raw_open = _seat_open(111)
     assert client.post(
         "/webhooks/chatwoot", content=raw_open,
-        headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_open),
     ).status_code == 200
 
     payload = {
@@ -237,7 +244,7 @@ def test_resolve_sync_does_not_duplicate_webhook_persisted_agent_message(tmp_pat
     raw = json.dumps(payload).encode()
     assert client.post(
         "/webhooks/chatwoot", content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     ).status_code == 200
 
     assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
@@ -279,7 +286,7 @@ def test_human_lane_end_to_end(tmp_path):
     raw_open = _seat_open(111)
     assert client.post(
         "/webhooks/chatwoot", content=raw_open,
-        headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_open),
     ).status_code == 200
     assert _mode(db, sid) == "human"
 
@@ -318,7 +325,7 @@ def test_human_lane_end_to_end(tmp_path):
     raw = json.dumps(payload).encode()
     r = client.post(
         "/webhooks/chatwoot", content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
     assert r.status_code == 200 and r.json() == {"ok": True}
     assert _rows(db, sid)[-1]["role"] == "assistant" and _rows(db, sid)[-1]["content"] == "您好，已为您加急处理"

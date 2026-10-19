@@ -4,6 +4,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, create_model
 
+# Resume control / projection keys that are never tool business fields.
+# Single source of truth: harness/form_gate.py extends this with inbound-only
+# control keys (``confirmation``) when parsing form submissions.
+FORM_RESUME_SKIP_FIELDS = frozenset(
+    {"action", "request_id", "current_address", "abandon_footnote"}
+)
+
 
 def form_resume_model(tool_schema: type[BaseModel] | None) -> type[BaseModel]:
     """Confirm Form Resume shape derived from the tool schema.
@@ -43,7 +50,7 @@ def resume_field_values(resume) -> dict:
     return {
         key: value
         for key, value in data.items()
-        if key not in ("action", "request_id", "current_address", "abandon_footnote")
+        if key not in FORM_RESUME_SKIP_FIELDS
         and value is not None
     }
 

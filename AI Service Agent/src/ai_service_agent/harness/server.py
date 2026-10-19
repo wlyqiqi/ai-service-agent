@@ -21,7 +21,6 @@ from ai_service_agent.graph.runtime_context import GraphContext
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
-    form_plain_text_refuse_text,
     handoff_cancel_confirm_text,
     handoff_form_cancelled_customer_text,
     handoff_form_cancelled_seat_note_text,
@@ -52,7 +51,12 @@ from ai_service_agent.harness.chatwoot import (
     is_agent_message,
     verify_chatwoot_signature,
 )
-from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
+from ai_service_agent.harness.form_events import is_form_interrupt
+from ai_service_agent.harness.form_gate import (
+    FormDecisionKind,
+    FormInboundKind,
+    decide_form_inbound,
+)
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import (
     HANDOFF_JOINED_NOTICE,
@@ -764,7 +768,9 @@ def create_app(
                     graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                     cfg = {"configurable": {"thread_id": thread_id}}
                     st = await graph.aget_state(cfg)
+                    user_id = status.get_user_id(conv_id) or ""
                     resume_payload = None
+                    implicit_cancel = False
                     if st.interrupts:
                         it = st.interrupts[0].value
                         approval_state = approval_dispatch(it)
@@ -781,19 +787,27 @@ def create_app(
                         elif approval_state == "expired":
                             resume_payload = {"result": "expired"}   # HighRiskGraph 过期收尾
                         elif is_form_interrupt(it):
-                            # 纯文本不是 Form Resume。挂起仍以 checkpoint interrupt 为准；
-                            # 重放 form_* 投影，并给出 Form-Only Write 友好引导。
-                            tip = form_plain_text_refuse_text()
-                            yield {"type": "token", "data": {"text": tip}}
-                            projected = project_form_interrupt(st.interrupts[0])
-                            if projected:
-                                yield projected
-                            messages_store.append(conv_id, "assistant", tip)
-                            yield {"type": "done", "data": {"final": tip, "message_id": None}}
-                            return
+                            # 与 AgentBot 同一决策点（harness/form_gate.py）：纯文本永不
+                            # 构成 Form Resume，唯一策略是 Implicit Cancel（CONTEXT.md）。
+                            decision = decide_form_inbound(it, kind=FormInboundKind.TEXT)
+                            implicit_cancel = (
+                                decision.kind is FormDecisionKind.IMPLICIT_CANCEL
+                            )
+                            if not implicit_cancel:
+                                resume_payload = decision.resume_payload
                         else:
                             resume_payload = resolve_resume_payload(it, body.message)
-                    user_id = status.get_user_id(conv_id) or ""
+                    if implicit_cancel:
+                        # Phase 1：官方 cancel resume 清挂起；静默排空，不投影取消提示、
+                        # 不重推旧表单（#72 Implicit Cancel）。
+                        async for _ev in event_stream(
+                            graph, cfg, [], on_interrupt=cb,
+                            resume_payload={"action": "cancel"},
+                            extra_state={"user_id": user_id},
+                            context=_runtime_context(user_id),
+                        ):
+                            pass
+                        resume_payload = None
                     async for ev in event_stream(
                         graph, cfg, history, on_interrupt=cb,
                         resume_payload=resume_payload,
@@ -868,13 +882,14 @@ def create_app(
                 final: str | None = None
                 message_id: str | None = None
                 failed = False
-                resume_payload: dict[str, Any] = {"action": normalized}
-                if normalized == "confirm":
-                    for key, value in (body.fields or {}).items():
-                        if key not in ("action", "request_id"):
-                            resume_payload[key] = value
-                    if body.order_id is not None:
-                        resume_payload["order_id"] = body.order_id
+                fields = dict(body.fields or {})
+                fields["action"] = normalized
+                if body.order_id is not None:
+                    fields["order_id"] = body.order_id
+                decision = decide_form_inbound(
+                    pending, kind=FormInboundKind.EXPLICIT, fields=fields
+                )
+                resume_payload = decision.resume_payload
                 async for event in event_stream(
                     graph,
                     cfg,

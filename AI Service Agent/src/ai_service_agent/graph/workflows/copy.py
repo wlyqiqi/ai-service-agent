@@ -155,14 +155,6 @@ def operation_cancelled_text() -> str:
     return "好的，已按您的要求取消本次操作，订单信息未做任何变更。还有其他需要，随时告诉我。"
 
 
-def form_plain_text_refuse_text() -> str:
-    """Form Interrupt 挂起期间非 Resume 消息的友好引导（Form-Only Write / 单挂）。"""
-    return (
-        "您有未完成的修改表单，请先完成或取消当前表单；"
-        "纯文本不会改订单，也不会开启新的修改。填写完成后点击确认即可。"
-    )
-
-
 # update_address four-state copy (#71 open-form / empty-state; locked plan §2).
 _UPDATE_ADDRESS_FORM_INTRO = (
     "好的。请填写下面的表单，提交后我们会按新地址处理（仅限已支付且未发货的订单）。"

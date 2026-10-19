@@ -28,9 +28,6 @@ from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ToolCallingFakeModel
 
 
-TS = str(int(time.time()))
-
-
 BOT_ERROR = "Conversation was marked open by system due to an error with the agent bot."
 
 
@@ -53,10 +50,19 @@ def _human_open(cw_id: int, *, nested: bool = False) -> dict:
     }
 
 
-def _sig(payload: bytes, secret: str = "sec") -> str:
-    return "sha256=" + hmac.new(
-        secret.encode(), TS.encode() + b"." + payload, hashlib.sha256
+def _signed_headers(payload: bytes, secret: str = "sec") -> dict[str, str]:
+    """Sign one webhook request with a *fresh* timestamp.
+
+    The replay window is 300s, so a module-level timestamp goes stale in long
+    full-suite runs and every signed call becomes a 401 — this was the source
+    of the order-dependent failures in this file. Signature and header must
+    share the same timestamp value.
+    """
+    ts = str(int(time.time()))
+    signature = "sha256=" + hmac.new(
+        secret.encode(), ts.encode() + b"." + payload, hashlib.sha256
     ).hexdigest()
+    return {"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": ts}
 
 
 def _parse_sse(text: str) -> list[dict]:
@@ -181,7 +187,7 @@ def test_webhook_open_seat_takeover(tmp_path):
     r = client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
     assert r.status_code == 200
     body = r.json()
@@ -208,7 +214,7 @@ def test_webhook_open_unilateral_takeover(tmp_path):
     assert client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     ).status_code == 200
     assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
 
@@ -226,14 +232,14 @@ def test_webhook_resolved_returns_ai_via_toggle_status(tmp_path):
     client.post(
         "/webhooks/chatwoot",
         content=raw_open,
-        headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_open),
     )
     cw.set_conversation_status.reset_mock()
     raw_res = json.dumps({"event": "conversation_status_changed", "id": 555, "status": "resolved"}).encode()
     r = client.post(
         "/webhooks/chatwoot",
         content=raw_res,
-        headers={"X-Chatwoot-Signature": _sig(raw_res), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_res),
     )
     assert r.status_code == 200
     assert r.json()["ok"] is True
@@ -252,7 +258,7 @@ def test_webhook_pending_ignored_when_already_ai(tmp_path):
     assert client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     ).status_code == 200
     assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
 
@@ -270,7 +276,7 @@ def test_webhook_pending_returns_human_to_ai_without_toggle(tmp_path):
     client.post(
         "/webhooks/chatwoot",
         content=raw_open,
-        headers={"X-Chatwoot-Signature": _sig(raw_open), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_open),
     )
     assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
     cw.set_conversation_status.reset_mock()
@@ -280,7 +286,7 @@ def test_webhook_pending_returns_human_to_ai_without_toggle(tmp_path):
     r = client.post(
         "/webhooks/chatwoot",
         content=raw_pending,
-        headers={"X-Chatwoot-Signature": _sig(raw_pending), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_pending),
     )
     assert r.status_code == 200
     assert r.json()["event"]["type"] == "handoff_resolved"
@@ -292,7 +298,7 @@ def test_webhook_pending_returns_human_to_ai_without_toggle(tmp_path):
     client.post(
         "/webhooks/chatwoot",
         content=raw_pending,
-        headers={"X-Chatwoot-Signature": _sig(raw_pending), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_pending),
     )
     rows = MessageStore(sqlite3.connect(db)).list(sid)
     assert sum(1 for m in rows if m["content"] == handoff_returned_to_bot_text()) == 1
@@ -303,7 +309,7 @@ def _post_webhook(client: TestClient, body: dict):
     return client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
 
 
@@ -429,7 +435,7 @@ def test_open_cancels_pending_form_so_late_submit_cannot_write(tmp_path, monkeyp
     bot = client.post(
         "/webhooks/agent_bot",
         content=raw_form,
-        headers={"X-Chatwoot-Signature": _sig(raw_form), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw_form),
     )
     assert bot.status_code == 200
     assert customer_address() == original
@@ -768,7 +774,7 @@ def test_agent_bot_webhook_acks_before_work(tmp_path, monkeypatch):
     ok = client.post(
         "/webhooks/agent_bot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
     assert ok.status_code == 200
     assert ok.json()["ok"] is True
