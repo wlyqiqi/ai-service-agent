@@ -9,12 +9,10 @@ goto 目标会并发执行导致共享 LastValue 通道双写 InvalidUpdateError
 dict，由条件边函数路由，规避该冲突——与 mutation_agent.py 同裁定）。
 """
 
-import json
 import uuid
 
 import langgraph.types as _lg_types
 from langchain_core.messages import AIMessage
-from langchain_core.messages import ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -22,7 +20,8 @@ from langgraph.runtime import Runtime
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable
-from ai_service_agent.graph.approval import make_approval_request
+from ai_service_agent.graph.approval import make_approval_request, resolve_approval_outcome
+from ai_service_agent.graph.messages import read_tool_error
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.allowed_tools import (
@@ -36,6 +35,7 @@ from ai_service_agent.graph.workflows.copy import (
     approval_expired_text,
     approval_failed_text,
     approval_rejected_text,
+    approval_summary,
     clarify_no_candidates_text,
     confirmation_summary,
     operation_cancelled_text,
@@ -148,65 +148,22 @@ def make_high_risk_graph(
 
     def prepare_approval(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
-        if pending["tool"] == "cancel_order":
-            order_id = pending["args"].get("order_id", "")
-            facts = state.get("context", {}).get("precheck_data")
-            valid_paid_facts = (
-                isinstance(facts, dict)
-                and facts.get("order_id") == order_id
-                and facts.get("status") == "paid"
-                and facts.get("user_id") == state.get("user_id", "")
-            )
-            if valid_paid_facts:
-                summary = (
-                    f"取消订单 {facts['order_id']}｜"
-                    f"金额 {facts['total_amount']}｜"
-                    f"商品：{facts.get('product_summary', '商品信息不可用')}｜"
-                    f"申请人 {state.get('user_id', '')}｜"
-                    f"状态 已付款"
-                )
-            else:
-                return {
-                    "context": {
-                        **state.get("context", {}),
-                        "precheck_reason": "cancel_order_facts_unavailable",
-                    },
-                    "execution_status": "completed",
-                }
-        elif pending["tool"] == "refund_apply":
-            order_id = pending["args"].get("order_id", "")
-            facts = state.get("context", {}).get("precheck_data")
-            valid_refund_facts = (
-                isinstance(facts, dict)
-                and facts.get("order_id") == order_id
-                and facts.get("user_id") == state.get("user_id", "")
-                and facts.get("status") in ("paid", "signed")
-            )
-            if valid_refund_facts:
-                amount = pending["args"].get("amount")
-                occupied = float(facts.get("occupied_refund_amount", 0.0))
-                resolved_amount = (
-                    round(float(amount), 2)
-                    if amount is not None
-                    else round(float(facts["total_amount"]) - occupied, 2)
-                )
-                summary = (
-                    f"退款申请 {facts['order_id']}｜"
-                    f"退款金额 {resolved_amount}｜"
-                    f"订单总额 {facts['total_amount']}｜"
-                    f"已占用退款 {occupied}｜"
-                    f"商品：{facts.get('product_summary', '商品信息不可用')}｜"
-                    f"申请人 {state.get('user_id', '')}｜"
-                    f"状态 {'已付款' if facts['status'] == 'paid' else '已签收'}"
-                )
-            else:
-                summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
-        else:
-            summary = f"即将执行「{pending['tool']}」，参数：{pending['args']}"
+        ctx = state.get("context", {})
+        summary, unavailable_reason = approval_summary(
+            pending["tool"],
+            pending.get("args") or {},
+            ctx.get("precheck_data"),
+            state.get("user_id", ""),
+        )
+        if unavailable_reason:
+            return {
+                "context": {**ctx, "precheck_reason": unavailable_reason},
+                "execution_status": "completed",
+            }
         req = make_approval_request(state.get("user_id", ""), summary, get_settings().approval_expires_minutes)
         return {
             "pending_approval": req,
-            "context": {**state.get("context", {}), "approval_summary": summary},
+            "context": {**ctx, "approval_summary": summary},
             "execution_status": "waiting_approval",
         }
 
@@ -223,11 +180,7 @@ def make_high_risk_graph(
             "requester_user_id": req.get("requester_user_id", ""),
             "created_at": req.get("created_at", ""),
         })
-        action = resume.get("action") if isinstance(resume, dict) else None
-        if isinstance(resume, dict) and resume.get("result") == "expired":
-            outcome = "expired"
-        else:
-            outcome = "approved" if action == "approve" else "rejected"  # 未知 action fail-closed
+        outcome = resolve_approval_outcome(resume)
         get_stream_writer()({"type": "approval_updated", "data": {"approval_id": req.get("approval_id", ""), "status": outcome}})
         ctx = {**state.get("context", {}), "approval_result": outcome}
         if outcome == "approved":
@@ -250,19 +203,7 @@ def make_high_risk_graph(
 
     def finalize_ok(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
-        tool_error = None
-        for message in reversed(state.get("messages", [])):
-            if not isinstance(message, ToolMessage) or message.name != pending["tool"]:
-                continue
-            result = message.content
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except json.JSONDecodeError:
-                    result = None
-            if isinstance(result, dict) and result.get("error"):
-                tool_error = result["error"]
-            break
+        tool_error = read_tool_error(state.get("messages", []), pending["tool"])
         if tool_error:
             return {
                 "messages": [AIMessage(content=approval_failed_text(pending["tool"], tool_error))],

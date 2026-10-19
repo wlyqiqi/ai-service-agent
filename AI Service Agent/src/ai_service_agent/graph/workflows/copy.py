@@ -81,6 +81,56 @@ def confirmation_summary(tool: str, args: dict) -> str:
     return f"您即将进行「{_label(tool)}」操作，参数：{args}，请确认是否继续。"
 
 
+def approval_summary(
+    tool: str, args: dict, facts: dict | None, user_id: str
+) -> tuple[str | None, str | None]:
+    """Build the approver-facing summary (approval-spec §3).
+
+    Returns ``(summary, unavailable_reason)``. ``cancel_order`` without a matching
+    ``paid`` snapshot yields a reason so the caller can end in ``safety_final``;
+    ``refund_apply`` falls back to a generic summary instead (existing behaviour).
+    """
+    args = args or {}
+    order_id = args.get("order_id", "")
+    facts = facts if isinstance(facts, dict) else None
+    facts_match = (
+        facts is not None
+        and facts.get("order_id") == order_id
+        and facts.get("user_id") == user_id
+    )
+
+    if tool == "cancel_order":
+        if not (facts_match and facts.get("status") == "paid"):
+            return None, "cancel_order_facts_unavailable"
+        return (
+            f"取消订单 {facts['order_id']}｜"
+            f"金额 {facts['total_amount']}｜"
+            f"商品：{facts.get('product_summary', '商品信息不可用')}｜"
+            f"申请人 {user_id}｜"
+            f"状态 已付款"
+        ), None
+
+    if tool == "refund_apply" and facts_match and facts.get("status") in ("paid", "signed"):
+        amount = args.get("amount")
+        occupied = float(facts.get("occupied_refund_amount", 0.0))
+        resolved_amount = (
+            round(float(amount), 2)
+            if amount is not None
+            else round(float(facts["total_amount"]) - occupied, 2)
+        )
+        return (
+            f"退款申请 {facts['order_id']}｜"
+            f"退款金额 {resolved_amount}｜"
+            f"订单总额 {facts['total_amount']}｜"
+            f"已占用退款 {occupied}｜"
+            f"商品：{facts.get('product_summary', '商品信息不可用')}｜"
+            f"申请人 {user_id}｜"
+            f"状态 {'已付款' if facts['status'] == 'paid' else '已签收'}"
+        ), None
+
+    return f"即将执行「{tool}」，参数：{args}", None
+
+
 def completion_text(tool: str, args: dict | None = None) -> str:
     if tool == "update_address" and args:
         order_id = args.get("order_id")

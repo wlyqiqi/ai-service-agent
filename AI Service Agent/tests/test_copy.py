@@ -3,6 +3,7 @@ from ai_service_agent.graph.workflows.copy import (
     approval_expired_text,
     approval_failed_text,
     approval_rejected_text,
+    approval_summary,
     clarify_candidates_text,
     clarify_fallback_text,
     clarify_missing_text,
@@ -144,3 +145,63 @@ def test_precheck_reject_generic_scenarios():
     assert "订单号" in precheck_reject_text("order_not_found")
     assert "转人工" in precheck_reject_text("data_source_unavailable")
     assert "转人工" in precheck_reject_text("unknown_reason")
+
+
+def _paid_facts(**overrides):
+    facts = {
+        "order_id": "10086",
+        "user_id": "u1",
+        "status": "paid",
+        "total_amount": 599.0,
+        "occupied_refund_amount": 99.0,
+        "product_summary": "空气炸锅",
+    }
+    facts.update(overrides)
+    return facts
+
+
+def test_approval_summary_cancel_order_uses_snapshot():
+    summary, reason = approval_summary("cancel_order", {"order_id": "10086"}, _paid_facts(), "u1")
+    assert reason is None
+    assert "取消订单 10086" in summary
+    assert "599.0" in summary and "空气炸锅" in summary and "u1" in summary
+
+
+def test_approval_summary_cancel_order_without_paid_snapshot_returns_reason():
+    summary, reason = approval_summary(
+        "cancel_order", {"order_id": "10086"}, _paid_facts(status="shipped"), "u1"
+    )
+    assert summary is None
+    assert reason == "cancel_order_facts_unavailable"
+
+
+def test_approval_summary_rejects_foreign_snapshot():
+    summary, reason = approval_summary("cancel_order", {"order_id": "10086"}, _paid_facts(), "u2")
+    assert summary is None and reason == "cancel_order_facts_unavailable"
+
+
+def test_approval_summary_refund_without_amount_subtracts_occupied():
+    summary, reason = approval_summary("refund_apply", {"order_id": "10086"}, _paid_facts(), "u1")
+    assert reason is None
+    assert "退款金额 500.0" in summary
+    assert "已占用退款 99.0" in summary
+
+
+def test_approval_summary_refund_with_explicit_amount_is_rounded():
+    summary, _ = approval_summary(
+        "refund_apply", {"order_id": "10086", "amount": 120.456}, _paid_facts(), "u1"
+    )
+    assert "退款金额 120.46" in summary
+
+
+def test_approval_summary_refund_falls_back_when_snapshot_missing():
+    summary, reason = approval_summary("refund_apply", {"order_id": "10086"}, None, "u1")
+    assert reason is None
+    assert summary.startswith("即将执行「refund_apply」")
+
+
+def test_approval_summary_generic_tool_uses_args():
+    summary, reason = approval_summary("cancel_order_v2", {"order_id": "1"}, None, "u1")
+    assert reason is None
+    assert "cancel_order_v2" in summary and "10086" not in summary
+

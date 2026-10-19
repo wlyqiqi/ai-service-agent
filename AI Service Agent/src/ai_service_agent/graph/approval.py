@@ -24,6 +24,18 @@ class ApprovalRequest(TypedDict):
     decided_at: str | None
 
 
+def resolve_approval_outcome(resume) -> str:
+    """Map an interrupt resume payload to ``approved`` / ``rejected`` / ``expired``.
+
+    Fail-closed: a missing or unknown action is treated as ``rejected``
+    (approval-spec §3.1). ``result="expired"`` wins over any action.
+    """
+    if isinstance(resume, dict) and resume.get("result") == "expired":
+        return "expired"
+    action = resume.get("action") if isinstance(resume, dict) else None
+    return "approved" if action == "approve" else "rejected"
+
+
 def make_approval_request(requester_user_id: str, summary: str, expires_minutes: int) -> ApprovalRequest:
     now = datetime.now(timezone.utc)
     return {

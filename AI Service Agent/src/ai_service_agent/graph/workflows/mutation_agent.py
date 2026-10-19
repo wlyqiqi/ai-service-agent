@@ -16,16 +16,16 @@ goto 目标会并发执行导致共享 LastValue 通道双写 InvalidUpdateError
 dict，由条件边函数路由，规避该冲突）。
 """
 
-import json
 import uuid
 
 import langgraph.types as _lg_types
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
 
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable
+from ai_service_agent.graph.messages import read_tool_error
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.graph.allowed_tools import (
@@ -186,19 +186,7 @@ def make_mutation_graph(
 
     def finalize_ok(state: dict) -> dict:
         pending = state["context"]["pending_tool"]
-        tool_error = None
-        for message in reversed(state.get("messages", [])):
-            if not isinstance(message, ToolMessage) or message.name != pending["tool"]:
-                continue
-            result = message.content
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except json.JSONDecodeError:
-                    result = None
-            if isinstance(result, dict) and result.get("error"):
-                tool_error = result["error"]
-            break
+        tool_error = read_tool_error(state.get("messages", []), pending["tool"])
         if tool_error:
             return {
                 "messages": [AIMessage(content=mutation_tool_failed_text(pending["tool"], tool_error))],
