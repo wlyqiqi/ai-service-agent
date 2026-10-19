@@ -210,3 +210,12 @@ Phase 0（决策）
 ```
 
 Phase 1 与 Phase 2 之间建议留一次全量回归，避免把「抽取错误」与「策略变更」混在同一次失败里定位。
+
+---
+
+## 10. 执行状态
+
+- **Phase 1 ✅** commit `8d941ca2`（`refactor/harness: 抽出 form_gate ... Phase 1`）：零行为变更；全量 774 / 0 failures。
+- **Phase 2 ✅** commit `a34f2617`（`fix(harness): /chat 与 /actions/confirm 复用 form_gate 决策`）：D1=A，`/chat` 切 Implicit Cancel；`test_seat_gated_handoff` 单独 22 passed。
+- **Phase 3 ✅** 文档同步（ADR-0001 / `CONTEXT.md`）+ 删除 `_FORM_SCHEMA_SKIP_FIELDS` 重复定义。
+- 决策记录：D1=A（`/chat` 切隐式取消）、D2=A（保留 `/actions/confirm` 并接模块）、D3=A（默认 `IMPLICIT_CANCEL`）。

@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.runtime_context import GraphContext
+from ai_service_agent.graph.workflows.form_resume import FORM_RESUME_SKIP_FIELDS
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
@@ -87,12 +88,8 @@ async def _clear_agent_typing(chatwoot, conversation_id: str) -> None:
         logger.exception("chatwoot clear typing failed: conv=%s", conversation_id)
 
 
-# Form Resume schema keys that are not Mutation Form input widgets.
-# ``action`` is appended explicitly as Confirm/Cancel control (not from schema loop).
-# ``current_address`` is read-only projection for update_address (#71).
-_FORM_SCHEMA_SKIP_FIELDS = frozenset(
-    {"action", "request_id", "current_address", "abandon_footnote"}
-)
+# Form Resume schema keys that are not Mutation Form input widgets live in
+# graph/workflows/form_resume.py (single source of truth): FORM_RESUME_SKIP_FIELDS.
 
 _MUTATION_FORM_ACTION_ITEM: dict[str, Any] = {
     "name": "action",
@@ -285,7 +282,7 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
             if not isinstance(field, dict):
                 continue
             name = field.get("name")
-            if not name or name in _FORM_SCHEMA_SKIP_FIELDS or name == "order_id":
+            if not name or name in FORM_RESUME_SKIP_FIELDS or name == "order_id":
                 continue
             item = {
                 "name": str(name),
@@ -305,7 +302,7 @@ def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, A
         schema = data.get("response_schema") if isinstance(data.get("response_schema"), dict) else {}
         properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
         for name, prop in properties.items():
-            if name in _FORM_SCHEMA_SKIP_FIELDS or name == "order_id":
+            if name in FORM_RESUME_SKIP_FIELDS or name == "order_id":
                 continue
             label = FIELD_LABELS.get(name, name)
             item = {
