@@ -59,6 +59,7 @@
 - 该判断尽量在 **FastAPI / Conversation Runtime 层、进入任何 LangGraph 逻辑之前**完成；若 `conversation_mode == human`，直接调用 Message Service 写入消息、通知坐席，**不触发 checkpointer、不触发 Graph、不触发 Guard / Router**。
 - 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在**连接级内存**，仅在 `handoff_created` / `handoff_resolved`（以及可选的 `handoff_requested` 供 UI 提示）事件发生时主动更新，不要求每条用户消息重新查库。
 - **入口层确定性检测（Seat-gated；扩展 P0 意图门控）**：
+  - **单一判定点**：`harness/handoff_entry.decide_entry(mode, awaiting, text)` 产出 `human_lane / cancel / request / ai` 四选一，`/chat` 与 AgentBot 共用同一顺序（mode 门控 → 取消 → 申请）；Transport 只翻译载荷、落库与投影，不得各自重写门控顺序。
   - **Handoff Request**：显式转人工意图（`safety-spec.md` §2.1 第一类）由入口层 `detect_handoff_intent` 在进入 LangGraph **之前**判定。命中则创建/复用挂起 Record、发 `handoff_requested`、Chatwoot 强提示（§2.1），本 turn **只回挂起确认**后结束——**不切 `mode=human`**，**不触发 checkpointer / Graph / Guard / Router**。
   - **Handoff Cancel**：挂起期间由入口层 `detect_handoff_cancel` 判定（无 Router / LLM）；命中则清挂起、不切 Conversation Mode。
   - 挂起期间**重复**转人工措辞：幂等，不新建 Record，仅短 tip。
