@@ -17,7 +17,6 @@ SEAT_HEADERS = {
     "X-Seat-Actor-Id": "seat-1",
 }
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
-from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
 from langchain_core.messages import AIMessage
 from ai_service_agent.tools import write as write_mod
 from ai_service_agent.tools import orders as orders_mod
@@ -1093,7 +1092,7 @@ def test_plain_text_during_form_interrupt_implicit_cancels_and_routes_new_turn(
         for event in new_turn_events
         if event.get("type") == "token"
     )
-    assert form_plain_text_refuse_text() not in tokens
+    assert "请先完成或取消当前表单" not in tokens
 
     # The message ran as a normal new turn (Router -> ReadGraph).
     done = next(event for event in new_turn_events if event.get("type") == "done")

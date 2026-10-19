@@ -9,7 +9,6 @@ from ai_service_agent.graph.workflows.copy import (
     clarify_missing_text,
     clarify_no_candidates_text,
     clarify_tier_text,
-    form_plain_text_refuse_text,
     handoff_joined_notice_text,
     handoff_returned_to_bot_text,
     human_service_header_text,
@@ -79,12 +78,6 @@ def test_handoff_system_notice_copy():
     assert handoff_joined_notice_text() == "人工客服已接入，接下来将由人工为您服务。"
     assert handoff_returned_to_bot_text() == "已交回AI客服助手"
     assert human_service_header_text() == "人工服务中"
-
-
-def test_form_plain_text_refuse_text():
-    text = form_plain_text_refuse_text()
-    assert "表单" in text and ("纯文本" in text or "不会改" in text)
-    assert "完成" in text and "取消" in text
 
 
 def test_operation_cancelled_text():

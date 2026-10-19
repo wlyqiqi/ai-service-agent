@@ -1,14 +1,21 @@
 """Inbound → Form Interrupt decision (single source of truth).
 
 This module owns *only* the decision for an inbound message while a Mutation
-Form Interrupt is pending: confirm / cancel / implicit cancel / refuse.
+Form Interrupt is pending: confirm / cancel / implicit cancel.
+
+There is deliberately **one** policy. Plain text never resumes a form; it
+cancels the stale interrupt and the caller routes the message as a new turn
+(``CONTEXT.md`` Implicit Cancel). A per-transport "refuse" policy would
+re-legitimise the entry-point drift this module exists to remove, so it is
+not part of the interface.
 
 Executing the decision stays with the caller:
 
 - ``Command(resume=...)`` and the two-phase Implicit Cancel (silent cancel
   resume, then a normal new turn on the same thread) are graph invocation
   orchestration — ``AGENTS.md §4`` keeps that out of a decision module.
-- Re-projecting the form on ``REFUSE`` is transport projection.
+- Re-projecting a form is transport projection and is not part of the
+  pending-form decision.
 
 Layering: harness may import graph; graph must never import harness.
 ``FORM_RESUME_SKIP_FIELDS`` therefore lives in
@@ -48,28 +55,13 @@ class FormDecisionKind(str, Enum):
     CONFIRM = "confirm"
     CANCEL = "cancel"
     IMPLICIT_CANCEL = "implicit_cancel"
-    REFUSE = "refuse"
-
-
-class PendingFormPolicy(str, Enum):
-    """How a non-form inbound is handled while a form is pending.
-
-    ``IMPLICIT_CANCEL`` is the project default (CONTEXT.md Implicit Cancel):
-    cancel the stale interrupt silently, then route the message as a new turn.
-    ``REFUSE`` keeps the interrupt and lets the transport re-project the form
-    (strict Form-Only Write). Callers must choose it explicitly.
-    """
-
-    IMPLICIT_CANCEL = "implicit_cancel"
-    REFUSE = "refuse"
 
 
 @dataclass(frozen=True)
 class FormDecision:
     kind: FormDecisionKind
-    # Ready to pass to ``Command(resume=...)`` for CONFIRM / CANCEL.
-    # ``IMPLICIT_CANCEL`` carries the cancel payload the caller resumes with.
-    # ``REFUSE`` carries None: the interrupt stays pending.
+    # Ready to pass to ``Command(resume=...)``. ``IMPLICIT_CANCEL`` carries the
+    # cancel payload the caller resumes with before starting the new turn.
     resume_payload: dict[str, Any] | None = None
 
 
@@ -111,12 +103,8 @@ def _non_empty_business_fields(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _pending_decision(policy: PendingFormPolicy) -> FormDecision:
-    if policy is PendingFormPolicy.REFUSE:
-        return FormDecision(FormDecisionKind.REFUSE)
-    return FormDecision(
-        FormDecisionKind.IMPLICIT_CANCEL, {"action": "cancel"}
-    )
+def _implicit_cancel() -> FormDecision:
+    return FormDecision(FormDecisionKind.IMPLICIT_CANCEL, {"action": "cancel"})
 
 
 def decide_form_inbound(
@@ -125,13 +113,15 @@ def decide_form_inbound(
     kind: FormInboundKind,
     submitted_values: dict[str, Any] | None = None,
     fields: dict[str, Any] | None = None,
-    pending_policy: PendingFormPolicy = PendingFormPolicy.IMPLICIT_CANCEL,
 ) -> FormDecision:
     """Decide how one inbound acts on a pending Form Interrupt.
 
     ``interrupt_value`` is the pending ``interrupt()`` payload. Plain text is
-    never parsed into business fields (Form-Only Write): it can only resolve
-    through ``pending_policy``.
+    never parsed into business fields (Form-Only Write): it always resolves to
+    Implicit Cancel.
+
+    Raises ``ValueError`` for an invalid ``EXPLICIT`` action: HTTP callers
+    validate the action before reaching here, so this is a programming error.
     """
     if kind is FormInboundKind.EXPLICIT:
         explicit = dict(fields or {})
@@ -143,12 +133,11 @@ def decide_form_inbound(
             )
         if action in _CANCEL_ACTIONS:
             return FormDecision(FormDecisionKind.CANCEL, {"action": "cancel"})
-        return FormDecision(FormDecisionKind.REFUSE)
+        raise ValueError(f"invalid explicit form action: {action!r}")
 
     if kind is FormInboundKind.FORM_SUBMIT:
         submitted = dict(submitted_values or {})
         action = submitted.get("confirmation") or submitted.get("action")
-        business = _business_fields(submitted)
         tool = (interrupt_value or {}).get("tool")
         primary_submit = (
             not action
@@ -159,13 +148,13 @@ def decide_form_inbound(
         if action in _CONFIRM_ACTIONS or primary_submit:
             return FormDecision(
                 FormDecisionKind.CONFIRM,
-                {"action": "confirm", **business},
+                {"action": "confirm", **_business_fields(submitted)},
             )
         if action in _CANCEL_ACTIONS:
             return FormDecision(FormDecisionKind.CANCEL, {"action": "cancel"})
-        # Malformed submit (no action, not a primary-submit tool): same policy
-        # as a non-form inbound, matching the pre-refactor behaviour.
-        return _pending_decision(pending_policy)
+        # Malformed submit (no action, not a primary-submit tool): treated like
+        # any non-form inbound.
+        return _implicit_cancel()
 
     # Plain text is never a Form Resume (Form-Only Write).
-    return _pending_decision(pending_policy)
+    return _implicit_cancel()

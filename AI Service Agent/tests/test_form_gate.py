@@ -6,7 +6,6 @@ from ai_service_agent.harness.form_gate import (
     FORM_INBOUND_SKIP_FIELDS,
     FormDecisionKind,
     FormInboundKind,
-    PendingFormPolicy,
     decide_form_inbound,
     normalize_submitted_values,
 )
@@ -151,24 +150,21 @@ def test_text_default_policy_is_implicit_cancel():
     assert decision.resume_payload == {"action": "cancel"}
 
 
-def test_text_refuse_policy_keeps_interrupt():
-    decision = decide_form_inbound(
-        ADDRESS_FORM,
-        kind=FormInboundKind.TEXT,
-        pending_policy=PendingFormPolicy.REFUSE,
-    )
-    assert decision.kind is FormDecisionKind.REFUSE
-    assert decision.resume_payload is None
+def test_text_always_implicit_cancels():
+    """There is exactly one pending-form policy; no per-entry refuse switch."""
+    decision = decide_form_inbound(ADDRESS_FORM, kind=FormInboundKind.TEXT)
+    assert decision.kind is FormDecisionKind.IMPLICIT_CANCEL
+    assert decision.resume_payload == {"action": "cancel"}
 
 
-def test_malformed_submit_follows_pending_policy():
+def test_malformed_submit_implicit_cancels():
     decision = decide_form_inbound(
         CANCEL_FORM,
         kind=FormInboundKind.FORM_SUBMIT,
         submitted_values={"note": "no action"},
-        pending_policy=PendingFormPolicy.REFUSE,
     )
-    assert decision.kind is FormDecisionKind.REFUSE
+    assert decision.kind is FormDecisionKind.IMPLICIT_CANCEL
+    assert decision.resume_payload == {"action": "cancel"}
 
 
 # --- EXPLICIT: HTTP button ----------------------------------------------
@@ -198,12 +194,12 @@ def test_explicit_cancel_ignores_fields():
     assert decision.resume_payload == {"action": "cancel"}
 
 
-def test_explicit_invalid_action_refuses():
-    decision = decide_form_inbound(
-        ADDRESS_FORM, kind=FormInboundKind.EXPLICIT, fields={"action": "maybe"}
-    )
-    assert decision.kind is FormDecisionKind.REFUSE
-    assert decision.resume_payload is None
+def test_explicit_invalid_action_raises():
+    """HTTP callers validate the action first; an invalid one is a programming error."""
+    with pytest.raises(ValueError, match="invalid explicit form action"):
+        decide_form_inbound(
+            ADDRESS_FORM, kind=FormInboundKind.EXPLICIT, fields={"action": "maybe"}
+        )
 
 
 # --- single source of truth ---------------------------------------------

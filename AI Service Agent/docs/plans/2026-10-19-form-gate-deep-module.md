@@ -219,3 +219,4 @@ Phase 1 与 Phase 2 之间建议留一次全量回归，避免把「抽取错误
 - **Phase 2 ✅** commit `a34f2617`（`fix(harness): /chat 与 /actions/confirm 复用 form_gate 决策`）：D1=A，`/chat` 切 Implicit Cancel；`test_seat_gated_handoff` 单独 22 passed。
 - **Phase 3 ✅** 文档同步（ADR-0001 / `CONTEXT.md`）+ 删除 `_FORM_SCHEMA_SKIP_FIELDS` 重复定义。
 - 决策记录：D1=A（`/chat` 切隐式取消）、D2=A（保留 `/actions/confirm` 并接模块）、D3=A（默认 `IMPLICIT_CANCEL`）。
+- **合并前清理（追加）**：删除 `PendingFormPolicy` / `FormDecisionKind.REFUSE` 与 `/chat`、AgentBot 的 REFUSE 分支，以及因此变成死代码的 `form_plain_text_refuse_text()`。理由：REFUSE 无任何生产调用方，且它的存在会把「按入口分叉」重新合法化——正是本模块要消除的漂移。最终接口为 **3 类决策**（confirm / cancel / implicit_cancel），单一策略，无 per-entry 开关。非法 `EXPLICIT` action 改为 `raise ValueError`（HTTP 入口已前置校验，属编程错误）。

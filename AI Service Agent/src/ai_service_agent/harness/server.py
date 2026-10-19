@@ -21,7 +21,6 @@ from ai_service_agent.graph.runtime_context import GraphContext
 
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
-    form_plain_text_refuse_text,
     handoff_cancel_confirm_text,
     handoff_form_cancelled_customer_text,
     handoff_form_cancelled_seat_note_text,
@@ -52,7 +51,7 @@ from ai_service_agent.harness.chatwoot import (
     is_agent_message,
     verify_chatwoot_signature,
 )
-from ai_service_agent.harness.form_events import is_form_interrupt, project_form_interrupt
+from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.form_gate import (
     FormDecisionKind,
     FormInboundKind,
@@ -788,21 +787,13 @@ def create_app(
                         elif approval_state == "expired":
                             resume_payload = {"result": "expired"}   # HighRiskGraph 过期收尾
                         elif is_form_interrupt(it):
-                            # 与 AgentBot 同一决策点（harness/form_gate.py）：纯文本不是
-                            # Form Resume；默认策略为 Implicit Cancel（CONTEXT.md）。
+                            # 与 AgentBot 同一决策点（harness/form_gate.py）：纯文本永不
+                            # 构成 Form Resume，唯一策略是 Implicit Cancel（CONTEXT.md）。
                             decision = decide_form_inbound(it, kind=FormInboundKind.TEXT)
-                            if decision.kind is FormDecisionKind.IMPLICIT_CANCEL:
-                                implicit_cancel = True
-                            elif decision.kind is FormDecisionKind.REFUSE:
-                                tip = form_plain_text_refuse_text()
-                                yield {"type": "token", "data": {"text": tip}}
-                                projected = project_form_interrupt(st.interrupts[0])
-                                if projected:
-                                    yield projected
-                                messages_store.append(conv_id, "assistant", tip)
-                                yield {"type": "done", "data": {"final": tip, "message_id": None}}
-                                return
-                            else:
+                            implicit_cancel = (
+                                decision.kind is FormDecisionKind.IMPLICIT_CANCEL
+                            )
+                            if not implicit_cancel:
                                 resume_payload = decision.resume_payload
                         else:
                             resume_payload = resolve_resume_payload(it, body.message)
@@ -898,8 +889,6 @@ def create_app(
                 decision = decide_form_inbound(
                     pending, kind=FormInboundKind.EXPLICIT, fields=fields
                 )
-                if decision.kind is FormDecisionKind.REFUSE:
-                    raise HTTPException(status_code=422, detail="invalid action")
                 resume_payload = decision.resume_payload
                 async for event in event_stream(
                     graph,

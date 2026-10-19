@@ -683,15 +683,6 @@ async def _handle_locked_agent_bot_message(
                         # #72: pending form + non-form inbound -> silent cancel
                         # resume, then the same message as a new turn.
                         implicit_cancel = True
-                    elif decision.kind is FormDecisionKind.REFUSE:
-                        # Unreachable under the default IMPLICIT_CANCEL policy;
-                        # keep the pre-refactor behaviour rather than drop the message.
-                        logger.warning(
-                            "form_gate refused inbound without an AgentBot refuse path; "
-                            "falling back to implicit cancel (conv=%s)",
-                            conversation_id,
-                        )
-                        implicit_cancel = True
                     else:
                         resume_payload = decision.resume_payload
                 else:
