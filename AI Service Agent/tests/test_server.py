@@ -17,6 +17,8 @@ SEAT_HEADERS = {
     "X-Seat-Actor-Id": "seat-1",
 }
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
+from langchain_core.messages import AIMessage
 from ai_service_agent.tools import write as write_mod
 from ai_service_agent.tools import orders as orders_mod
 from ai_service_agent.graph import builder as builder_mod
@@ -1038,11 +1040,14 @@ def test_vague_mutation_operation_clarify_then_form_interrupt(tmp_path, monkeypa
     assert customer_address() == form_address
 
 
-def test_plain_text_during_form_interrupt_refuses_with_guidance(tmp_path, monkeypatch):
-    """Plain text while Form Interrupt is pending does not write and shows guidance.
+def test_plain_text_during_form_interrupt_implicit_cancels_and_routes_new_turn(
+    tmp_path, monkeypatch
+):
+    """Plain text while Form Interrupt is pending -> Implicit Cancel (CONTEXT.md / #72).
 
-    Seam: Conversation Runtime /chat (issue #20). Still replays form projection;
-    no Mutation-only chat-JSON skip-Router bypass.
+    Same policy as the AgentBot adapter: the stale form is cancelled silently and
+    the message is routed as a normal new turn. No guidance tip, no form re-push,
+    and the plain text never writes.
     """
     business_db = tmp_path / "mock_ecommerce.db"
 
@@ -1065,8 +1070,10 @@ def test_plain_text_during_form_interrupt_refuses_with_guidance(tmp_path, monkey
     model = ToolCallingFakeModel(responses=[
         router_json_message("account_profile_update", 0.9),
         select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"}),
+        router_json_message("faq", 0.9),
+        AIMessage(content="FAQ 离线回复：请参考帮助中心。"),
     ])
-    db = str(tmp_path / "form-plain-refuse.db")
+    db = str(tmp_path / "form-plain-implicit-cancel.db")
     client = TestClient(create_app(db, model=model))
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "改收货地址"}) as resp:
@@ -1074,25 +1081,33 @@ def test_plain_text_during_form_interrupt_refuses_with_guidance(tmp_path, monkey
     assert any(event.get("type") == "form_required" for event in open_events)
 
     with client.stream(
-        "POST", "/chat", json={"session_id": session_id, "message": "把地址改成上海市浦东新区"},
+        "POST", "/chat", json={"session_id": session_id, "message": "你好"},
     ) as resp:
-        hold_events = _parse_sse("".join(resp.iter_text()))
+        new_turn_events = _parse_sse("".join(resp.iter_text()))
 
-    hold_types = [event.get("type") for event in hold_events]
-    assert "form_required" in hold_types
-    assert "tool_call" not in hold_types
-    assert customer_address() == original_address
-    tokens = [
+    types = [event.get("type") for event in new_turn_events]
+    # Stale form is neither re-projected nor replaced by a Form-Only Write tip.
+    assert "form_required" not in types
+    tokens = "".join(
         event["data"].get("text", "")
-        for event in hold_events
+        for event in new_turn_events
         if event.get("type") == "token"
-    ]
-    guidance = "".join(tokens)
-    assert "表单" in guidance
-    assert "纯文本" in guidance or "不会改" in guidance
-    done = next(event for event in hold_events if event.get("type") == "done")
-    assert done["data"].get("final")
-    assert "表单" in done["data"]["final"]
+    )
+    assert form_plain_text_refuse_text() not in tokens
+
+    # The message ran as a normal new turn (Router -> ReadGraph).
+    done = next(event for event in new_turn_events if event.get("type") == "done")
+    assert "FAQ" in (done["data"].get("final") or "")
+
+    # Interrupt cleared: no pending confirmation left for /actions/confirm.
+    r = client.post(
+        "/actions/confirm",
+        json={"conversation_id": session_id, "action": "confirm"},
+    )
+    assert r.status_code == 409
+
+    # Plain text never writes.
+    assert customer_address() == original_address
 
 
 def test_handoff_turn_persists_outer_notice_and_emits_token(tmp_path):
