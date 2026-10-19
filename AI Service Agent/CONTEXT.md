@@ -85,8 +85,8 @@ _Avoid_: 进入审批必须先转人工；坐席聊天接管等同于审批通�
 _Avoid_: 用第三态表示「等坐席」；把 Chatwoot `pending`/`open` 直接当成 Conversation Mode
 
 **Handoff Request**:
-客户或图内信号发起的转人工**申请**；Runtime 记为挂起（如 `awaiting_seat`），**不**因此把 Conversation Mode 切为 `human`；挂起期间后续未命中门控的消息仍走 AI（含 Router）。客户显式申请由**入口层** `detect_handoff_intent` 命中（不经 Router）；与子图 `handoff_request` 同一挂起门控。申请时 Chatwoot **强提示** = private note + label slug **`handoff-request`**，不改会话 status。入口命中申请的本 turn **只**回挂起确认后结束，不顺带跑 Router。
-_Avoid_: 一请求就切 human；显式申请进 Router；显式转人工与图内 handoff 两套挂起语义；仅靠备注无标签；申请 turn 里夹带业务问答
+客户或图内信号发起的转人工**申请**；Runtime 记为挂起（如 `awaiting_seat`），**不**因此把 Conversation Mode 切为 `human`；挂起期间后续未命中门控的消息仍走 AI（含 Router）。客户显式申请由**入口层** `detect_handoff_intent` 命中（不经 Router）；与子图 `handoff_request` 同一挂起门控。申请时 Chatwoot **强提示** = private note + label slug **`handoff-request`**，不改会话 status。入口命中申请的本 turn **只**回挂起确认后结束，不顺带跑 Router。入口判定（human 车道 / 取消 / 申请 / AI）由 `harness/handoff_entry.decide_entry` 单点产出，所有 Transport 共用同一顺序。
+_Avoid_: 一请求就切 human；显式申请进 Router；显式转人工与图内 handoff 两套挂起语义；仅靠备注无标签；申请 turn 里夹带业务问答；按入口各写一份门控顺序
 
 **Handoff Joined Notice**:
 Seat Takeover 成功后由 Bot 发给客户的短提示（人工已接入）；与挂起申请文案区分。
@@ -101,5 +101,5 @@ _Avoid_: 自定义「同意」卡当作主路径；把系统 bot-error 自动 op
 _Avoid_: 只改 Chatwoot 已解决却不回切 Runtime mode；把已是 `ai` 的 `pending` 再当成一次 Resolve；用客户「结束会话」代替坐席交回主路径
 
 **Handoff Cancel**:
-坐席 Take over 之前，客户取消挂起的 Handoff Request；与申请同属**入口层确定性检测**（`detect_handoff_cancel`，无 Router/LLM），清挂起且不切 Conversation Mode。之后坐席仍可主动 Seat Takeover。
+坐席 Take over 之前，客户取消挂起的 Handoff Request；与申请同属**入口层确定性检测**（`detect_handoff_cancel`，无 Router/LLM），且与申请共用同一 `decide_entry` 判定（取消先于申请，因为「取消转人工」同时命中两者），清挂起且不切 Conversation Mode。之后坐席仍可主动 Seat Takeover。
 _Avoid_: 仅靠坐席忽略申请；把 Implicit Cancel（表单）与取消转人工混为一谈；用 Router 自由文本理解取消；申请走入口、取消走 Router 的不对称门控

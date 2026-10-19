@@ -19,7 +19,6 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.domain.orders import OrderRepositoryUnavailable, SQLiteOrderRepository
 from ai_service_agent.graph.runtime_context import GraphContext
 
-from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
     handoff_cancel_confirm_text,
     handoff_form_cancelled_customer_text,
@@ -63,6 +62,7 @@ from ai_service_agent.harness.handoff import (
     HandoffService,
     handoff_request_tip,
 )
+from ai_service_agent.harness.handoff_entry import EntryDecision, decide_entry
 from ai_service_agent.harness.handoff_signal import human_takeover_signal, is_bot_error_signal
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.resume import (
@@ -699,7 +699,14 @@ def create_app(
 
             return _sse_response(unknown_stream())
 
-        if status.get_mode(conv_id) == "human":
+        # 入口策略单点在 harness/handoff_entry.py（与 AgentBot 共用）。
+        decision = decide_entry(
+            mode=status.get_mode(conv_id),
+            awaiting=handoff.get_awaiting(conv_id) is not None,
+            text=body.message,
+        )
+
+        if decision is EntryDecision.HUMAN_LANE:
             # 人工车道：只写 Message Store。不发 bot 气泡，也不把客户话再 create_message 一次。
             messages_store.append(conv_id, "user", body.message)
             clear = getattr(chatwoot, "clear_typing", None) if chatwoot is not None else None
@@ -714,7 +721,7 @@ def create_app(
 
             return _sse_response(human_stream())
 
-        if handoff.get_awaiting(conv_id) is not None and detect_handoff_cancel(body.message):
+        if decision is EntryDecision.CANCEL:
             # Handoff Cancel：清挂起，不切 mode，不进 Graph。
             messages_store.append(conv_id, "user", body.message)
             handoff.cancel_handoff_request(conv_id)
@@ -727,7 +734,7 @@ def create_app(
 
             return _sse_response(cancel_stream())
 
-        if detect_handoff_intent(body.message):
+        if decision is EntryDecision.REQUEST:
             # Seat-gated：显式转人工 → Handoff Request 挂起（mode 仍 ai），本 turn 只回确认。
             messages_store.append(conv_id, "user", body.message)
             ev = handoff.request_handoff(conv_id, "用户显式请求转人工", body.message[:80])

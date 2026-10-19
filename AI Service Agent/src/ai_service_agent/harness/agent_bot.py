@@ -9,7 +9,6 @@ from langchain_core.messages import HumanMessage
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.workflows.form_resume import FORM_RESUME_SKIP_FIELDS
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
-from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
     MutationSuccessCardSpec,
@@ -32,6 +31,7 @@ from ai_service_agent.harness.form_gate import (
     normalize_submitted_values,
 )
 from ai_service_agent.harness.handoff import handoff_request_tip
+from ai_service_agent.harness.handoff_entry import EntryDecision, decide_entry, is_human_lane
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -569,7 +569,8 @@ async def _handle_locked_agent_bot_message(
         if mapping is not None:
             mapping.put(conversation_id, cw_conv_id, contact_id)
 
-    if status is not None and status.get_mode(conversation_id) != "ai":
+    mode = status.get_mode(conversation_id) if status is not None else "ai"
+    if is_human_lane(mode):
         # Human lane: Message Store only. No bot bubble, no Graph.
         if messages_store is not None:
             message_id = chatwoot_message_id(payload)
@@ -599,9 +600,15 @@ async def _handle_locked_agent_bot_message(
     else:
         history = [HumanMessage(content=content)]
 
-    # Seat-gated entry detectors (handoff-spec §2): confirm/cancel only; no Graph.
+    # Seat-gated entry (handoff-spec §2): 与 /chat 共用 harness/handoff_entry.py 的
+    # 同一策略；表单提交不是文本入站，不参与入口判定（form_gate 的职责）。
     if handoff is not None and submitted_values is None:
-        if handoff.get_awaiting(conversation_id) is not None and detect_handoff_cancel(content):
+        decision = decide_entry(
+            mode=mode,
+            awaiting=handoff.get_awaiting(conversation_id) is not None,
+            text=content,
+        )
+        if decision is EntryDecision.CANCEL:
             handoff.cancel_handoff_request(conversation_id)
             tip = handoff_cancel_confirm_text()
             if messages_store is not None:
@@ -612,7 +619,7 @@ async def _handle_locked_agent_bot_message(
                 "chatwoot_conversation_id": cw_conv_id,
                 "response": tip,
             }
-        if detect_handoff_intent(content):
+        if decision is EntryDecision.REQUEST:
             ev = handoff.request_handoff(conversation_id, "用户显式请求转人工", content[:80])
             # created 是唯一判据（handoff-spec §2）：挂起期间重复申请只发短 tip。
             created = bool(ev.get("created", True))
