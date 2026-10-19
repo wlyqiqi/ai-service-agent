@@ -24,8 +24,6 @@ from ai_service_agent.graph.workflows.copy import (
     handoff_cancel_confirm_text,
     handoff_form_cancelled_customer_text,
     handoff_form_cancelled_seat_note_text,
-    handoff_request_confirm_text,
-    handoff_request_idempotent_tip_text,
     handoff_request_private_note_text,
     handoff_returned_to_bot_text,
     human_service_header_text,
@@ -60,10 +58,10 @@ from ai_service_agent.harness.form_gate import (
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import (
     HANDOFF_JOINED_NOTICE,
-    HANDOFF_REQUEST_CONFIRM,
     STATUS_ACTIVE,
     STATUS_AWAITING,
     HandoffService,
+    handoff_request_tip,
 )
 from ai_service_agent.harness.handoff_signal import human_takeover_signal, is_bot_error_signal
 from ai_service_agent.harness.messages import MessageStore
@@ -149,24 +147,15 @@ def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
         )
 
         async def on_handoff_requested(event: dict) -> None:
-            rows = messages_store.list(conv_id)
-            already_tipped = any(
-                m.get("content")
-                in (handoff_request_confirm_text(), handoff_request_idempotent_tip_text())
-                for m in rows
-                if m.get("role") == "assistant"
-            )
-            tip = (
-                handoff_request_idempotent_tip_text()
-                if already_tipped
-                else handoff_request_confirm_text()
-            )
+            # created 是唯一判据：挂起期间重复申请不再打扰坐席（handoff-spec §2）。
+            created = bool(event.get("created", True))
+            tip = handoff_request_tip(created=created)
             data = event.get("data") or {}
             messages_store.append(conv_id, "assistant", tip)
             await chatwoot.send_bot_message(conv_id, tip)
             try:
                 await chatwoot.ensure_conversation(conv_id, tip)
-                if not already_tipped:
+                if created:
                     await chatwoot.prompt_handoff_request(
                         conv_id,
                         handoff_request_private_note_text(data.get("summary") or ""),
@@ -364,15 +353,21 @@ def create_app(
         if record is not None:
             _ensure_approval_owner(auth_user, record)
 
-    async def _emit_handoff_requested(conv_id: str, ev: dict, *, first_request: bool):
-        """Handoff Request 挂起 side-effect：确认 tip；首申才发强提示（handoff-spec §2 幂等短 tip）。"""
-        tip = HANDOFF_REQUEST_CONFIRM if first_request else handoff_request_idempotent_tip_text()
+    async def _emit_handoff_requested(conv_id: str, ev: dict):
+        """Handoff Request 挂起 side-effect：tip 与坐席提示只看 ``ev["created"]``。
+
+        ``created`` 是 Runtime 内部控制位（handoff-spec §2）：新建挂起才发强确认 +
+        坐席 private note；挂起期间重复申请只发幂等短 tip。对外 SSE 事件只保留
+        ``{type, data}``，控制位在此剥除。
+        """
+        created = bool(ev.get("created", True))
+        tip = handoff_request_tip(created=created)
         data = ev.get("data") or {}
         messages_store.append(conv_id, "assistant", tip)
         if chatwoot is not None:
             try:
                 await chatwoot.ensure_conversation(conv_id, tip)
-                if first_request:
+                if created:
                     await chatwoot.prompt_handoff_request(
                         conv_id,
                         handoff_request_private_note_text(data.get("summary") or ""),
@@ -380,7 +375,7 @@ def create_app(
             except Exception:
                 logger.exception("chatwoot handoff-request prompt failed: conv=%s", conv_id)
         yield {"type": "token", "data": {"text": tip}}
-        yield ev
+        yield {"type": ev.get("type", "handoff_requested"), "data": data}
 
     async def _emit_joined_notice(conv_id: str) -> None:
         notice = HANDOFF_JOINED_NOTICE
@@ -735,16 +730,11 @@ def create_app(
         if detect_handoff_intent(body.message):
             # Seat-gated：显式转人工 → Handoff Request 挂起（mode 仍 ai），本 turn 只回确认。
             messages_store.append(conv_id, "user", body.message)
-            already = handoff.get_awaiting(conv_id) is not None or handoff.get_active(conv_id) is not None
             ev = handoff.request_handoff(conv_id, "用户显式请求转人工", body.message[:80])
-            tip = (
-                handoff_request_idempotent_tip_text()
-                if already
-                else HANDOFF_REQUEST_CONFIRM
-            )
+            tip = handoff_request_tip(created=bool(ev.get("created", True)))
 
             async def explicit_handoff_stream():
-                async for out in _emit_handoff_requested(conv_id, ev, first_request=not already):
+                async for out in _emit_handoff_requested(conv_id, ev):
                     yield out
                 yield {"type": "done", "data": {"final": tip, "message_id": None}}
 
@@ -815,19 +805,7 @@ def create_app(
                         context=_runtime_context(user_id),
                     ):
                         if ev["type"] == "handoff_requested":
-                            rows = messages_store.list(conv_id)
-                            already_tipped = any(
-                                m.get("content")
-                                in (
-                                    HANDOFF_REQUEST_CONFIRM,
-                                    handoff_request_idempotent_tip_text(),
-                                )
-                                for m in rows
-                                if m.get("role") == "assistant"
-                            )
-                            async for out in _emit_handoff_requested(
-                                conv_id, ev, first_request=not already_tipped
-                            ):
+                            async for out in _emit_handoff_requested(conv_id, ev):
                                 yield out
                             continue
                         if ev["type"] == "approval_required" and chatwoot is not None:
@@ -989,16 +967,7 @@ def create_app(
                         final = ev["data"].get("final")
                         final_message_id = ev["data"].get("message_id")
                     elif ev["type"] == "handoff_requested":
-                        rows = messages_store.list(conv_id)
-                        already_tipped = any(
-                            m.get("content")
-                            in (HANDOFF_REQUEST_CONFIRM, handoff_request_idempotent_tip_text())
-                            for m in rows
-                            if m.get("role") == "assistant"
-                        )
-                        async for _ in _emit_handoff_requested(
-                            conv_id, ev, first_request=not already_tipped
-                        ):
+                        async for _ in _emit_handoff_requested(conv_id, ev):
                             pass
                 # Message Store 始终落库；出站仅当发送前 conversation_mode 仍为 ai（handoff-spec §1.4）
                 # HighRisk confirm success uses the same cards as Mutation; failures stay plain bubbles.

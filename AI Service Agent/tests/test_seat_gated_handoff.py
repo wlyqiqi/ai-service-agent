@@ -18,6 +18,7 @@ from ai_service_agent.graph.workflows.copy import (
     handoff_form_cancelled_seat_note_text,
     handoff_joined_notice_text,
     handoff_request_confirm_text,
+    handoff_request_idempotent_tip_text,
     handoff_returned_to_bot_text,
 )
 from ai_service_agent.harness.chatwoot import ChatwootMappingStore
@@ -168,6 +169,42 @@ def test_detect_handoff_cancel_phrases():
     assert detect_handoff_cancel("取消转人工") is True
     assert detect_handoff_cancel("不用转人工了") is True
     assert detect_handoff_cancel("查订单") is False
+
+
+def test_handoff_requested_sse_carries_no_control_fields(tmp_path):
+    """created 是 Runtime 内部控制位，不得进入对外事件（event-spec §2 形状）。"""
+    cw = _fake_chatwoot()
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot=cw))
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+    handoff_events = [e for e in events if e["type"] == "handoff_requested"]
+    assert len(handoff_events) == 1
+    assert set(handoff_events[0]) == {"type", "data"}
+
+
+def test_chat_re_request_after_resolve_keeps_strong_confirm(tmp_path):
+    """Resolve 之后再申请是新申请：强确认 + 坐席 private note（handoff-spec §2）。"""
+    cw = _fake_chatwoot()
+    client = TestClient(create_app(str(tmp_path / "s.db"), model="fake", chatwoot=cw))
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
+        "".join(resp.iter_text())
+    conn = sqlite3.connect(str(tmp_path / "s.db"))
+    handoff_id = conn.execute(
+        "SELECT handoff_id FROM handoff_record WHERE conversation_id=? AND status=?",
+        (sid, STATUS_AWAITING),
+    ).fetchone()[0]
+    conn.close()
+    assert client.post(f"/handoffs/{handoff_id}/resolve").status_code == 200
+    cw.prompt_handoff_request.reset_mock()
+
+    with client.stream("POST", "/chat", json={"session_id": sid, "message": "我要转人工"}) as resp:
+        events = _parse_sse("".join(resp.iter_text()))
+    tips = [e["data"].get("text") for e in events if e["type"] == "token"]
+    assert tips == [handoff_request_confirm_text()]
+    assert cw.prompt_handoff_request.await_count == 1
 
 
 # --- Seam 2: Account Webhook ---
@@ -500,6 +537,80 @@ async def test_agent_bot_entry_request_hangs(tmp_path):
     assert handoff.get_awaiting(session["conversation_id"]) is not None
     cw.prompt_handoff_request.assert_awaited()
     conn.close()
+
+
+def _agentbot_prod_env(tmp_path, name="ab-prod.db"):
+    """AgentBot + 生产接线（`_agent_bot_callbacks_factory`），用于入口行为回归。"""
+    from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+    from ai_service_agent.harness.approvals import ApprovalService
+    from ai_service_agent.harness.server import _agent_bot_callbacks_factory
+
+    conn = sqlite3.connect(str(tmp_path / name))
+    status = ConversationStatusStore(conn)
+    handoff = HandoffService(conn, status)
+    mapping = ChatwootMappingStore(conn)
+    store = MessageStore(conn)
+    conv = status.create_session("u-ab")["conversation_id"]
+    mapping.put(conv, 42, contact_id=1)
+    cw = _fake_chatwoot()
+    callbacks = _agent_bot_callbacks_factory(handoff, ApprovalService(conn), cw, store)
+    counter = {"n": 9200}
+
+    async def send(text):
+        counter["n"] += 1
+        return await handle_agent_bot_message(
+            {
+                "event": "message_created",
+                "id": str(counter["n"]),
+                "content": text,
+                "message_type": "incoming",
+                "content_type": "text",
+                "conversation": {"id": 42},
+                "contact": {"id": 1, "identifier": "u-ab", "name": "ab"},
+            },
+            cw,
+            status=status,
+            messages_store=store,
+            mapping=mapping,
+            handoff=handoff,
+            callbacks_factory=callbacks,
+        )
+
+    return SimpleNamespace(
+        conn=conn, handoff=handoff, store=store, cw=cw, conv=conv, send=send
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_re_request_after_resolve_prompts_seat_again(tmp_path):
+    """Resolve 之后再申请是新申请：强确认 + 坐席 private note（A 修复的主 bug）。"""
+    env = _agentbot_prod_env(tmp_path)
+    await env.send("我要转人工")
+    assert env.store.list(env.conv)[-1]["content"] == handoff_request_confirm_text()
+    assert env.cw.prompt_handoff_request.await_count == 1
+
+    env.handoff.resolve_handoff(env.handoff.get_awaiting(env.conv)["handoff_id"])
+    env.cw.prompt_handoff_request.reset_mock()
+
+    await env.send("我要转人工")
+    assert env.store.list(env.conv)[-1]["content"] == handoff_request_confirm_text()
+    assert env.cw.prompt_handoff_request.await_count == 1
+    env.conn.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_re_request_after_cancel_prompts_seat_again(tmp_path):
+    """Cancel 之后再申请同样不得被历史 tip 误判为重复。"""
+    env = _agentbot_prod_env(tmp_path, "ab-cancel.db")
+    await env.send("我要转人工")
+    await env.send("取消转人工")
+    assert env.handoff.get_awaiting(env.conv) is None
+    env.cw.prompt_handoff_request.reset_mock()
+
+    await env.send("我要转人工")
+    assert env.store.list(env.conv)[-1]["content"] == handoff_request_confirm_text()
+    assert env.cw.prompt_handoff_request.await_count == 1
+    env.conn.close()
 
 
 @pytest.mark.asyncio

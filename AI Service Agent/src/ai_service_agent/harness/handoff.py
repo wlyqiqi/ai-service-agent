@@ -5,6 +5,7 @@ from typing import Callable
 from ai_service_agent.graph.workflows.copy import (
     handoff_joined_notice_text,
     handoff_request_confirm_text,
+    handoff_request_idempotent_tip_text,
 )
 from ai_service_agent.harness.session import ConversationStatusStore
 
@@ -18,6 +19,18 @@ STATUS_AWAITING = "awaiting_seat"
 STATUS_ACTIVE = "active"
 STATUS_RESOLVED = "resolved"
 STATUS_CANCELLED = "cancelled"
+
+
+def handoff_request_tip(*, created: bool) -> str:
+    """Handoff Request 的唯一 tip 策略（handoff-spec.md §2 / §2.1）。
+
+    ``created`` 由 :meth:`HandoffService.request_handoff` 给出，是「这次申请是不是
+    新的」的唯一判据——不扫 Message Store 历史（历史里有旧 tip 不代表这次是重复）。
+
+    - ``True``：本次新建挂起 → 强确认 + 坐席 private note + label。
+    - ``False``：挂起期间重复申请 → 仅幂等短 tip，不再打扰坐席。
+    """
+    return HANDOFF_REQUEST_CONFIRM if created else handoff_request_idempotent_tip_text()
 
 
 SCHEMA = """
@@ -197,16 +210,25 @@ class HandoffService:
         return self._row_to_rec(row)
 
     def request_handoff(self, conversation_id: str, reason: str, summary: str) -> dict:
-        """入口/图外层统一申请：幂等复用 awaiting → 返回 handoff_requested（mode 仍 ai）。"""
+        """入口/图外层统一申请：幂等复用 awaiting → 返回 handoff_requested（mode 仍 ai）。
+
+        返回值多带一个 **顶层** ``created`` 控制字段（不是事件 data 的一部分）：
+
+        - ``created=True``：本次新建挂起记录（此前无 awaiting / active）。
+        - ``created=False``：复用已有 awaiting / active，本次没有新记录。
+
+        调用方只允许用 ``created`` 决定 tip 与坐席提示（``handoff_request_tip``）；
+        该字段属于 Runtime 内部控制位，不得进入对外 SSE 事件（由 harness 出口剥除）。
+        """
         awaiting = self.get_awaiting(conversation_id)
         if awaiting is not None:
-            return {"type": "handoff_requested", "data": awaiting}
+            return {"type": "handoff_requested", "data": awaiting, "created": False}
         active = self.get_active(conversation_id)
         if active is not None:
             # Already in human lane via Takeover — idempotent tip, no new record.
-            return {"type": "handoff_requested", "data": active}
+            return {"type": "handoff_requested", "data": active, "created": False}
         rec = self.create_handoff_request(conversation_id, reason, summary)
-        return {"type": "handoff_requested", "data": rec}
+        return {"type": "handoff_requested", "data": rec, "created": True}
 
     def make_interrupt_callback(self, conversation_id: str) -> Callable:
         """包装 on_interrupt：handoff_request → 同一挂起门控 + handoff_requested。"""

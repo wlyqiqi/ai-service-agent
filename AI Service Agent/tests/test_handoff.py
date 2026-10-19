@@ -101,3 +101,40 @@ def test_cancel_handoff_request(tmp_path):
     assert svc.get_awaiting(info["conversation_id"]) is None
     assert status.get_mode(info["conversation_id"]) == "ai"
     conn.close()
+
+
+def test_request_handoff_created_flag_tracks_record_lifecycle(tmp_path):
+    """created 是 tip 策略唯一判据：只有「新建挂起」为 True。
+
+    Resolve / Cancel 之后再申请属于**新申请**，必须回到 True（此前靠扫 Message Store
+    历史 tip 判定，会把新申请误判成重复，导致坐席收不到 private note）。
+    """
+    svc, status, conn = _svc(tmp_path)
+    conv = status.create_session("u1")["conversation_id"]
+
+    first = svc.request_handoff(conv, "r1", "s1")
+    repeat = svc.request_handoff(conv, "r2", "s2")
+    assert first["created"] is True
+    assert repeat["created"] is False
+    assert first["data"]["handoff_id"] == repeat["data"]["handoff_id"]
+
+    svc.resolve_handoff(first["data"]["handoff_id"])
+    after_resolve = svc.request_handoff(conv, "r3", "s3")
+    assert after_resolve["created"] is True
+    assert after_resolve["data"]["handoff_id"] != first["data"]["handoff_id"]
+
+    svc.cancel_handoff_request(conv)
+    after_cancel = svc.request_handoff(conv, "r4", "s4")
+    assert after_cancel["created"] is True
+    conn.close()
+
+
+def test_handoff_request_tip_follows_created_only():
+    from ai_service_agent.graph.workflows.copy import (
+        handoff_request_confirm_text,
+        handoff_request_idempotent_tip_text,
+    )
+    from ai_service_agent.harness.handoff import handoff_request_tip
+
+    assert handoff_request_tip(created=True) == handoff_request_confirm_text()
+    assert handoff_request_tip(created=False) == handoff_request_idempotent_tip_text()
