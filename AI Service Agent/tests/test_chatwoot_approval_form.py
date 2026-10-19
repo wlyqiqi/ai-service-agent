@@ -32,7 +32,7 @@ from ai_service_agent.testing import ApprovalFlowFakeModel
 
 SEAT_SECRET = "test-seat-approval-secret"
 WEBHOOK_SECRET = "cw-webhook-sec"
-TS = str(int(time.time()))
+# 每个请求用新鲜时间戳：签名有 300s 重放窗口，模块级 TS 在长跑全量时会过期（401）。
 _ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -67,10 +67,12 @@ def isolated_mock_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server_module, "get_settings", lambda: _S(real_server_settings))
 
 
-def _sig(payload: bytes, secret: str = WEBHOOK_SECRET) -> str:
-    return "sha256=" + hmac.new(
-        secret.encode(), TS.encode() + b"." + payload, hashlib.sha256
+def _signed_headers(payload: bytes, secret: str = WEBHOOK_SECRET) -> dict[str, str]:
+    ts = str(int(time.time()))
+    signature = "sha256=" + hmac.new(
+        secret.encode(), ts.encode() + b"." + payload, hashlib.sha256
     ).hexdigest()
+    return {"X-Chatwoot-Signature": signature, "X-Chatwoot-Timestamp": ts}
 
 
 def _pending_with_mapping(tmp_path, *, cw_conv_id: int = 555) -> tuple[TestClient, str, str, str, object]:
@@ -191,7 +193,7 @@ def test_chatwoot_seat_form_approve_sets_decided_by_seat_id(tmp_path):
     r = client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
     assert r.status_code == 200
     rec = ApprovalService(sqlite3.connect(db)).get(approval_id)
@@ -224,7 +226,7 @@ def test_chatwoot_seat_form_reject_with_note(tmp_path):
     r = client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
     assert r.status_code == 200
     rec = ApprovalService(sqlite3.connect(db)).get(approval_id)
@@ -263,7 +265,7 @@ def test_chatwoot_public_or_contact_approval_form_cannot_decide(tmp_path):
         r = client.post(
             "/webhooks/chatwoot",
             content=raw,
-            headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+            headers=_signed_headers(raw),
         )
         assert r.status_code == 200
     assert ApprovalService(sqlite3.connect(db)).get(approval_id)["status"] == "pending"
@@ -357,7 +359,7 @@ def test_chatwoot_seat_approve_while_human_mode_no_outbound(tmp_path):
     r = client.post(
         "/webhooks/chatwoot",
         content=raw,
-        headers={"X-Chatwoot-Signature": _sig(raw), "X-Chatwoot-Timestamp": TS},
+        headers=_signed_headers(raw),
     )
     assert r.status_code == 200
     assert ApprovalService(sqlite3.connect(db)).get(approval_id)["status"] == "approved"
