@@ -34,11 +34,13 @@ from ai_service_agent.harness.approvals import (
     ApprovalService,
 )
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
-from ai_service_agent.harness.agent_bot import (
-    WriteSuccessCapture,
-    handle_agent_bot_message,
+from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.harness.approval_side_channel import (
     parse_approval_form_submission,
     send_approval_form,
+)
+from ai_service_agent.harness.mutation_projection import (
+    WriteSuccessCapture,
     send_mutation_success_card,
 )
 from ai_service_agent.harness.chatwoot import (

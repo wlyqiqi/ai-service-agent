@@ -10,7 +10,7 @@ from ai_service_agent.graph.workflows.copy import (
     format_success_card_description,
     update_address_success_followup_text,
 )
-from ai_service_agent.harness.agent_bot import mutation_success_card_items
+from ai_service_agent.harness.mutation_projection import mutation_success_card_items
 
 
 def _description(tool: str, args: dict | None = None, result: dict | None = None) -> str:

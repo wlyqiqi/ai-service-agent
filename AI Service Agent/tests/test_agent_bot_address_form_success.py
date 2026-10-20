@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_service_agent.harness.agent_bot import (
-    handle_agent_bot_message,
+from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.harness.mutation_projection import (
     send_mutation_success_card,
     update_address_success_card_items,
 )

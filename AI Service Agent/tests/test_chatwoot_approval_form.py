@@ -110,7 +110,7 @@ def _pending_with_mapping(tmp_path, *, cw_conv_id: int = 555) -> tuple[TestClien
 
 
 def test_approval_form_items_include_summary_decision_and_approval_id():
-    from ai_service_agent.harness.agent_bot import (
+    from ai_service_agent.harness.approval_side_channel import (
         approval_form_items_from_payload,
         approval_form_title_from_payload,
     )
@@ -135,7 +135,7 @@ def test_approval_form_items_include_summary_decision_and_approval_id():
 
 @pytest.mark.asyncio
 async def test_send_approval_form_is_private_interactive(tmp_path):
-    from ai_service_agent.harness.agent_bot import send_approval_form
+    from ai_service_agent.harness.approval_side_channel import send_approval_form
 
     chatwoot = AsyncMock()
     await send_approval_form(
@@ -276,10 +276,8 @@ def test_chatwoot_public_or_contact_approval_form_cannot_decide(tmp_path):
 @pytest.mark.asyncio
 async def test_agent_bot_contact_approval_form_submit_does_not_decide(tmp_path):
     """Customer Widget path must not self-approve via form submit (Approval SoD)."""
-    from ai_service_agent.harness.agent_bot import (
-        handle_agent_bot_message,
-        parse_approval_form_submission,
-    )
+    from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+    from ai_service_agent.harness.approval_side_channel import parse_approval_form_submission
     from ai_service_agent.harness.approvals import ApprovalService
     from ai_service_agent.harness.session import ConversationStatusStore
 
