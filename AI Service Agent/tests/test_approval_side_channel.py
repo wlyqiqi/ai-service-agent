@@ -417,3 +417,42 @@ async def test_seat_form_badge_failure_is_not_swallowed():
         await channel.decide_from_seat_form(
             _seat_form(sender=0), conversation_for=lambda _id: "c1"
         )
+
+
+@pytest.mark.asyncio
+async def test_follow_on_approval_is_projected_to_seat_form():
+    """approval-spec §3.2.2：resume 后再次中断不得静默——必须推新坐席表单。"""
+    store = _store()
+    _insert(store)
+    chatwoot = AsyncMock()
+    events = [
+        {
+            "type": "approval_required",
+            "data": {"approval_id": "A-2", "summary": "第二张单", "expires_at": "2099-01-01T00:00:00+00:00"},
+        },
+        {"type": "done", "data": {"final": None, "message_id": None}},
+    ]
+    channel = _channel(store=store, events=events, chatwoot=chatwoot)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+
+    chatwoot.send_interactive_message.assert_awaited_once()
+    args, kwargs = chatwoot.send_interactive_message.call_args
+    assert args[2] == "form"
+    assert "A-2" in args[1]
+    assert kwargs.get("private") is True
+
+
+@pytest.mark.asyncio
+async def test_follow_on_approval_without_chatwoot_is_silent_not_fatal():
+    store = _store()
+    _insert(store)
+    events = [
+        {"type": "approval_required", "data": {"approval_id": "A-2", "summary": "s", "expires_at": ""}},
+        {"type": "done", "data": {"final": "ok", "message_id": "m4"}},
+    ]
+    channel = _channel(store=store, events=events, chatwoot=None)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+
+    assert channel._messages.rows[0][2] == "ok"

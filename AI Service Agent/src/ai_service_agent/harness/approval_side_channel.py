@@ -371,6 +371,9 @@ class ApprovalSideChannel:
             if event["type"] == "done":
                 final = event["data"].get("final")
                 message_id = event["data"].get("message_id")
+            elif event["type"] == "approval_required":
+                # follow-on 审批同样要投影坐席表单（approval-spec §3.2.2：不得静默）。
+                await self.project(conversation_id, event.get("data") or {})
             elif event["type"] == "handoff_requested" and self._on_handoff_requested is not None:
                 await self._on_handoff_requested(conversation_id, event)
         return write_success.spec(), final, message_id

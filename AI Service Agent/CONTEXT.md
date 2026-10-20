@@ -77,8 +77,8 @@ _Avoid_: 客户 JWT 自批；用字面量 `"approver"` 冒充身份；在鉴权�
 _Avoid_: 申请人自批；用「有审批能力」绕过身份分离
 
 **Approval Side-Channel**:
-HighRisk 审批在坐席端旁路完成（表单/卡片 → Runtime）；不因此把 `conversation_mode` 切为 `human`。Handoff 仍是会话接管，与审批 gate 分离。坐席决策后立即图 resume + Message Store；出站消息仍受 `conversation_mode==ai` 门控。
-_Avoid_: 进入审批必须先转人工；坐席聊天接管等同于审批通过；human 期间批准却跳过出站门控直接推给用户
+HighRisk 审批在坐席端旁路完成（表单/卡片 → Runtime）；不因此把 `conversation_mode` 切为 `human`。Handoff 仍是会话接管，与审批 gate 分离。坐席决策后立即图 resume + Message Store；出站消息仍受 `conversation_mode==ai` 门控。执行链唯一归属 `harness/approval_side_channel.py`（投影 → 解析 → 工牌/SoD → `mark_decided` → resume → 落库/门控出站），Transport 只提供工牌头解析与图调用；门控纯函数在 `harness/outbound_gate.decide_delivery`。
+_Avoid_: 进入审批必须先转人工；坐席聊天接管等同于审批通过；human 期间批准却跳过出站门控直接推给用户；把工牌 / resume / 出站门控各写一份在 Transport 里
 
 **Conversation Mode**:
 会话车道两态：`ai`（进 Graph）与 `human`（人工车道，不跑 Graph）。与 Chatwoot 会话 status、handoff 申请挂起不是同一概念。Seat-gated 决策见 `docs/adr/0003-seat-gated-handoff.md`；生命周期权威 `docs/specs/handoff-spec.md`。
