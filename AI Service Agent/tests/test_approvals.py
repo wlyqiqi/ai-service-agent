@@ -23,6 +23,7 @@ from ai_service_agent.harness.approvals import (
     ApprovalNotFound,
     ApprovalService,
 )
+from ai_service_agent.harness.approval_side_channel import make_approval_interrupt_callback
 import importlib.util
 import pytest
 from pathlib import Path
@@ -140,7 +141,7 @@ def test_pending_for_conversation_and_list(tmp_path):
 
 def test_interrupt_callback_persists_and_emits(tmp_path):
     svc, conn = _svc(tmp_path)
-    cb = svc.make_interrupt_callback("c1", "t1")
+    cb = make_approval_interrupt_callback(svc, "c1", "t1")
     ev = asyncio.run(cb({"type": "approval_required", "approval_id": "A-9", "summary": "s",
                          "expires_at": "2099-01-01T00:00:00+00:00", "requester_user_id": "u1"}))
     assert ev["type"] == "approval_required"
@@ -150,7 +151,7 @@ def test_interrupt_callback_persists_and_emits(tmp_path):
 
 def test_interrupt_callback_simulate_approval_marks_approved(tmp_path):
     svc, conn = _svc(tmp_path, simulate_approval=True)
-    cb = svc.make_interrupt_callback("c1", "t1")
+    cb = make_approval_interrupt_callback(svc, "c1", "t1")
     asyncio.run(cb({"type": "approval_required", "approval_id": "A-10", "summary": "s",
                     "expires_at": "2099-01-01T00:00:00+00:00", "requester_user_id": "u1"}))
     assert svc.get("A-10")["status"] == "approved"

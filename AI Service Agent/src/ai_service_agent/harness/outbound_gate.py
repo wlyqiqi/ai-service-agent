@@ -1,7 +1,7 @@
 """AI 回复 / 审批结果的「落库 + 出站」门控（唯一实现）。
 
 此前三处各写一份：``server.py`` 的 ``/chat``、``agent_bot.py`` 的 AgentBot 出口、
-``server.py`` 的 ``_approval_resume``。三份副本已经产生可观测分歧：同一笔审批，
+审批 resume（现属 ``approval_side_channel.py``）。三份副本已经产生可观测分歧：同一笔审批，
 ``human`` 期间落库的是长 ``done.final``，``ai`` 期间落库的是短 followup。
 
 差异的真实来源不是「policy」，而是**谁拥有这一轮**：
