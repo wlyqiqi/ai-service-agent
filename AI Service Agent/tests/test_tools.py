@@ -97,6 +97,28 @@ def test_tool_meta_carries_schema_field():
     assert meta2.idempotent is True
 
 
+def _docstring_first_sentence(text: str) -> str:
+    head, sep, _rest = text.strip().partition("。")
+    assert sep == "。"
+    return head + sep
+
+
+def test_registry_descriptions_match_docstring_first_sentence():
+    """11 个工具的 ToolMeta.description 等于 @tool docstring 第一句。"""
+    reg = make_tool_registry(MagicMock())
+    tools = reg.for_risk_level("high_risk")
+    assert {t.name for t in tools} == {
+        "kb_search", "order_lookup", "my_orders", "shipment_query",
+        "update_address", "update_phone", "update_order_note",
+        "create_invoice", "create_service_ticket",
+        "cancel_order", "refund_apply",
+    }
+    for tool in tools:
+        meta = reg.meta_for(tool.name)
+        assert meta is not None
+        assert meta.description == _docstring_first_sentence(tool.description)
+
+
 def test_write_tools_not_logged_in():
     result = update_address.invoke({"order_id": "ORD-REFUND-1", "address": "北京市朝阳区", "request_id": "rq-1"})
     assert result == {"error": "not_logged_in"}
