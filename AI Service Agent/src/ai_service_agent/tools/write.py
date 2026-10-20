@@ -136,7 +136,9 @@ def update_address(
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """修改本人订单关联收货地址（mutation，幂等；订单状态由安全预检裁决）。"""
+    """修改本人订单关联的收货地址。
+    参数：order_id、address（必填）。
+    """
     def _produce(conn: sqlite3.Connection) -> dict:
         boundary = _own_order(conn, order_id, user_id)
         if boundary is not None:
@@ -157,7 +159,9 @@ def update_phone(
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """修改登录用户联系电话（mutation，幂等）。"""
+    """修改登录用户的联系电话。
+    参数：phone（必填）。
+    """
     def _produce(conn: sqlite3.Connection) -> dict:
         exists = conn.execute(
             "SELECT 1 FROM customers WHERE customer_id=?", (user_id,)
@@ -176,7 +180,9 @@ def update_order_note(
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """修改本人订单备注（mutation，幂等）。"""
+    """修改本人订单备注。
+    参数：order_id、note（必填）。
+    """
     def _produce(conn: sqlite3.Connection) -> dict:
         boundary = _own_order(conn, order_id, user_id)
         if boundary is not None:
@@ -195,7 +201,9 @@ def create_invoice(
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """为本人订单开具发票（mutation，幂等；金额上限由安全预检裁决）。"""
+    """为本人订单开具发票。
+    参数：order_id、amount、company、tax_no（必填）。
+    """
     def _produce() -> dict:
         return {"field": "create_invoice", "order_id": order_id, "amount": amount, "company": company, "tax_no": tax_no}
     def _produce_db(conn: sqlite3.Connection) -> dict:
@@ -219,7 +227,9 @@ def create_service_ticket(
     request_id: str = "",
     user_id: Annotated[str, InjectedState("user_id")] = "",
 ) -> dict:
-    """为本人订单创建售后工单（mutation，幂等；会话关联留待 handoff 集成）。"""
+    """为本人订单创建售后工单。需退款走 refund_apply。
+    参数：order_id、reason（必填）。
+    """
     def _produce(conn: sqlite3.Connection) -> dict:
         boundary = _own_order(conn, order_id, user_id)
         if boundary is not None:
@@ -243,7 +253,9 @@ def make_cancel_order_tool(order_repository):
         request_id: str = "",
         user_id: Annotated[str, InjectedState("user_id")] = "",
     ) -> dict:
-        """取消本人订单（high_risk，需人工审批；仅 paid -> cancelled）。"""
+        """取消本人订单；需人工审批。
+        参数：order_id（必填）；reason 可选。
+        """
         return order_repository.cancel_order(order_id, user_id, reason, request_id)
 
     return cancel_order
@@ -259,7 +271,9 @@ def make_refund_apply_tool(order_repository):
         request_id: str = "",
         user_id: Annotated[str, InjectedState("user_id")] = "",
     ) -> dict:
-        """退款申请（high_risk；需人工审批；paid/7 日内 signed -> refunding）。"""
+        """申请订单退款；需人工审批。售后咨询用 create_service_ticket。
+        参数：order_id（必填）；amount、reason 可选。
+        """
         return order_repository.refund_apply(order_id, user_id, amount, reason, request_id)
 
     return refund_apply

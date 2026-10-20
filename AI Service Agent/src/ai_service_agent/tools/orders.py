@@ -290,8 +290,10 @@ def lookup_order_state(order_id: str) -> dict | None:
 
 @tool
 def order_lookup(order_id: str, user_id: Annotated[str, InjectedState("user_id")]) -> dict:
-    """订单查询（D4 属主校验）：仅返回本人订单；越权返回 data_boundary（safety-spec §1.4，
-    数据边界由工具自身保证，ReadGraph 不增加 precheck）。数据源 = 模拟电商库优先，夹具兜底。"""
+    """查询指定订单号的订单详情。仅返回当前登录用户本人的订单。
+    用户要查某一笔订单状态/金额等信息时使用；若只需罗列多笔订单用 my_orders，查物流用 shipment_query。
+    参数：order_id（必填）。
+    """
     rec = _db_order_record(order_id) or ORDER_STORE.get(order_id)
     if rec is None:
         return {"error": "not_found", "order_id": order_id}
@@ -307,11 +309,9 @@ def my_orders(
     *,
     user_id: Annotated[str, InjectedState("user_id")],
 ) -> dict:
-    """我的订单列表（read，只读）：查询当前登录用户名下最近 10 笔订单，无需提供订单号。
-
-    当用户询问「我的订单」「我买过什么」「退款单进度」等需要罗列本人订单时调用。
-    status 可选：paid/shipped/delivered/completed/refunding/refunded/cancelled。
-    只返回登录用户本人的订单；数据源不可用返回 data_source_unavailable。
+    """罗列当前登录用户名下的订单。
+    用户要看「我的订单」列表时使用；查某一笔详情用 order_lookup，查物流用 shipment_query。
+    参数：status 可选（paid/shipped/delivered/completed/refunding/refunded/cancelled）。
     """
     if not user_id:
         return {"error": "not_logged_in"}
@@ -357,11 +357,9 @@ def shipment_query(
     *,
     user_id: Annotated[str, InjectedState("user_id")],
 ) -> dict:
-    """物流查询（read，只读）：查询当前登录用户订单的物流信息，无需提供账号或订单号。
-
-    当用户询问「我的快递到哪了」「什么时候送到」等物流问题时调用。
-    order_id 可选：提供则精确查询该单物流（仅限本人订单）；缺省则优先返回在途订单物流（最多 5 条）。
-    越权/不存在的订单号返回 not_found 或 data_boundary；数据源不可用返回 data_source_unavailable。
+    """查询当前登录用户订单的物流信息。
+    用户问快递进度/送达时间时使用；查订单详情用 order_lookup，罗列订单用 my_orders。
+    参数：order_id 可选（缺省查本人在途物流）。
     """
     if not user_id:
         return {"error": "not_logged_in"}
