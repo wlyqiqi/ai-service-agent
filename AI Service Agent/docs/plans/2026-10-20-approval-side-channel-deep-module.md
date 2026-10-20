@@ -270,6 +270,13 @@ Phase 1 与 Phase 2 之间留一次全量回归：把「搬移错误」与「门
 
 - 2026-10-20：问题已核实；计划待评审，**未改代码**。
 - 2026-10-20：D1-D4 全部按建议拍板（见 §7）。
+- 2026-10-20：**PR1 已实现**（分支 `refactor/approval-side-channel`，commit `3e7213fc`）：
+  - 新增 `harness/approval_side_channel.py`（投影 + 解析）与 `harness/mutation_projection.py`（`WriteSuccessCapture` + 成功卡片）；
+  - `agent_bot.py` 净减 ~170 行，只保留 Widget 提交守卫；
+  - 附带修复：审批决定项 `options` 由 `dict()` 浅拷贝改为每次新建（原实现跨调用共享列表）；
+  - 新增 `tests/test_approval_side_channel.py`（10 例纯单测）；
+  - 全量 `pytest tests --ignore=tests/evals` = **808 passed / 2 skipped**。
+  - 待做：PR2（T2+T3，唯一行为变更）。
 
 ---
 
