@@ -64,6 +64,8 @@
 - **出站 mode 门控**：approve/reject 后立即图 resume + Message Store；向 Chatwoot/Widget **出站**前重读 `conversation_mode`，仅 `ai` 可发送（`handoff-spec` §1.4）。`human` 期间仍可坐席决策。
 - **`on_interrupt` / callbacks**：审批 resume **不得**裸 `ainvoke` 以致后续 `approval_required` / `handoff_request` 静默；须挂接与 chat 路径同级的 interrupt 回调（落库 / 建 handoff 等）。
 
+**实现归属（ADR-0002 收敛后）**：执行链唯一归属 `src/ai_service_agent/harness/approval_side_channel.py`（`ApprovalSideChannel`：工牌 → 预检 → `mark_decided` → resume → Message Store / 门控出站；follow-on `approval_required` 在同一事件循环内投影坐席表单）。门控纯函数在 `harness/outbound_gate.decide_delivery`（`TurnOrigin.SEAT_DECISION`：落库不受 mode 影响，仅出站受门控）。Transport（`server.py`）只提供工牌头解析、`resume_runner`、与 `/chat` 共用的 thread lock、interrupt 回调与 Chatwoot 会话映射。
+
 ### 3.3 恢复入口（殊途同归）
 
 - **resume schema 唯一（`graph-spec.md` §3）**：`Command(resume= { "action": "approve" | "reject" | "confirm" | "cancel" | "handoff_resumed", "note"?: str } | { "result": "expired" })`。`handoff_resumed` 于 P1 加入（handoff 中断的主动恢复），与审批 / 用户确认 / 超时**共用同一 schema，不设游离分支**。

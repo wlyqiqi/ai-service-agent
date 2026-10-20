@@ -30,3 +30,17 @@ Treat as one authz slice plus resume seams—not only `_ensure_approval_owner`:
 2. **`decided_by=seat:{sender.id}`** — stop hardcoding `"approver"`; reserved `system` / `simulate` unchanged.
 3. **Approval resume 出站 mode 门控** — before Chatwoot/Widget send after `_approval_resume`, re-read `conversation_mode==ai` (`handoff-spec` §1.4).
 4. **Approval resume `on_interrupt` / callbacks** — `_approval_resume` must not bare-`ainvoke` without the handoff/approval interrupt callback path; a follow-on `approval_required` / `handoff_request` must not be silent.
+
+### 落地位置（2026-10-20 收敛后）
+
+侧信道执行链已归位到 `src/ai_service_agent/harness/approval_side_channel.py`（`ApprovalSideChannel`）；`server.create_app` 不再持有审批决策闭包。
+
+| # | 落点 | 说明 |
+|---|---|---|
+| 1 | `ApprovalSideChannel.authenticate` + `server._seat_actor` / `_seat_http` | 工牌 fail-closed（无 secret / 口令错 / 缺 actor → 403）；客户 GET 归属过滤仍留 Transport（客户身份鉴权，非侧信道） |
+| 2 | `SeatActor.decided_by` | 唯一实现 `seat:{actor_id}`，不再散落 f-string |
+| 3 | `harness/outbound_gate.decide_delivery` + `ApprovalSideChannel._deliver` | 单点门控；`TurnOrigin.SEAT_DECISION` = 落库不受 mode 影响、仅出站受门控 |
+| 4 | `ApprovalSideChannel._run`（`_interrupt_callbacks` 注入） | follow-on `approval_required` 投影坐席表单、`handoff_request` 走注入回调，均不静默 |
+
+`ApprovalService` 保持浅存储（`approval-spec §3.1`）：`make_interrupt_callback` 已迁出为 `make_approval_interrupt_callback`。
+

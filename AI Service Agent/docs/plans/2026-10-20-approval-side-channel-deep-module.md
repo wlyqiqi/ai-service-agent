@@ -1,7 +1,7 @@
 # Approval Side-Channel 深模块：把 ADR-0002 清单收进一个接缝
 
 - 日期：2026-10-20
-- 状态：待评审（未改代码）
+- 状态：已实现（4 个 PR：#96 / #97 / #98 / 本分支；实现记录见 §10）
 - 相关：ADR-0002、`approval-spec.md` §3.2.1 / §3.2.2 / §5、`CONTEXT.md`（Seat Approver / Approval SoD / Approval Side-Channel）
 - 同型先例：`docs/plans/2026-10-19-form-gate-deep-module.md`（form_gate 已收敛，approval 是剩余 outlier）
 
@@ -307,6 +307,11 @@ Phase 1 与 Phase 2 之间留一次全量回归：把「搬移错误」与「门
   - 模块自有异常 + `server._seat_http` 映射 403/404/409/410；
   - 纯单测 30 例（`tests/test_approval_side_channel.py`），全量 0 FAILED。
   - 待做：PR4（T5+T7）。
+- 2026-10-20：**PR4 已实现**（分支 `fix/approval-follow-on-projection`）：
+  - `ApprovalSideChannel._run` 对 follow-on `approval_required` 调用 `project()`，补 `approval-spec §3.2.2`「不得静默」缺口（D2=A）；无 Chatwoot 时静默跳过不致命；
+  - 单测 30 → 32 例（投影形状 `content_type=form` + `private=True`；无 Chatwoot 分支）；
+  - 文档同步：`approval-spec §3.2.2` 实现归属段、ADR-0002 checklist 逐项落点表、`CONTEXT.md` Approval Side-Channel 条目（含新 `_Avoid_`）。
+- 状态：**已实现**（4 个 PR 全部完成）。
 
 ---
 
