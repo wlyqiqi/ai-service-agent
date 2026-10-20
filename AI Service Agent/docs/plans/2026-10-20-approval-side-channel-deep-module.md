@@ -299,6 +299,14 @@ Phase 1 与 Phase 2 之间留一次全量回归：把「搬移错误」与「门
   - 新增 `tests/test_outbound_gate.py`（13 例）；
   - 全量 `pytest tests --ignore=tests/evals`：0 FAILED（820+ passed）。
   - 待做：PR3（T4，执行链归位）。
+- 2026-10-20：**PR3 已实现**（分支 `refactor/approval-execution-chain`）：
+  - `ApprovalSideChannel` 接管 工牌 → 预检 → mark_decided → resume → 落库/门控出站；
+  - 注入 `resume_runner` / `lock_factory`（与 `/chat` 同一把 thread lock）/ `interrupt_callbacks` / `on_handoff_requested`，模块不建图、不 import FastAPI；
+  - `approvals.py` 回到纯 CRUD（149 行，`make_interrupt_callback` 迁出）；
+  - `server.py` 审批相关代码 250 → 66 行（`grep -c approval`）；
+  - 模块自有异常 + `server._seat_http` 映射 403/404/409/410；
+  - 纯单测 30 例（`tests/test_approval_side_channel.py`），全量 0 FAILED。
+  - 待做：PR4（T5+T7）。
 
 ---
 
@@ -376,6 +384,8 @@ pytest tests/test_approval_resume_gates.py tests/test_agent_bot.py -q
 - `approvals.py`：`make_interrupt_callback` 移入模块（D3=A），文件回到纯 CRUD。
 - `server.py`：新增 `_resume_runner` 闭包（`AsyncSqliteSaver` + `make_ai_graph` + `event_stream`，约 10 行），构造 `ApprovalSideChannel(...)`；端点变 3 行。
 - 补 `tests/test_approval_side_channel.py`：工牌 fail-closed 3 例、`decided_by=seat:{id}`、并发双 approve 只 1 次 resume（fake runner 计数）。
+
+> 实现备注（2026-10-20）：`_ensure_approval_owner` / `_approval_read_access` **未迁入**——它们是客户 JWT 的只读归属过滤，属客户身份鉴权而非坐席侧信道，留在 Transport。模块通过自有异常（`SeatAuthError` / `ApprovalMissing` / `ApprovalProcessed` / `ApprovalExpiredError`）与 HTTP 解耦，由 `server._seat_http` 映射 403/404/409/410。
 
 **验收**
 ```bash
