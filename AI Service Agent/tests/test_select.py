@@ -153,6 +153,41 @@ def test_select_system_template_service_ticket_vs_refund_boundary():
     assert "退货" in model.seen_system
 
 
+def test_select_json_tool_list_uses_short_meta_description():
+    """JSON Select 的允许工具列表只用 ToolMeta 短描述 + schema 参数契约。"""
+    model, node = _select_node()
+    _select_result(node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}}))
+    assert "- update_address: 修改本人订单关联的收货地址。" in model.seen_system
+    assert "- create_service_ticket: 为本人订单创建售后工单。" in model.seen_system
+    assert "参数：order_id(必填)，address(必填)" in model.seen_system
+    assert "参数：order_id、address（必填）。" not in model.seen_system
+    assert "需退款走 refund_apply" not in model.seen_system
+
+
+def test_select_bindtools_system_states_ticket_versus_refund_boundary():
+    """真模型 Select 的系统提示与 JSON 模板规则 6 等价：工单跟进 ≠ 资金退回。"""
+    bound_model = AsyncMock()
+    bound_model.ainvoke.return_value = AIMessage(
+        content="",
+        tool_calls=[{"name": "update_phone", "args": {"phone": "13800138000"}, "id": "call_1"}],
+    )
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+    node, tool = _real_model_node(model)
+    _select_result(node({
+        "messages": [HumanMessage(content="把手机号改成13800138000")],
+        "user_id": "u1",
+        "context": {},
+    }))
+
+    assert model.bind_tools.call_args == call([tool], tool_choice="any")
+    system = bound_model.ainvoke.await_args.args[0][0].content
+    assert "create_service_ticket" in system
+    assert "refund_apply" in system
+    assert "核心诉求是售后处理，选 create_service_ticket，不要因「退货」改选 refund_apply" in system
+    assert "只有用户明确说出退款金额或「退钱」「退款」时，才选 refund_apply" in system
+
+
 def test_select_real_model_uses_bind_tools():
     bound_model = AsyncMock()
     bound_model.ainvoke.return_value = AIMessage(

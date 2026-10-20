@@ -211,8 +211,9 @@ def make_select_node(
     tier_allowed = {t.name for t in tier_tools}
     lines_by_name = {}
     for t in tier_tools:
-        line = f"- {t.name}: {t.description}"
-        contract = _describe_args_schema(registry.meta_for(t.name))
+        meta = registry.meta_for(t.name)
+        line = f"- {t.name}: {meta.description}"
+        contract = _describe_args_schema(meta)
         if contract:
             line += f"\n  参数：{contract}"
         lines_by_name[t.name] = line
