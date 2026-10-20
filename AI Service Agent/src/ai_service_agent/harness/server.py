@@ -27,21 +27,18 @@ from ai_service_agent.graph.workflows.copy import (
     handoff_returned_to_bot_text,
     human_service_header_text,
 )
-from ai_service_agent.harness.approvals import (
-    ApprovalAlreadyProcessed,
-    ApprovalExpired,
-    ApprovalNotFound,
-    ApprovalService,
-)
+from ai_service_agent.harness.approvals import ApprovalService
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
 from ai_service_agent.harness.agent_bot import handle_agent_bot_message
 from ai_service_agent.harness.approval_side_channel import (
-    parse_approval_form_submission,
+    ApprovalExpiredError,
+    ApprovalMissing,
+    ApprovalProcessed,
+    ApprovalSideChannel,
+    SeatAction,
+    SeatAuthError,
+    make_approval_interrupt_callback,
     send_approval_form,
-)
-from ai_service_agent.harness.mutation_projection import (
-    WriteSuccessCapture,
-    send_mutation_success_card,
 )
 from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.chatwoot import (
@@ -146,7 +143,8 @@ def _combined_interrupt_callback(handoff_cb, approval_cb):
 def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
     def make_callbacks(conv_id, thread_id):
         cb = _combined_interrupt_callback(
-            handoff.make_interrupt_callback(conv_id), approvals.make_interrupt_callback(conv_id, thread_id)
+            handoff.make_interrupt_callback(conv_id),
+            make_approval_interrupt_callback(approvals, conv_id, thread_id),
         )
 
         async def on_handoff_requested(event: dict) -> None:
@@ -310,29 +308,27 @@ def create_app(
         if auth_user is not None and record["requester_user_id"] != auth_user:
             raise HTTPException(status_code=403, detail="approval forbidden")
 
-    def _authenticate_seat_badge(credential: str, seat_id: str) -> str:
-        """Shared Seat HTTP badge gate（approval-spec §3.2.1）：口令 + 坐席 id，缺一不可。
+    def _seat_http(exc: Exception) -> HTTPException:
+        """侧信道错误 → HTTP（模块不依赖 FastAPI）。"""
+        if isinstance(exc, SeatAuthError):
+            return HTTPException(status_code=403, detail="seat approval forbidden")
+        if isinstance(exc, ApprovalMissing):
+            return HTTPException(status_code=404, detail="approval not found")
+        if isinstance(exc, ApprovalProcessed):
+            return HTTPException(status_code=409, detail="approval already processed")
+        if isinstance(exc, ApprovalExpiredError):
+            return HTTPException(status_code=410, detail="approval expired")
+        return HTTPException(status_code=500, detail="approval failed")
 
-        HTTP handlers pass request headers; Chatwoot adapter passes configured secret +
-        ``sender.id`` after webhook verification — same entry, no second authz model.
-        """
-        if not seat_secret:
-            raise HTTPException(status_code=403, detail="seat approval forbidden")
-        actor = (seat_id or "").strip()
-        try:
-            credential_ok = bool(credential) and hmac.compare_digest(credential, seat_secret)
-        except (TypeError, ValueError):
-            credential_ok = False
-        if not credential_ok or not actor:
-            raise HTTPException(status_code=403, detail="seat approval forbidden")
-        return actor
-
-    def _require_seat_actor(request: Request) -> str:
+    def _seat_actor(request: Request):
         """Seat HTTP badge from request headers（ADR-0002 / approval-spec §3.2.1）。"""
-        return _authenticate_seat_badge(
-            request.headers.get(_SEAT_CREDENTIAL_HEADER) or "",
-            request.headers.get(_SEAT_ACTOR_HEADER) or "",
-        )
+        try:
+            return seat.authenticate(
+                request.headers.get(_SEAT_CREDENTIAL_HEADER) or "",
+                request.headers.get(_SEAT_ACTOR_HEADER) or "",
+            )
+        except SeatAuthError as exc:
+            raise _seat_http(exc) from exc
     def _chat_ownership(request: Request, body: ChatBody):
         _ensure_conversation_owner(_auth_user(request), body.session_id)
 
@@ -379,6 +375,43 @@ def create_app(
                 logger.exception("chatwoot handoff-request prompt failed: conv=%s", conv_id)
         yield {"type": "token", "data": {"text": tip}}
         yield {"type": ev.get("type", "handoff_requested"), "data": data}
+
+    async def _resume_runner(thread_id: str, *, resume_payload, on_interrupt, user_id):
+        """审批 resume 的图执行（Transport 侧）：模块只拥有顺序与门控。"""
+        async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+            graph = make_ai_graph(
+                _resolve_model(model), saver, order_repository=resolved_order_repository
+            )
+            cfg = {"configurable": {"thread_id": thread_id}}
+            async for event in event_stream(
+                graph,
+                cfg,
+                [],
+                on_interrupt=on_interrupt,
+                resume_payload=resume_payload,
+                context=_runtime_context(user_id),
+            ):
+                yield event
+
+    async def _handoff_events(conv_id: str, ev: dict) -> None:
+        async for _ in _emit_handoff_requested(conv_id, ev):
+            pass
+
+    seat = ApprovalSideChannel(
+        store=approvals,
+        status=status,
+        messages=messages_store,
+        chatwoot=chatwoot,
+        resume_runner=_resume_runner,
+        lock_factory=_thread_lock,
+        interrupt_callbacks=lambda conv_id, thread_id: _combined_interrupt_callback(
+            handoff.make_interrupt_callback(conv_id),
+            seat.interrupt_callback(conv_id, thread_id),
+        ),
+        on_handoff_requested=_handoff_events,
+        seat_secret=seat_secret,
+        simulate_approval=bool(sim),
+    )
 
     async def _emit_joined_notice(conv_id: str) -> None:
         notice = HANDOFF_JOINED_NOTICE
@@ -756,7 +789,7 @@ def create_app(
             history = messages_store.hydrate(conv_id)
             cb = _combined_interrupt_callback(
                 handoff.make_interrupt_callback(conv_id),
-                approvals.make_interrupt_callback(conv_id, thread_id),
+                seat.interrupt_callback(conv_id, thread_id),
             )
             lock = await _thread_lock(thread_id)
             async with lock:
@@ -933,111 +966,24 @@ def create_app(
             "event": result.get("event"),
         }
 
-    def _precheck_approval(approval_id: str) -> dict:
-        try:
-            return approvals.precheck(approval_id)
-        except ApprovalNotFound:
-            raise HTTPException(status_code=404, detail="approval not found")
-        except ApprovalAlreadyProcessed:
-            raise HTTPException(status_code=409, detail="approval already processed")
-        except ApprovalExpired:
-            raise HTTPException(status_code=410, detail="approval expired")
-
-    async def _approval_resume(
-        approval_id: str, resume_payload: dict, decided: str, *, decided_by: str
-    ) -> dict:
-        first = approvals.get(approval_id)
-        if first is None:
-            raise HTTPException(status_code=404, detail="approval not found")
-        thread_id = first["thread_id"]
-        conv_id = first["conversation_id"]
-        lock = await _thread_lock(thread_id)
-        async with lock:
-            rec = _precheck_approval(approval_id)  # 锁内权威预检：并发双 approve 只有一个通过（D7 幂等）
-            # mark_decided 在图执行前（T6 裁定）：即使执行中崩溃，审批状态已终态，不会重试重复执行
-            approvals.mark_decided(approval_id, decided, decided_by=decided_by)
-            # 与 /chat 同级：挂接 handoff/approval interrupt 回调，避免后续中断静默（approval-spec §3.2.2）
-            cb = _combined_interrupt_callback(
-                handoff.make_interrupt_callback(conv_id),
-                approvals.make_interrupt_callback(conv_id, thread_id),
-            )
-            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
-                cfg = {"configurable": {"thread_id": thread_id}}
-                final: str | None = None
-                final_message_id: str | None = None
-                write_success = WriteSuccessCapture()
-                async for ev in event_stream(
-                    graph,
-                    cfg,
-                    [],
-                    on_interrupt=cb,
-                    resume_payload=resume_payload,
-                    context=_runtime_context(status.get_user_id(conv_id) or ""),
-                ):
-                    write_success.observe(ev)
-                    if ev["type"] == "done":
-                        final = ev["data"].get("final")
-                        final_message_id = ev["data"].get("message_id")
-                    elif ev["type"] == "handoff_requested":
-                        async for _ in _emit_handoff_requested(conv_id, ev):
-                            pass
-                # 落库与出站同一门控：Message Store 始终写（客户历史），出站仅 ai
-                # （handoff-spec §1.4 / ADR-0002）。HighRisk confirm success 与 Mutation
-                # 共用成功卡片；失败保持纯气泡。
-                success_spec = write_success.spec()
-                delivery = decide_delivery(
-                    mode=status.get_mode(conv_id),
-                    origin=TurnOrigin.SEAT_DECISION,
-                    success_spec=success_spec,
-                    final=final,
-                    can_send=chatwoot is not None,
-                )
-                if delivery.card and delivery.outbound:
-                    bubble = await send_mutation_success_card(chatwoot, conv_id, success_spec)
-                    if bubble:
-                        messages_store.append(
-                            conv_id, "assistant", bubble, message_id=final_message_id
-                        )
-                elif delivery.persist is not None:
-                    messages_store.append(
-                        conv_id, "assistant", delivery.persist, message_id=final_message_id
-                    )
-                    if delivery.outbound:
-                        await chatwoot.send_bot_message(conv_id, delivery.persist)
-        return {"approval_id": approval_id, "status": decided}
-
-    async def _decide_approval_as_seat(
-        approval_id: str,
-        action: str,
-        seat_id: str,
-        *,
-        note: str | None = None,
-    ) -> dict:
-        """Shared seat decision entry after badge auth（HTTP + Chatwoot adapter）。"""
-        if action == "approve":
-            return await _approval_resume(
-                approval_id, {"action": "approve"}, "approved", decided_by=f"seat:{seat_id}"
-            )
-        resume: dict[str, Any] = {"action": "reject"}
-        if note:
-            resume["note"] = note
-        return await _approval_resume(
-            approval_id, resume, "rejected", decided_by=f"seat:{seat_id}"
-        )
-
     @app.post("/approvals/{approval_id}/approve")
     async def approve_approval(approval_id: str, request: Request):
-        seat_id = _require_seat_actor(request)
-        return await _decide_approval_as_seat(approval_id, "approve", seat_id)
+        actor = _seat_actor(request)
+        try:
+            return await seat.decide(approval_id, SeatAction.APPROVE, actor=actor)
+        except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError, SeatAuthError) as exc:
+            raise _seat_http(exc) from exc
 
     @app.post("/approvals/{approval_id}/reject")
     async def reject_approval(
         approval_id: str, request: Request, body: RejectBody | None = None
     ):
-        seat_id = _require_seat_actor(request)
+        actor = _seat_actor(request)
         note = body.note if body is not None else None
-        return await _decide_approval_as_seat(approval_id, "reject", seat_id, note=note)
+        try:
+            return await seat.decide(approval_id, SeatAction.REJECT, actor=actor, note=note)
+        except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError, SeatAuthError) as exc:
+            raise _seat_http(exc) from exc
 
     @app.get("/approvals/{approval_id}")
     def get_approval(approval_id: str, _: None = Depends(_approval_read_access)):
@@ -1064,50 +1010,18 @@ def create_app(
         return rec
 
     async def _seat_decide_from_chatwoot(data: dict) -> bool:
-        """Verified Chatwoot seat form submit → shared seat badge decision entry (#64).
+        """Verified Chatwoot seat form submit → 侧信道工牌决策入口（#64）。
 
-        After webhook signature verify, adapter presents configured seat credential +
-        ``sender.id`` to ``_authenticate_seat_badge`` / ``_decide_approval_as_seat``.
-        Only private seat-facing forms; approval must belong to the mapped conversation.
-        Returns True when this payload was an approval form submission.
+        验签后由适配器把配置口令 + ``sender.id`` 交给侧信道；这里只提供
+        Chatwoot 会话 id → Runtime 会话 id 的映射（Transport 职责）。
         """
-        if data.get("event") != "message_updated":
-            return False
-        if data.get("private") is not True:
-            return False
-        if data.get("content_type") not in ("form", "input_select"):
-            return False
-        sender = data.get("sender") or {}
-        if sender.get("type") != "user":
-            return False
-        decision = parse_approval_form_submission(
-            (data.get("content_attributes") or {}).get("submitted_values")
+        return await seat.decide_from_seat_form(
+            data, conversation_for=_mapped_conversation_id
         )
-        if decision is None:
-            return False
-        conversation = data.get("conversation")
-        if not isinstance(conversation, dict):
-            return False
-        try:
-            cw_id = int(conversation.get("id"))
-        except (TypeError, ValueError):
-            return False
-        mapping_rec = mapping.find(cw_id)
-        if mapping_rec is None:
-            raise HTTPException(status_code=404, detail="approval not found")
-        approval_id = decision["approval_id"]
-        rec = approvals.get(approval_id)
-        if rec is None or rec["conversation_id"] != mapping_rec["conversation_id"]:
-            raise HTTPException(status_code=404, detail="approval not found")
-        # Same badge entry as HTTP: credential (configured) + seat actor id (sender.id).
-        seat_id = _authenticate_seat_badge(seat_secret or "", str(sender.get("id") or ""))
-        await _decide_approval_as_seat(
-            approval_id,
-            decision["action"],
-            seat_id,
-            note=decision.get("note"),
-        )
-        return True
+
+    def _mapped_conversation_id(cw_id: int) -> str | None:
+        record = mapping.find(cw_id)
+        return record["conversation_id"] if record is not None else None
 
     @app.post("/webhooks/chatwoot")
     async def chatwoot_webhook(request: Request):
@@ -1127,11 +1041,12 @@ def create_app(
         try:
             if await _seat_decide_from_chatwoot(data):
                 return {"ok": True}
-        except HTTPException as exc:
-            # Authz must fail closed; precheck conflicts → ack (avoid Chatwoot retry storms).
-            if exc.status_code in (404, 409, 410):
-                return {"ok": True}
-            raise
+        except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError):
+            # 预检冲突 / 归属不符 → ack（避免 Chatwoot 重试风暴）。
+            return {"ok": True}
+        except SeatAuthError as exc:
+            # 鉴权必须 fail closed：工牌不对不能静默吞掉。
+            raise _seat_http(exc) from exc
 
         event_name = data.get("event")
         if event_name == "conversation_status_changed":

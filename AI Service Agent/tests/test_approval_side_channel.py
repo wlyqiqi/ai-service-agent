@@ -1,15 +1,27 @@
-"""Approval Side-Channel 投影/解析（纯单测，不起 FastAPI / 不落库）。"""
+"""Approval Side-Channel：投影/解析 + 执行链（纯单测，不起 FastAPI）。"""
 
+import asyncio
+import sqlite3
 from unittest.mock import AsyncMock
 
 import pytest
 
 from ai_service_agent.harness.approval_side_channel import (
+    ApprovalExpiredError,
+    ApprovalMissing,
+    ApprovalProcessed,
+    ApprovalSideChannel,
+    SeatAction,
+    SeatActor,
+    SeatAuthError,
     approval_form_items_from_payload,
     approval_form_title_from_payload,
     parse_approval_form_submission,
     send_approval_form,
 )
+from ai_service_agent.harness.approvals import ApprovalService
+
+SEAT_SECRET = "test-seat-approval-secret"
 
 
 def test_title_carries_summary_approval_id_and_expiry():
@@ -114,3 +126,294 @@ async def test_send_approval_form_is_private_interactive():
     assert args[2] == "form"
     assert {item["name"] for item in args[3]["items"]} == {"approval_id", "decision", "note"}
     assert kwargs.get("private") is True or (len(args) > 4 and args[4] is True)
+
+
+# --- 执行链：工牌 / 决策 / 落库门控（fake runner，不起 FastAPI） ------------
+
+
+class _Status:
+    def __init__(self, mode: str = "ai", user_id: str = "u1") -> None:
+        self.mode = mode
+        self.user_id = user_id
+
+    def get_mode(self, _conversation_id: str) -> str:
+        return self.mode
+
+    def get_user_id(self, _conversation_id: str) -> str:
+        return self.user_id
+
+
+class _Messages:
+    def __init__(self) -> None:
+        self.rows: list[tuple] = []
+
+    def append(self, conversation_id, role, text, message_id=None):
+        self.rows.append((conversation_id, role, text, message_id))
+
+
+def _store() -> ApprovalService:
+    return ApprovalService(sqlite3.connect(":memory:"))
+
+
+def _insert(store: ApprovalService, approval_id: str = "A-1", conversation_id: str = "c1"):
+    store.insert_if_absent(
+        approval_id,
+        conversation_id,
+        "t1",
+        {
+            "summary": "退款 ORD-PAID-1",
+            "requester_user_id": "u1",
+            "created_at": "2026-10-20T00:00:00+00:00",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+    )
+
+
+_WRITE_EVENTS = [
+    {"type": "tool_call", "data": {"name": "refund_apply", "args": {"order_id": "ORD-1"}}},
+    {"type": "tool_result", "data": {"name": "refund_apply", "ok": True, "result": {}}},
+    {"type": "done", "data": {"final": "通过审核的长文案", "message_id": "m1"}},
+]
+
+
+def _channel(
+    *,
+    store: ApprovalService,
+    events: list[dict],
+    mode: str = "ai",
+    chatwoot=None,
+    calls: list | None = None,
+    handoff_events: list | None = None,
+) -> ApprovalSideChannel:
+    calls = [] if calls is None else calls
+    handoff_events = [] if handoff_events is None else handoff_events
+
+    async def runner(thread_id, *, resume_payload, on_interrupt, user_id):
+        calls.append({"thread_id": thread_id, "resume": resume_payload, "user_id": user_id})
+        for event in events:
+            yield event
+
+    async def lock_factory(_thread_id):
+        return asyncio.Lock()
+
+    async def on_handoff_requested(conversation_id, event):
+        handoff_events.append((conversation_id, event))
+
+    return ApprovalSideChannel(
+        store=store,
+        status=_Status(mode=mode),
+        messages=_Messages(),
+        chatwoot=chatwoot,
+        resume_runner=runner,
+        lock_factory=lock_factory,
+        interrupt_callbacks=lambda _conv, _thread: (lambda value: None),
+        on_handoff_requested=on_handoff_requested,
+        seat_secret=SEAT_SECRET,
+    )
+
+
+def test_authenticate_is_fail_closed():
+    store = _store()
+    without_secret = ApprovalSideChannel(
+        store=store,
+        status=_Status(),
+        messages=_Messages(),
+        resume_runner=None,
+        lock_factory=None,
+        interrupt_callbacks=None,
+        seat_secret=None,
+    )
+    with pytest.raises(SeatAuthError):
+        without_secret.authenticate(SEAT_SECRET, "9")
+
+    channel = _channel(store=store, events=[])
+    with pytest.raises(SeatAuthError):
+        channel.authenticate("wrong", "9")
+    with pytest.raises(SeatAuthError):
+        channel.authenticate(SEAT_SECRET, "   ")
+    with pytest.raises(SeatAuthError):
+        channel.authenticate("", "9")
+
+    assert channel.authenticate(SEAT_SECRET, " 9 ") == SeatActor("9")
+
+
+def test_actor_decided_by_uses_seat_namespace():
+    assert SeatActor("42").decided_by == "seat:42"
+
+
+@pytest.mark.asyncio
+async def test_approve_in_ai_mode_resumes_persists_and_sends_card():
+    store = _store()
+    _insert(store)
+    calls: list = []
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=_WRITE_EVENTS, chatwoot=chatwoot, calls=calls)
+
+    result = await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+
+    assert result == {"approval_id": "A-1", "status": "approved"}
+    assert calls == [{"thread_id": "t1", "resume": {"action": "approve"}, "user_id": "u1"}]
+    record = store.get("A-1")
+    assert record["status"] == "approved"
+    assert record["decided_by"] == "seat:7"
+    # 卡片 + 短 followup；落库文案与 ai 同源，不是长 done.final
+    chatwoot.send_interactive_message.assert_awaited_once()
+    persisted = [row[2] for row in channel._messages.rows]
+    assert persisted and "通过审核" not in persisted[0]
+    assert chatwoot.send_bot_message.await_args.args[1] == persisted[0]
+
+
+@pytest.mark.asyncio
+async def test_reject_carries_note_and_skips_card():
+    store = _store()
+    _insert(store)
+    calls: list = []
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=[{"type": "done", "data": {"final": "未通过审核", "message_id": "m2"}}],
+                       chatwoot=chatwoot, calls=calls)
+
+    await channel.decide("A-1", SeatAction.REJECT, actor=SeatActor("7"), note="资料不足")
+
+    assert calls[0]["resume"] == {"action": "reject", "note": "资料不足"}
+    assert store.get("A-1")["status"] == "rejected"
+    chatwoot.send_interactive_message.assert_not_awaited()
+    assert channel._messages.rows[0][2] == "未通过审核"
+    assert chatwoot.send_bot_message.await_args.args[1] == "未通过审核"
+
+
+@pytest.mark.asyncio
+async def test_human_mode_persists_without_outbound():
+    store = _store()
+    _insert(store)
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=_WRITE_EVENTS, mode="human", chatwoot=chatwoot)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+
+    chatwoot.send_interactive_message.assert_not_awaited()
+    chatwoot.send_bot_message.assert_not_awaited()
+    assert channel._messages.rows, "Message Store 必须始终落库（ADR-0002）"
+    assert "通过审核" not in channel._messages.rows[0][2]
+
+
+@pytest.mark.asyncio
+async def test_second_decision_is_rejected_without_second_resume():
+    store = _store()
+    _insert(store)
+    calls: list = []
+    channel = _channel(store=store, events=_WRITE_EVENTS, calls=calls)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+    with pytest.raises(ApprovalProcessed):
+        await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("8"))
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_approval_is_missing():
+    channel = _channel(store=_store(), events=[])
+    with pytest.raises(ApprovalMissing):
+        await channel.decide("nope", SeatAction.APPROVE, actor=SeatActor("7"))
+
+
+@pytest.mark.asyncio
+async def test_expired_approval_is_reported_before_resume():
+    store = _store()
+    store.insert_if_absent(
+        "A-exp", "c1", "t1",
+        {"summary": "s", "requester_user_id": "u1", "created_at": "", "expires_at": "2000-01-01T00:00:00+00:00"},
+    )
+    calls: list = []
+    channel = _channel(store=store, events=[], calls=calls)
+
+    with pytest.raises(ApprovalExpiredError):
+        await channel.decide("A-exp", SeatAction.APPROVE, actor=SeatActor("7"))
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_follow_on_handoff_event_is_forwarded():
+    store = _store()
+    _insert(store)
+    handoff_events: list = []
+    events = [
+        {"type": "handoff_requested", "data": {"reason": "follow_on", "summary": "s"}},
+        {"type": "done", "data": {"final": "ok", "message_id": "m3"}},
+    ]
+    channel = _channel(store=store, events=events, handoff_events=handoff_events)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+
+    assert handoff_events == [("c1", events[0])]
+
+
+def _seat_form(approval_id: str = "A-1", *, cw_id: int = 555, decision: str = "approve", sender: int = 91):
+    return {
+        "event": "message_updated",
+        "private": True,
+        "content_type": "form",
+        "content_attributes": {
+            "submitted_values": [
+                {"name": "approval_id", "value": approval_id},
+                {"name": "decision", "value": decision},
+            ]
+        },
+        "sender": {"id": sender, "type": "user"},
+        "conversation": {"id": cw_id},
+    }
+
+
+@pytest.mark.asyncio
+async def test_seat_form_payload_is_decided_via_mapping():
+    store = _store()
+    _insert(store)
+    channel = _channel(store=store, events=_WRITE_EVENTS)
+
+    handled = await channel.decide_from_seat_form(
+        _seat_form(), conversation_for=lambda cw_id: "c1" if cw_id == 555 else None
+    )
+
+    assert handled is True
+    assert store.get("A-1")["status"] == "approved"
+    assert store.get("A-1")["decided_by"] == "seat:91"
+
+
+@pytest.mark.asyncio
+async def test_seat_form_ignores_non_approval_payloads():
+    channel = _channel(store=_store(), events=[])
+    payload = _seat_form()
+    payload["private"] = False
+    assert await channel.decide_from_seat_form(payload, conversation_for=lambda _id: "c1") is False
+
+
+@pytest.mark.asyncio
+async def test_seat_form_rejects_unmapped_conversation():
+    store = _store()
+    _insert(store)
+    channel = _channel(store=store, events=[])
+
+    with pytest.raises(ApprovalMissing):
+        await channel.decide_from_seat_form(_seat_form(), conversation_for=lambda _id: None)
+
+
+@pytest.mark.asyncio
+async def test_seat_form_rejects_approval_of_another_conversation():
+    store = _store()
+    _insert(store, conversation_id="other")
+    channel = _channel(store=store, events=[])
+
+    with pytest.raises(ApprovalMissing):
+        await channel.decide_from_seat_form(_seat_form(), conversation_for=lambda _id: "c1")
+
+
+@pytest.mark.asyncio
+async def test_seat_form_badge_failure_is_not_swallowed():
+    store = _store()
+    _insert(store)
+    channel = _channel(store=store, events=[])
+
+    with pytest.raises(SeatAuthError):
+        await channel.decide_from_seat_form(
+            _seat_form(sender=0), conversation_for=lambda _id: "c1"
+        )

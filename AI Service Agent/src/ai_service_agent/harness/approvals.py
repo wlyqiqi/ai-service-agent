@@ -2,6 +2,7 @@
 
 只持久化 pending/approved/rejected/expired 与 expires_at，供 UI 查询与 HTTP 端点前置校验；
 不承担任何业务决策（approval-spec §3.1）。"超期"是纯时间比较的机械结论，读取时惰性落地。
+侧信道语义（interrupt 落库、工牌、resume）在 `approval_side_channel.py`。
 迁移触发条件（登记）：出现多进程/容器化部署需求时迁移独立存储（如 Postgres），并同步评估
 线程锁与 checkpointer 迁移（类比 checkpointer SQLite→Postgres）。
 """
@@ -9,7 +10,6 @@
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Callable
 
 APPROVAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS approval_record (
@@ -147,24 +147,3 @@ class ApprovalService:
             "summary": row[4], "requester_user_id": row[5], "status": row[6], "decision": row[7],
             "decided_by": row[8], "created_at": row[9], "expires_at": row[10], "decided_at": row[11],
         }
-
-    def make_interrupt_callback(self, conversation_id: str, thread_id: str) -> Callable:
-        """on_interrupt 包装：approval_required -> 幂等落库（+ simulate_approval 标记 approved）
-        -> 返回 approval_required 事件。"""
-
-        async def on_approval_interrupt(value: dict) -> dict | None:
-            if not isinstance(value, dict) or value.get("type") != "approval_required":
-                return None
-            approval_id = value.get("approval_id")
-            if not approval_id:
-                return None
-            rec = self.insert_if_absent(approval_id, conversation_id, thread_id, value)
-            if self.simulate_approval:
-                self.mark_decided(approval_id, "approved", decided_by="simulate")
-            return {"type": "approval_required", "data": {
-                "approval_id": approval_id,
-                "summary": rec["summary"],
-                "expires_at": rec["expires_at"],
-            }}
-
-        return on_approval_interrupt
