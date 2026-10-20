@@ -1,5 +1,6 @@
 # 执行计划（docs/plans/）
 
+- `2026-10-14-langgraph-hitl-test-plan.md` — LangGraph 官方 Testing 模式映射到本仓库 HITL 分层 + P0–P2 补测 backlog（方案文档；实现另开轮次），对应 `mutation-form-interrupt-spec.md` / `graph-spec.md`。
 - `2026-09-14-mvp-first-mile.md` — MVP 第一公里实现计划（Task 0–9，TDD，每任务可独立测试与 commit），对应 `docs/specs/mvp-first-mile.md`。
 - `2026-09-15-p3-guard-mutation-highrisk.md` — P3 Guard / Mutation / HighRisk / Approval 实现计划（Task 1–8，TDD，每任务 commit）。
 - `2026-09-15-p4-clarify-precheck-resume.md` — P4 Clarify / 预检规则增量 / 读侧边界 / resume final 提取 实现计划（Task 1–6，TDD，每任务 commit）。

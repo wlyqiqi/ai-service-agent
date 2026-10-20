@@ -66,6 +66,7 @@ def make_mutation_graph(
     registry: ToolRegistry,
     tool_hooks=None,
     order_repository=None,
+    checkpointer=None,
 ):
     def prepare_form(state: dict) -> dict:
         # Mint form_session_id before Form Interrupt so resume re-runs of
@@ -285,4 +286,4 @@ def make_mutation_graph(
     builder.add_edge("finalize_rejected", END)
     builder.add_edge("safety_final", END)
     builder.add_edge("finalize_failed", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

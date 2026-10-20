@@ -256,6 +256,96 @@ def test_mutation_incomplete_form_resume_confirm_executes(seed, monkeypatch):
     assert "收货地址已修改成功" in t2["messages"][-1].content
 
 
+def test_mutation_confirm_recheck_failure_reissues_form_interrupt(seed, monkeypatch):
+    """P0: Confirm recheck 失败 → 同 form_session_id 再 interrupt，payload 含 errors。"""
+    _use_db(monkeypatch, seed[1])
+    graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
+    tid = "mt-form-rejected-1"
+    opened = _invoke(graph, "改一下收货地址", tid)
+    pending = opened.get("__interrupt__", [])
+    assert pending
+    form_session_id = pending[0].value["form_session_id"]
+    assert not pending[0].value.get("errors")
+
+    rejected = _invoke(
+        graph,
+        "确认",
+        tid,
+        resume=_confirm_address(order_id="ORD-CANCEL-1", address="不可写的新地址"),
+    )
+    again = rejected.get("__interrupt__", [])
+    assert again
+    assert again[0].value["form_session_id"] == form_session_id
+    assert again[0].value["tool"] == "update_address"
+    assert again[0].value.get("errors")
+    assert [m for m in rejected["messages"] if getattr(m, "type", "") == "tool"] == []
+    # Parent stays routing while subgraph is re-interrupted (PR #40).
+    assert rejected["execution_status"] == "routing"
+
+    fixed = _invoke(graph, "确认", tid, resume=_confirm_address())
+    assert fixed["execution_status"] == "completed"
+    assert not fixed.get("__interrupt__")
+    tool_msgs = [m for m in fixed["messages"] if getattr(m, "type", "") == "tool"]
+    assert tool_msgs and getattr(tool_msgs[-1], "name", "") == "update_address"
+
+
+def test_mutation_form_pending_without_resume_keeps_interrupt_no_write(seed, monkeypatch):
+    """P0: Form 挂起且未 Form Resume 时不写库；checkpoint interrupt 仍在（harness 纯文本拒答前提）。"""
+    from ai_service_agent.graph.workflows.copy import form_plain_text_refuse_text
+    from ai_service_agent.harness.form_events import project_form_interrupt
+
+    _use_db(monkeypatch, seed[1])
+    graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
+    tid = "mt-form-plain-1"
+    config = {"configurable": {"thread_id": tid}}
+    opened = _invoke(graph, "改一下收货地址", tid)
+    pending = opened.get("__interrupt__", [])
+    assert pending
+    form_session_id = pending[0].value["form_session_id"]
+
+    # Harness refuses plain chat without Command(resume=...); graph must stay hung.
+    tip = form_plain_text_refuse_text()
+    assert tip
+    projected = project_form_interrupt(pending[0])
+    assert projected is not None
+    assert projected["type"] == "form_required"
+    assert projected["data"]["form_session_id"] == form_session_id
+
+    state = asyncio.run(graph.aget_state(config))
+    assert state.interrupts
+    assert state.interrupts[0].value.get("form_session_id") == form_session_id
+    values = state.values or {}
+    assert [m for m in values.get("messages", []) if getattr(m, "type", "") == "tool"] == []
+
+
+def test_vague_mutation_operation_clarify_then_form_interrupt_graph(seed, monkeypatch):
+    """P1: 模糊意图 Operation Clarify（无 interrupt）→ 具体意图 Form Interrupt。"""
+    from ai_service_agent.graph.workflows.copy import operation_clarify_text
+
+    _use_db(monkeypatch, seed[1])
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("order_mutation", 0.9),
+        router_json_message("account_profile_update", 0.9),
+        select_json_message(
+            "update_address",
+            {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"},
+        ),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    tid = "mt-op-clarify-1"
+
+    clarify = _invoke(graph, "我要改一下订单", tid)
+    assert not clarify.get("__interrupt__")
+    assert clarify["execution_status"] == "clarifying"
+    assert clarify["messages"][-1].content == operation_clarify_text()
+
+    form_turn = _invoke(graph, "改收货地址", tid)
+    pending = form_turn.get("__interrupt__", [])
+    assert pending
+    assert pending[0].value["tool"] == "update_address"
+    assert [m for m in form_turn["messages"] if getattr(m, "type", "") == "tool"] == []
+
+
 def _cancel_model(payload: dict):
     return ToolCallingFakeModel(responses=[
         router_json_message("cancel_order_execute", 0.9),
@@ -432,6 +522,95 @@ def test_mutation_graph_declares_graph_context_schema():
         DEFAULT_TOOL_REGISTRY,
     )
     assert graph.context_schema is GraphContext
+
+
+def test_mutation_partial_prepare_form_to_interrupt_schema_and_cancel(seed, monkeypatch):
+    """P2: update_state(as_node=prepare_form) → form_interrupt schema；Cancel 清 form_session_id。"""
+    from ai_service_agent.graph.workflows.mutation_agent import make_mutation_graph
+
+    _use_db(monkeypatch, seed[1])
+    repo = SQLiteOrderRepository(str(seed[1]))
+    graph = make_mutation_graph(
+        ToolCallingFakeModel(responses=[]),
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+        order_repository=repo,
+        checkpointer=MemorySaver(),
+    )
+    tid = "mt-partial-form-1"
+    config = {"configurable": {"thread_id": tid}}
+    form_session_id = "fs-partial-fixed"
+    graph.update_state(
+        config,
+        {
+            "user_id": "u1",
+            "session_id": tid,
+            "messages": [HumanMessage(content="改地址")],
+            "execution_status": "waiting_confirmation",
+            "context": {
+                "pending_tool": {
+                    "tool": "update_address",
+                    "args": {},
+                    "request_id": "req-partial-1",
+                },
+                "form_session_id": form_session_id,
+            },
+        },
+        as_node="prepare_form",
+    )
+    opened = ainvoke_graph(graph, None, config)
+    pending = opened.get("__interrupt__", [])
+    assert pending
+    assert pending[0].value["form_session_id"] == form_session_id
+    assert pending[0].value["tool"] == "update_address"
+    schema = pending[0].response_schema
+    assert schema["properties"]["action"]["enum"] == ["confirm", "cancel"]
+    assert "order_id" in schema["properties"]
+    assert "address" in schema["properties"]
+
+    cancelled = ainvoke_graph(graph, Command(resume={"action": "cancel"}), config)
+    assert cancelled["execution_status"] == "completed"
+    assert "form_session_id" not in (cancelled.get("context") or {})
+    assert [m for m in cancelled["messages"] if getattr(m, "type", "") == "tool"] == []
+    assert not cancelled.get("__interrupt__")
+
+
+def test_mutation_happy_form_path_emits_no_confirmation_required(seed, monkeypatch):
+    """P2 回归：happy Form Interrupt 路径不出现 chat confirmation_required。"""
+    _use_db(monkeypatch, seed[1])
+    graph = build_graph(_mutation_model(), tools=[kb_search], checkpointer=MemorySaver())
+    tid = "mt-no-confirm-req-1"
+    config = {"configurable": {"thread_id": tid}}
+    open_events = asyncio.run(
+        _acollect_events(
+            event_stream(
+                graph,
+                config,
+                [HumanMessage(content="改一下收货地址")],
+                extra_state={"user_id": "u1", "session_id": tid},
+            )
+        )
+    )
+    open_types = [event["type"] for event in open_events]
+    assert "form_required" in open_types
+    assert "confirmation_required" not in open_types
+    assert "clarification_required" not in open_types
+
+    resume_events = asyncio.run(
+        _acollect_events(
+            event_stream(
+                graph,
+                config,
+                [HumanMessage(content="确认")],
+                resume_payload=_confirm_address(),
+                extra_state={"user_id": "u1", "session_id": tid},
+            )
+        )
+    )
+    resume_types = [event["type"] for event in resume_events]
+    assert "confirmation_required" not in resume_types
+    assert "tool_call" in resume_types
+    assert resume_types[-1] == "done"
 
 
 def test_event_stream_prefers_runtime_order_repository(seed, monkeypatch):
