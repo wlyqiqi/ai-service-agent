@@ -11,9 +11,13 @@ transport=httpx.MockTransport(...) 注入。
 
 from typing import Optional
 
+import logging
+
 import httpx
 
 from ai_service_agent.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class LightRagClient:
@@ -96,6 +100,16 @@ class LightRagClient:
                         }
                     )
         except Exception:
+            # Never swallow the cause: a silent "kb_unavailable" is
+            # indistinguishable from a business-level empty result, and the
+            # caller only sees the generic fallback copy.
+            logger.warning(
+                "lightrag query failed (base_url=%s, timeout=%ss, query=%r)",
+                self.base_url,
+                self.timeout,
+                query[:80],
+                exc_info=True,
+            )
             return {"error": "kb_unavailable"}
         if not candidates:
             return {
