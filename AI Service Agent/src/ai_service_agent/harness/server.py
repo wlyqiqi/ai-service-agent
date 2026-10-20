@@ -37,8 +37,6 @@ from ai_service_agent.harness.approval_side_channel import (
     ApprovalSideChannel,
     SeatAction,
     SeatAuthError,
-    make_approval_interrupt_callback,
-    send_approval_form,
 )
 from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.chatwoot import (
@@ -140,11 +138,11 @@ def _combined_interrupt_callback(handoff_cb, approval_cb):
     return on_interrupt
 
 
-def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
+def _agent_bot_callbacks_factory(handoff, seat, chatwoot, messages_store):
     def make_callbacks(conv_id, thread_id):
         cb = _combined_interrupt_callback(
             handoff.make_interrupt_callback(conv_id),
-            make_approval_interrupt_callback(approvals, conv_id, thread_id),
+            seat.interrupt_callback(conv_id, thread_id),
         )
 
         async def on_handoff_requested(event: dict) -> None:
@@ -168,7 +166,7 @@ def _agent_bot_callbacks_factory(handoff, approvals, chatwoot, messages_store):
 
         async def send_approval_pending(value: dict) -> None:
             # Seat-facing private form (#64); do not push Approve/Reject to Widget.
-            await send_approval_form(chatwoot, conv_id, value)
+            await seat.project(conv_id, value)
 
         return cb, on_handoff_requested, send_approval_pending
 
@@ -851,10 +849,10 @@ def create_app(
                             async for out in _emit_handoff_requested(conv_id, ev):
                                 yield out
                             continue
-                        if ev["type"] == "approval_required" and chatwoot is not None:
+                        if ev["type"] == "approval_required":
                             # Approval Side-Channel: project private seat form (#64).
                             try:
-                                await send_approval_form(chatwoot, conv_id, ev.get("data") or {})
+                                await seat.project(conv_id, ev.get("data") or {})
                             except Exception:
                                 logger.exception("chatwoot approval form project failed: conv=%s", conv_id)
                         if ev["type"] == "done":
@@ -1179,7 +1177,7 @@ def create_app(
                     thread_lock_factory=_thread_lock,
                     chatwoot_lock_factory=_thread_lock,
                     callbacks_factory=_agent_bot_callbacks_factory(
-                        handoff, approvals, chatwoot, messages_store
+                        handoff, seat, chatwoot, messages_store
                     ),
                     handoff=handoff,
                     context=_runtime_context(),

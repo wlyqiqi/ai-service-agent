@@ -542,6 +542,7 @@ async def test_agent_bot_entry_request_hangs(tmp_path):
 def _agentbot_prod_env(tmp_path, name="ab-prod.db"):
     """AgentBot + 生产接线（`_agent_bot_callbacks_factory`），用于入口行为回归。"""
     from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+    from ai_service_agent.harness.approval_side_channel import ApprovalSideChannel
     from ai_service_agent.harness.approvals import ApprovalService
     from ai_service_agent.harness.server import _agent_bot_callbacks_factory
 
@@ -553,7 +554,26 @@ def _agentbot_prod_env(tmp_path, name="ab-prod.db"):
     conv = status.create_session("u-ab")["conversation_id"]
     mapping.put(conv, 42, contact_id=1)
     cw = _fake_chatwoot()
-    callbacks = _agent_bot_callbacks_factory(handoff, ApprovalService(conn), cw, store)
+
+    async def _no_resume(*_args, **_kwargs):
+        for event in ():
+            yield event
+
+    async def _lock(_thread_id):
+        import asyncio
+
+        return asyncio.Lock()
+
+    seat = ApprovalSideChannel(
+        store=ApprovalService(conn),
+        status=status,
+        messages=store,
+        chatwoot=cw,
+        resume_runner=_no_resume,
+        lock_factory=_lock,
+        interrupt_callbacks=lambda _conv, _thread: (lambda value: None),
+    )
+    callbacks = _agent_bot_callbacks_factory(handoff, seat, cw, store)
     counter = {"n": 9200}
 
     async def send(text):
