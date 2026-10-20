@@ -43,6 +43,7 @@ from ai_service_agent.harness.mutation_projection import (
     WriteSuccessCapture,
     send_mutation_success_card,
 )
+from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.chatwoot import (
     ChatwootClient,
     ChatwootMappingStore,
@@ -824,15 +825,18 @@ def create_app(
                             except Exception:
                                 logger.exception("chatwoot approval form project failed: conv=%s", conv_id)
                         if ev["type"] == "done":
-                            mode_now = status.get_mode(conv_id)
-                            if mode_now != "ai":
-                                # 发送前实时复检：已被切走则丢弃且不持久化（handoff-spec.md §1.4）
-                                yield {"type": "error", "data": {"code": "ModeChanged", "message": "AI 回复已丢弃（会话已转人工）"}}
+                            # 发送前实时复检：已被切走则整轮作废（handoff-spec §1.4）
+                            delivery = decide_delivery(
+                                mode=status.get_mode(conv_id),
+                                origin=TurnOrigin.AI_TURN,
+                                final=ev["data"].get("final"),
+                            )
+                            if delivery.notice is not None:
+                                yield {"type": "error", "data": {"code": delivery.notice, "message": "AI 回复已丢弃（会话已转人工）"}}
                                 yield {"type": "done", "data": {"final": None, "message_id": None}}
                                 return
-                            final = ev["data"].get("final")
-                            if final is not None:
-                                messages_store.append(conv_id, "assistant", final, message_id=ev["data"].get("message_id"))
+                            if delivery.persist is not None:
+                                messages_store.append(conv_id, "assistant", delivery.persist, message_id=ev["data"].get("message_id"))
                             yield ev
                             return
                         yield ev
@@ -978,23 +982,29 @@ def create_app(
                     elif ev["type"] == "handoff_requested":
                         async for _ in _emit_handoff_requested(conv_id, ev):
                             pass
-                # Message Store 始终落库；出站仅当发送前 conversation_mode 仍为 ai（handoff-spec §1.4）
-                # HighRisk confirm success uses the same cards as Mutation; failures stay plain bubbles.
+                # 落库与出站同一门控：Message Store 始终写（客户历史），出站仅 ai
+                # （handoff-spec §1.4 / ADR-0002）。HighRisk confirm success 与 Mutation
+                # 共用成功卡片；失败保持纯气泡。
                 success_spec = write_success.spec()
-                if (
-                    success_spec is not None
-                    and chatwoot is not None
-                    and status.get_mode(conv_id) == "ai"
-                ):
+                delivery = decide_delivery(
+                    mode=status.get_mode(conv_id),
+                    origin=TurnOrigin.SEAT_DECISION,
+                    success_spec=success_spec,
+                    final=final,
+                    can_send=chatwoot is not None,
+                )
+                if delivery.card and delivery.outbound:
                     bubble = await send_mutation_success_card(chatwoot, conv_id, success_spec)
                     if bubble:
                         messages_store.append(
                             conv_id, "assistant", bubble, message_id=final_message_id
                         )
-                elif final is not None:
-                    messages_store.append(conv_id, "assistant", final, message_id=final_message_id)
-                    if chatwoot is not None and status.get_mode(conv_id) == "ai":
-                        await chatwoot.send_bot_message(conv_id, final)
+                elif delivery.persist is not None:
+                    messages_store.append(
+                        conv_id, "assistant", delivery.persist, message_id=final_message_id
+                    )
+                    if delivery.outbound:
+                        await chatwoot.send_bot_message(conv_id, delivery.persist)
         return {"approval_id": approval_id, "status": decided}
 
     async def _decide_approval_as_seat(

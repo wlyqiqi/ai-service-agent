@@ -38,6 +38,7 @@ from ai_service_agent.harness.mutation_projection import (
     WriteSuccessCapture,
     send_mutation_success_card,
 )
+from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
 
@@ -668,7 +669,13 @@ async def _handle_locked_agent_bot_message(
     success_spec = None
     if mutation_form_data is None and approval_form_data is None:
         success_spec = write_success.spec()
-    if success_spec is not None and (status is None or status.get_mode(conversation_id) == "ai"):
+    delivery = decide_delivery(
+        mode=status.get_mode(conversation_id) if status is not None else "ai",
+        origin=TurnOrigin.AI_TURN,
+        success_spec=success_spec,
+        final=final_text,
+    )
+    if delivery.card and delivery.outbound:
         followup = await send_mutation_success_card(
             chatwoot,
             conversation_id,
@@ -679,10 +686,12 @@ async def _handle_locked_agent_bot_message(
             messages_store.append(
                 conversation_id, "assistant", followup, message_id=final_message_id
             )
-    elif final_text is not None and (status is None or status.get_mode(conversation_id) == "ai"):
-        await chatwoot.send_bot_message(conversation_id, final_text)
+    elif delivery.persist is not None and delivery.outbound:
+        await chatwoot.send_bot_message(conversation_id, delivery.persist)
         if messages_store is not None:
-            messages_store.append(conversation_id, "assistant", final_text, message_id=final_message_id)
+            messages_store.append(
+                conversation_id, "assistant", delivery.persist, message_id=final_message_id
+            )
 
     if mutation_form_data is not None:
         await send_mutation_form(chatwoot, conversation_id, mutation_form_data)

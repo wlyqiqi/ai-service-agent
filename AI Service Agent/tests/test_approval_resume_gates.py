@@ -92,7 +92,9 @@ def test_seat_approve_while_human_mode_persists_message_store_without_outbound(t
     assert response.json()["status"] == "approved"
 
     rows = MessageStore(sqlite3.connect(db)).list(session_id)
-    assert any(row["role"] == "assistant" and "通过审核" in row["content"] for row in rows)
+    assert any(row["role"] == "assistant" and "退款申请已提交" in row["content"] for row in rows)
+    # D1=A：human 期间落库文案与 ai 同源（此前落长 done.final「通过审核」）。
+    assert not any("通过审核" in (row["content"] or "") for row in rows if row["role"] == "assistant")
     cw.send_bot_message.assert_not_awaited()
 
 
