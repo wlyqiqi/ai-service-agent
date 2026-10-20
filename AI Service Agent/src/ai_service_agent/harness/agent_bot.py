@@ -697,7 +697,12 @@ async def _handle_locked_agent_bot_message(
         await send_mutation_form(chatwoot, conversation_id, mutation_form_data)
 
     if approval_form_data is not None:
-        await send_approval_form(chatwoot, conversation_id, approval_form_data)
+        # 投影入口单点：生产接线走注入回调（→ ApprovalSideChannel.project），
+        # 未注入时退回模块内的薄包装（同一实现，见 approval_side_channel）。
+        if on_approval_pending is not None:
+            await on_approval_pending(approval_form_data)
+        else:
+            await send_approval_form(chatwoot, conversation_id, approval_form_data)
 
     return {
         "conversation_id": conversation_id,

@@ -1,7 +1,7 @@
 # Approval Side-Channel 深模块：把 ADR-0002 清单收进一个接缝
 
 - 日期：2026-10-20
-- 状态：已实现（4 个 PR：#96 / #97 / #98 / 本分支；实现记录见 §10）
+- 状态：已实现（4 个 PR：#96 / #97 / #98 / #99 + 追加收口 PR5；实现记录见 §10）
 - 相关：ADR-0002、`approval-spec.md` §3.2.1 / §3.2.2 / §5、`CONTEXT.md`（Seat Approver / Approval SoD / Approval Side-Channel）
 - 同型先例：`docs/plans/2026-10-19-form-gate-deep-module.md`（form_gate 已收敛，approval 是剩余 outlier）
 
@@ -313,6 +313,21 @@ Phase 1 与 Phase 2 之间留一次全量回归：把「搬移错误」与「门
   - 文档同步：`approval-spec §3.2.2` 实现归属段、ADR-0002 checklist 逐项落点表、`CONTEXT.md` Approval Side-Channel 条目（含新 `_Avoid_`）。
 - 状态：**已实现**（4 个 PR 全部完成）。
 
+### 追加收口（PR5，2026-10-20）
+
+深模块落地后仍有三处「审批相关代码在模块外」，逐一判定：
+
+| # | 残留 | 结论 |
+|---|---|---|
+| 1 | `send_approval_form` 有 3 个 Transport 直调点（AgentBot 尾部、`_agent_bot_callbacks_factory`、`/chat`） | **收口**：统一走 `ApprovalSideChannel.project()`；`send_approval_form` 保留为模块内公开薄包装（供 `project` 与 AgentBot 无回调时的 fallback），不改 private |
+| 2 | `resume.py:approval_dispatch`（pending/expired 入口判定） | **保持**：属入口层 resume 调度（与 form/handoff 同属 `graph-spec §3`），挪入侧信道会把「进图前调度」与「坐席决策执行链」缠在一起 |
+| 3 | `simulate_approval` 自动 approve 判定在 `/chat` | **保持**：测试开关读 store 已终态再 resume，不是策略；移入只会多一条 Transport→模块依赖 |
+
+PR5 改动：
+- `_agent_bot_callbacks_factory(handoff, seat, ...)` 注入 `seat`，投影用 `seat.project`、interrupt 用 `seat.interrupt_callback`；
+- `/chat` 与 AgentBot 尾部投影改走注入回调（`on_approval_pending`），AgentBot 仍只拿回调、不持有整条决策链；
+- `server.py` 不再 import `send_approval_form` / `make_approval_interrupt_callback`。
+
 ---
 
 ## 11. 任务级执行计划
@@ -326,6 +341,7 @@ Phase 1 与 Phase 2 之间留一次全量回归：把「搬移错误」与「门
 | **PR2** | `fix(harness): 出站门控单点` | T2 + T3 | **唯一变更** | ~200（含测试） | 行为变更必须独占 PR，否则回归失败无法归因 |
 | **PR3** | `refactor(harness): 审批执行链归位` | T4（含测试） | 等价重构 | 搬移 ~250 / 新增 ~250 | 大搬移，diff 以移动为主，便于 review |
 | **PR4** | `fix(harness): follow-on 审批投影` + 文档 | T5 + T7 | 新增能力 | ~100 | 补 spec 缺口，与重构分开 |
+| **PR5** | `refactor(harness): 投影入口统一 seat.project()` | — | 等价重构 | ~60 | 收口 #1 残留：投影入口从 3 处直调收敛为 1 处 |
 
 **为什么不拆成 8 个**：T2 单独合并会留下「写了纯函数没人调用」的死代码；T5 单独成一个 PR 只改 15 行，评审成本高于收益；T7 文档与 T5 同源，分开会有一段文档与代码不符的窗口。
 

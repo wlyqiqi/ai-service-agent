@@ -66,6 +66,8 @@
 
 **实现归属（ADR-0002 收敛后）**：执行链唯一归属 `src/ai_service_agent/harness/approval_side_channel.py`（`ApprovalSideChannel`：工牌 → 预检 → `mark_decided` → resume → Message Store / 门控出站；follow-on `approval_required` 在同一事件循环内投影坐席表单）。门控纯函数在 `harness/outbound_gate.decide_delivery`（`TurnOrigin.SEAT_DECISION`：落库不受 mode 影响，仅出站受门控）。Transport（`server.py`）只提供工牌头解析、`resume_runner`、与 `/chat` 共用的 thread lock、interrupt 回调与 Chatwoot 会话映射。
 
+**投影入口单点**：所有 Transport 的 `approval_required` 投影统一走 `ApprovalSideChannel.project()`（`/chat` 事件循环、AgentBot 注入的 `on_approval_pending` 回调、follow-on 中断）。`send_approval_form` 保留为模块内公开薄包装（`project` 的实现 + AgentBot 无回调时的 fallback），**不得**在 Transport 里直接拼表单项。
+
 ### 3.3 恢复入口（殊途同归）
 
 - **resume schema 唯一（`graph-spec.md` §3）**：`Command(resume= { "action": "approve" | "reject" | "confirm" | "cancel" | "handoff_resumed", "note"?: str } | { "result": "expired" })`。`handoff_resumed` 于 P1 加入（handoff 中断的主动恢复），与审批 / 用户确认 / 超时**共用同一 schema，不设游离分支**。
