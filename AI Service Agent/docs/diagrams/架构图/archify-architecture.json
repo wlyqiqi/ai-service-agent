@@ -3,305 +3,207 @@
   "diagram_type": "architecture",
   "meta": {
     "title": "AI Service Agent",
-    "subtitle": "LangGraph 确定性工作流 + 智能体混合架构",
     "output": "archify-architecture.html",
     "quality_profile": "showcase",
     "locale": "zh-CN",
     "views": [
       {
         "id": "request-path",
-        "label": "主请求路径",
-        "focus": [
-          "users",
-          "chatwoot",
-          "fastapi",
-          "langgraph",
-          "read_graph",
-          "tools",
-          "ark"
-        ],
-        "note": "从客户端到模型调用的完整读路径。"
+        "label": "读路径",
+        "focus": ["widget", "fastapi", "runtime", "graph", "read_graph", "tools", "ark"],
+        "note": "Widget 经 AgentBot 进入 ai 车道，ReadGraph 调用只读工具与模型。"
       },
       {
         "id": "mutation-path",
         "label": "变更路径",
-        "focus": [
-          "fastapi",
-          "langgraph",
-          "mutation_graph",
-          "tools",
-          "sqlite"
-        ],
-        "note": "MutationGraph 显式工作流执行变更操作。"
+        "focus": ["widget", "fastapi", "graph", "mutation_graph", "tools", "sqlite"],
+        "note": "MutationGraph 以 Form Interrupt 收集字段，确认后才写订单。"
       },
       {
         "id": "high-risk-path",
-        "label": "高风险路径",
-        "focus": [
-          "fastapi",
-          "langgraph",
-          "high_risk_graph",
-          "tools",
-          "sqlite"
-        ],
-        "note": "HighRiskGraph 经过人工审批后执行。"
+        "label": "高风险审批",
+        "focus": ["seat", "fastapi", "graph", "high_risk_graph", "sqlite"],
+        "note": "坐席在旁路批准或拒绝，不把 conversation_mode 切成 human。"
+      },
+      {
+        "id": "human-lane",
+        "label": "人工车道",
+        "focus": ["seat", "widget", "fastapi", "runtime"],
+        "note": "Seat Takeover 后会话停在 Conversation Runtime，不再 invoke 总图。"
       }
     ]
   },
   "components": [
     {
-      "id": "users",
+      "id": "widget",
       "type": "external",
-      "label": "用户",
-      "sublabel": "Web UI / Mobile",
-      "pos": [
-        40,
-        320
-      ],
-      "size": [
-        120,
-        60
-      ]
+      "label": "Chatwoot Widget",
+      "sublabel": "C 端 Website Channel",
+      "pos": [48, 300],
+      "size": [168, 68]
     },
     {
-      "id": "chatwoot",
+      "id": "seat",
       "type": "external",
-      "label": "Chatwoot",
-      "sublabel": "消息平台",
-      "pos": [
-        40,
-        500
-      ],
-      "size": [
-        120,
-        60
-      ]
+      "label": "坐席端",
+      "sublabel": "Takeover · 审批旁路",
+      "pos": [48, 560],
+      "size": [168, 68],
+      "tag": "Seat"
     },
     {
       "id": "fastapi",
       "type": "backend",
       "label": "FastAPI Harness",
-      "sublabel": "REST / SSE / WS",
-      "pos": [
-        270,
-        400
-      ],
-      "size": [
-        160,
-        70
-      ]
+      "sublabel": "AgentBot Adapter",
+      "pos": [300, 410],
+      "size": [188, 76]
     },
     {
-      "id": "auth",
+      "id": "runtime",
       "type": "security",
-      "label": "JWT Auth",
-      "sublabel": "Bearer Token",
-      "pos": [
-        270,
-        170
-      ],
-      "size": [
-        160,
-        64
-      ],
-      "tag": "Auth"
+      "label": "Conversation Runtime",
+      "sublabel": "ai / human 入口门控",
+      "pos": [300, 150],
+      "size": [188, 68],
+      "tag": "Mode"
     },
     {
-      "id": "session",
-      "type": "database",
-      "label": "Session Store",
-      "sublabel": "conversation_mode",
-      "pos": [
-        270,
-        640
-      ],
-      "size": [
-        160,
-        60
-      ]
-    },
-    {
-      "id": "langgraph",
+      "id": "graph",
       "type": "backend",
-      "label": "LangGraph Core",
+      "label": "CustomerServiceGraph",
       "sublabel": "Guard ∥ Router → Policy",
-      "pos": [
-        540,
-        400
-      ],
-      "size": [
-        170,
-        70
-      ]
+      "pos": [580, 410],
+      "size": [210, 76]
     },
     {
       "id": "read_graph",
       "type": "backend",
       "label": "ReadGraph",
-      "sublabel": "ReAct Agent",
-      "pos": [
-        810,
-        200
-      ],
-      "size": [
-        150,
-        60
-      ]
+      "sublabel": "ReAct · 只读",
+      "pos": [890, 90],
+      "size": [168, 64]
     },
     {
       "id": "mutation_graph",
       "type": "backend",
       "label": "MutationGraph",
-      "sublabel": "显式 Workflow",
-      "pos": [
-        810,
-        380
-      ],
-      "size": [
-        150,
-        60
-      ]
+      "sublabel": "Form Interrupt",
+      "pos": [890, 250],
+      "size": [168, 64]
     },
     {
       "id": "high_risk_graph",
       "type": "backend",
       "label": "HighRiskGraph",
-      "sublabel": "人工 Approval",
-      "pos": [
-        810,
-        560
-      ],
-      "size": [
-        150,
-        60
-      ],
+      "sublabel": "坐席审批挂起",
+      "pos": [890, 410],
+      "size": [168, 64],
       "tag": "Approval"
+    },
+    {
+      "id": "fallback",
+      "type": "backend",
+      "label": "Fallback",
+      "sublabel": "Concierge 兜底",
+      "pos": [890, 570],
+      "size": [168, 64]
     },
     {
       "id": "tools",
       "type": "backend",
-      "label": "Tools Layer",
-      "sublabel": "KB / Orders / Write",
-      "pos": [
-        1070,
-        380
-      ],
-      "size": [
-        140,
-        60
-      ]
-    },
-    {
-      "id": "sqlite",
-      "type": "database",
-      "label": "SQLite Checkpointer",
-      "sublabel": "thread_id 持久化",
-      "pos": [
-        540,
-        640
-      ],
-      "size": [
-        170,
-        60
-      ]
+      "label": "Tools",
+      "sublabel": "KB · Orders · Write",
+      "pos": [1148, 250],
+      "size": [156, 64]
     },
     {
       "id": "ark",
       "type": "cloud",
-      "label": "ARK Model API",
+      "label": "ARK",
       "sublabel": "火山方舟 LLM",
-      "pos": [
-        1070,
-        170
-      ],
-      "size": [
-        140,
-        60
-      ]
+      "pos": [1148, 90],
+      "size": [156, 64]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "checkpoint · orders",
+      "pos": [580, 590],
+      "size": [210, 64]
     }
   ],
   "boundaries": [
     {
       "kind": "region",
-      "label": "Harness (Transport)",
-      "wraps": [
-        "fastapi",
-        "auth",
-        "session"
-      ]
+      "label": "Harness（Transport）",
+      "wraps": ["fastapi", "runtime"]
     },
     {
       "kind": "region",
-      "label": "LangGraph Workflow",
-      "wraps": [
-        "langgraph",
-        "read_graph",
-        "mutation_graph",
-        "high_risk_graph"
-      ]
+      "label": "LangGraph",
+      "wraps": ["graph", "read_graph", "mutation_graph", "high_risk_graph", "fallback"]
     },
     {
       "kind": "region",
-      "label": "Data & Model",
-      "wraps": [
-        "tools",
-        "sqlite",
-        "ark"
-      ]
+      "label": "数据与模型",
+      "wraps": ["tools", "ark", "sqlite"]
     }
   ],
   "connections": [
     {
-      "id": "users-to-fastapi",
-      "from": "users",
+      "id": "widget-to-fastapi",
+      "from": "widget",
       "to": "fastapi",
-      "label": "HTTPS",
+      "label": "AgentBot webhook",
       "variant": "emphasis"
     },
     {
-      "id": "chatwoot-to-fastapi",
-      "from": "chatwoot",
+      "id": "seat-to-fastapi",
+      "from": "seat",
       "to": "fastapi",
-      "label": "Webhook"
+      "label": "Takeover / 审批"
     },
     {
-      "id": "auth-to-fastapi",
-      "from": "auth",
-      "to": "fastapi",
-      "label": "verify JWT",
-      "variant": "security",
-      "labelDy": 24
-    },
-    {
-      "id": "fastapi-to-langgraph",
+      "id": "fastapi-to-runtime",
       "from": "fastapi",
-      "to": "langgraph",
-      "label": "invoke graph",
+      "to": "runtime",
+      "label": "conversation_mode",
+      "variant": "security"
+    },
+    {
+      "id": "fastapi-to-graph",
+      "from": "fastapi",
+      "to": "graph",
+      "label": "ai 车道 invoke",
       "variant": "emphasis"
     },
     {
-      "id": "fastapi-to-session",
-      "from": "fastapi",
-      "to": "session",
-      "label": "mode check",
-      "labelDy": 24
-    },
-    {
-      "id": "langgraph-to-read",
-      "from": "langgraph",
+      "id": "graph-to-read",
+      "from": "graph",
       "to": "read_graph",
       "label": "read"
     },
     {
-      "id": "langgraph-to-mutation",
-      "from": "langgraph",
-      "to": "mutation_graph"
+      "id": "graph-to-mutation",
+      "from": "graph",
+      "to": "mutation_graph",
+      "label": "mutation",
+      "labelDx": -36
     },
     {
-      "id": "langgraph-to-highrisk",
-      "from": "langgraph",
+      "id": "graph-to-highrisk",
+      "from": "graph",
       "to": "high_risk_graph",
-      "label": "high_risk"
+      "label": "high_risk",
+      "labelAt": [974, 392]
+    },
+    {
+      "id": "graph-to-fallback",
+      "from": "graph",
+      "to": "fallback",
+      "label": "fallback"
     },
     {
       "id": "read-to-tools",
@@ -317,49 +219,48 @@
     {
       "id": "highrisk-to-tools",
       "from": "high_risk_graph",
-      "to": "tools",
-      "label": "tool call"
-    },
-    {
-      "id": "langgraph-to-sqlite",
-      "from": "langgraph",
-      "to": "sqlite",
-      "label": "checkpoint",
-      "labelDy": 24
+      "to": "tools"
     },
     {
       "id": "tools-to-ark",
       "from": "tools",
       "to": "ark",
       "label": "LLM call"
+    },
+    {
+      "id": "graph-to-sqlite",
+      "from": "graph",
+      "to": "sqlite",
+      "label": "thread_id",
+      "labelAt": [685, 500]
     }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "Transport",
+      "title": "入口",
       "items": [
-        "FastAPI 仅负责 Transport（REST/SSE/WS）",
-        "JWT Bearer 认证保护所有接口",
-        "conversation_mode 在入口层轻量判断"
+        "Chatwoot Widget 是 C 端唯一对话壳",
+        "AgentBot Adapter 投影 interrupt，并把表单提交转成 Command(resume)",
+        "human 车道停在 Conversation Runtime，不 invoke 总图"
       ]
     },
     {
       "dot": "emerald",
-      "title": "LangGraph 编排",
+      "title": "编排",
       "items": [
-        "Guard 安全预检与 Router 并行执行",
-        "Policy Gate 确定性映射 (capability × risk_level)",
-        "ReadGraph 用 ReAct；MutationGraph 显式 Workflow；HighRiskGraph 需人工审批"
+        "Guard 与 Router 并行，Policy 按 capability × risk_level 选择子图",
+        "ReadGraph 走 ReAct；MutationGraph 用 Form Interrupt，确认后才写库",
+        "HighRisk 由坐席旁路审批；Fallback 负责兜底与转人工信号"
       ]
     },
     {
       "dot": "rose",
-      "title": "数据与模型",
+      "title": "状态与模型",
       "items": [
-        "SQLite Checkpointer 按 thread_id 持久化图状态",
-        "Tools 按 min_risk_level 分层注入",
-        "ARK 提供底层 LLM 推理能力"
+        "AsyncSqliteSaver 按 thread_id 保存图状态",
+        "订单读写走 SQLiteOrderRepository，与 checkpoint 分开",
+        "ARK 提供 Router、Read 与写路径的模型调用"
       ]
     }
   ]
