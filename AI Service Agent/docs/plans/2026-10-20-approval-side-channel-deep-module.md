@@ -232,7 +232,21 @@ async def approve_approval(approval_id: str, request: Request):
 | D1 | human 期间批准的 Message Store 文案 | **A：与 ai 对齐（短 followup）** | T3 改 `test_approval_resume_gates.py:95` 断言 + 新增同源断言 |
 | D2 | follow-on `approval_required` 是否推新坐席表单 | **A：投影** | T5 在 `decide` 事件循环内接 `project()` |
 | D3 | `interrupt_callback` 归属 | **A：迁入侧信道模块** | T4 从 `approvals.py` 移出，`approvals.py` 退回纯 CRUD |
-| D4 | 是否独立 `outbound_gate.py` | **A：不独立** | 门控只在模块内，两处调用 |
+| D4 | 是否独立 `outbound_gate.py` | **A：不独立** → **实施时修订为 B（独立）** | 门控实际有 3 个调用方（`/chat`、AgentBot、审批 resume），其中 `/chat` 与审批无关；放进审批模块会让客户侧 SSE 依赖审批语义。见 §7.1 |
+
+### 7.1 D4 修订（2026-10-20，PR2 实施时）
+
+原判断「门控只在模块内、两处调用」低估了调用面。实际需要同一门控的位置是：
+
+| 调用方 | origin | 差异 |
+|---|---|---|
+| `/chat` | `AI_TURN` | mode≠ai → 整轮作废 + `ModeChanged` 错误事件 |
+| AgentBot 出口 | `AI_TURN` | mode≠ai → 整轮作废（无对外提示） |
+| `_approval_resume` | `SEAT_DECISION` | mode≠ai → **仍落库**，仅不出站（ADR-0002） |
+
+差异的语义根因不是 policy，而是「谁拥有这一轮」，因此用 `TurnOrigin` 显式建模，而不是三份 if。
+放进 `approval_side_channel.py` 会让 `/chat` 这个纯客户侧 SSE 路径依赖审批模块，故独立为
+`harness/outbound_gate.py`（一个纯函数 + 一个枚举，无 IO）。
 
 
 ---
@@ -277,6 +291,14 @@ Phase 1 与 Phase 2 之间留一次全量回归：把「搬移错误」与「门
   - 新增 `tests/test_approval_side_channel.py`（10 例纯单测）；
   - 全量 `pytest tests --ignore=tests/evals` = **808 passed / 2 skipped**。
   - 待做：PR2（T2+T3，唯一行为变更）。
+- 2026-10-20：**PR2 已实现**（分支 `fix/approval-outbound-gate`，commit `d7bb7211`）：
+  - 新增 `harness/outbound_gate.py`（D4 修订为独立模块，见 §7.1）：`TurnOrigin` + `DeliveryDecision` + `decide_delivery`；
+  - 三处副本收敛：`server.py` `/chat`、`agent_bot.py` 出口、`server.py` `_approval_resume`；
+  - D1=A 落地：human 期间审批 approve 落短 followup（3 处断言同步更新）；
+  - 空文案统一视为无内容；
+  - 新增 `tests/test_outbound_gate.py`（13 例）；
+  - 全量 `pytest tests --ignore=tests/evals`：0 FAILED（820+ passed）。
+  - 待做：PR3（T4，执行链归位）。
 
 ---
 
@@ -328,10 +350,10 @@ pytest tests/test_agent_bot.py tests/test_approval_resume_gates.py -q
 ### T2 — `decide_delivery` 纯函数 + 表驱动单测
 
 **改动**
-- `approval_side_channel.py` 加 `DeliveryDecision` + `decide_delivery(mode, success_spec, final)`（§3 决策表）。
-- 新增 `tests/test_approval_delivery.py`：5 行表 + 「human / ai persist 同源」断言。
+- 新增 `harness/outbound_gate.py`（D4 修订，见 §7.1）：`TurnOrigin` / `DeliveryDecision` / `decide_delivery`（§3 决策表 + `can_send`）。
+- 新增 `tests/test_outbound_gate.py`：8 行门控表 + 「human / ai persist 同源」+ 空文案 + `can_send=False` 两例。
 
-**验收**：`pytest tests/test_approval_delivery.py -q`；此时**尚未**接调用方，生产行为不变。
+**验收**：`pytest tests/test_outbound_gate.py -q`；此时**尚未**接调用方，生产行为不变。
 
 ### T3 — 三处门控收敛（**唯一行为变更**）
 

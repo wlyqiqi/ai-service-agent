@@ -1244,7 +1244,9 @@ def test_approve_resume_persists_final_to_message_store(tmp_path):
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
-    assert any(row["role"] == "assistant" and "通过审核" in row["content"] for row in rows)
+    # D1=A：无 Chatwoot 时也落短 followup（与 ai 模式同源），不再落长 done.final。
+    assert any(row["role"] == "assistant" and "退款申请已提交" in row["content"] for row in rows)
+    assert not any("通过审核" in (row["content"] or "") for row in rows if row["role"] == "assistant")
 
 import importlib.util
 import pytest
