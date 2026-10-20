@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 
@@ -85,11 +86,17 @@ def test_query_context_unavailable_on_non_json_response():
 
     assert _client_with(handler).query_context("x") == {"error": "kb_unavailable"}
 
-def test_query_context_unavailable_on_connect_error():
+def test_query_context_unavailable_on_connect_error(caplog):
     def handler(request):
         raise httpx.ConnectError("boom", request=request)
 
-    assert _client_with(handler).query_context("x") == {"error": "kb_unavailable"}
+    with caplog.at_level(logging.WARNING, logger="ai_service_agent.tools.lightrag"):
+        assert _client_with(handler).query_context("x") == {"error": "kb_unavailable"}
+
+    # The cause must reach the logs: "kb_unavailable" alone is indistinguishable
+    # from an empty retrieval and leaves nothing to debug.
+    assert "lightrag query failed" in caplog.text
+    assert "boom" in caplog.text
 
 
 def test_query_context_limits_single_long_chunk():
