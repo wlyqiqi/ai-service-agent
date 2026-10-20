@@ -39,6 +39,10 @@ uv run ai-service-agent
 
 # 4) LangGraph Studio（默认 checkout/pull main；功能分支加 -Branch <name>）
 .\scripts\start_studio.ps1
+#    -Tracing      让 Studio 看到 run（进程级覆盖 .env，不改文件）
+#    -WithApp      同时启动 FastAPI runtime :8000
+#    -OpenBrowser  启动后自动拉起浏览器
+#    -Port 2025    端口被占用时换一个（脚本会先检测占用并报出 PID）
 
 # 5) 真实模型 SSE 冒烟（FAQ / Mutation / HighRisk / Handoff / Clarify 五场景）
 uv run python scripts/real_model_http_smoke.py

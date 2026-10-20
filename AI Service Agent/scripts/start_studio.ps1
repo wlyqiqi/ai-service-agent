@@ -11,10 +11,14 @@
   import `ai_service_agent` unless VIRTUAL_ENV + PYTHONPATH=src are set.
   Clears process-level ARK_API_KEY so a stale User ark- token does not override .env.
 
+  -Tracing enables LANGSMITH_TRACING for this process (so Studio shows runs)
+  without editing .env. -WithApp also starts the FastAPI runtime on :8000.
+
 .EXAMPLE
   .\scripts\start_studio.ps1
   .\scripts\start_studio.ps1 -Branch codex/model-node-harness
-  .\scripts\start_studio.ps1 -SkipGit -Tunnel
+  .\scripts\start_studio.ps1 -SkipGit -Tracing -OpenBrowser
+  .\scripts\start_studio.ps1 -SkipGit -WithApp
 #>
 [CmdletBinding()]
 param(
@@ -23,6 +27,8 @@ param(
     [switch]$SkipGit,
     [switch]$Tunnel,
     [switch]$OpenBrowser,
+    [switch]$Tracing,
+    [switch]$WithApp,
     [int]$Port = 2024
 )
 
@@ -66,6 +72,19 @@ if (-not (Test-Path $venvPython)) {
     throw "Missing venv python: $venvPython"
 }
 
+# A stale `langgraph dev` from a previous session makes the new one fail with a
+# bare bind error. Fail fast with the owning PID instead.
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($listener) {
+    $ownerPid = $listener.OwningProcess
+    $owner = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+    $ownerName = "unknown"
+    if ($owner) { $ownerName = $owner.ProcessName }
+    throw "Port $Port is already in use by PID $ownerPid ($ownerName). " +
+          "Stop it first: Stop-Process -Id $ownerPid   (or use -Port <other>)"
+}
+
 # Drop process overrides that shadow .env (User-level ark- keys caused 401 before).
 foreach ($k in @("ARK_API_KEY", "ARK_BASE_URL", "ARK_MODEL")) {
     Remove-Item "Env:$k" -ErrorAction SilentlyContinue
@@ -85,6 +104,22 @@ if (-not (Test-Path $config)) {
     throw "Missing $config"
 }
 
+# langgraph dev injects .env only for keys that are not already set, so a
+# process-level value wins without editing the (untracked) .env file.
+if ($Tracing) {
+    $env:LANGSMITH_TRACING = "true"
+    Write-Host "Tracing: LANGSMITH_TRACING=true (process override; .env untouched)"
+}
+
+if ($WithApp) {
+    $appExe = Join-Path $venv "Scripts\ai-service-agent.exe"
+    if (-not (Test-Path $appExe)) {
+        throw "Missing $appExe"
+    }
+    Write-Host "Starting FastAPI runtime on :8000 ..."
+    Start-Process -FilePath $appExe -WorkingDirectory $ProjectRoot
+}
+
 $langgraphArgs = @(
     "dev",
     "--config", $config,
@@ -98,9 +133,14 @@ if ($Tunnel) {
 }
 
 Write-Host ""
-Write-Host "API:    http://127.0.0.1:$Port"
-Write-Host "Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:$Port"
-Write-Host "Config: langgraph.studio.json"
+Write-Host "API:     http://127.0.0.1:$Port"
+Write-Host "Health:  curl --noproxy `"*`" http://127.0.0.1:$Port/ok"
+Write-Host "Studio:  https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:$Port"
+Write-Host "Config:  langgraph.studio.json"
+Write-Host ""
+Write-Host "If Studio cannot connect: add 127.0.0.1;localhost to the system proxy"
+Write-Host "bypass list (this machine sets HTTP_PROXY/HTTPS_PROXY), and open the URL"
+Write-Host "in a normal browser rather than an embedded preview panel."
 Write-Host ""
 
 & langgraph @langgraphArgs
