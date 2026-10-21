@@ -9,7 +9,7 @@
 | `architecture.md` | 背景目标、架构总览、技术选型 + 横切关注点（持久化/错误/观测/harness hook/测试/目录/假设/风险） | 所有人（起点） |
 | `state-spec.md` | CustomerServiceState 状态设计 | 改动 State 的人 |
 | `graph-spec.md` | 总图：入口 resume 调度/Router/Policy/Read/Mutation/HighRisk/Fallback | 改图的人 |
-| `tool-spec.md` | 工具注册表与 risk_level 权限模型 | 加工具的人 |
+| `tool-spec.md` | 工具注册表与 `min_risk_level` 分层注入（工具档位，非 Router State） | 加工具的人 |
 | `approval-spec.md` | 审批服务（Approval Service） | 做审批的人 |
 | `event-spec.md` | 归一化事件协议（SSE/WS）；含 `form_required` / `form_rejected`（Form Interrupt 投影） | 前后端对接的人 |
 | `mutation-form-interrupt-spec.md` | Mutation Form / Form Interrupt / Form Resume 产品与实现决策 | 改 Mutation 写路径 / 表单事件的人 |

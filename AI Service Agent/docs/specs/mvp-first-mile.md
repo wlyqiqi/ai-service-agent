@@ -1,7 +1,7 @@
 # MVP 第一公里实现范围（mvp-first-mile.md）
 
 - 日期：2026-09-14
-- 状态：实现范围 / 里程碑规格（brainstorming 定稿，下一步 writing-plans）
+- 状态：**已完成（历史里程碑）** — 第一公里范围已落地；现行权威为 `architecture.md` / `graph-spec.md` / `state-spec.md` / `handoff-spec.md` / `event-spec.md`。下文保留当时纳入/排除边界，供追溯；勿再按「下一步 writing-plans」执行。
 - 关联：`architecture.md`（架构总览）· `handoff-spec.md`（状态机 / 接管机制）· `graph-spec.md`（图内部）· `event-spec.md`（事件协议）· `state-spec.md`（State）
 
 ## 1. 目标与验收线

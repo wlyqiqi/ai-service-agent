@@ -43,7 +43,7 @@
 ## 6. 常驻硬约束
 
 - **Deterministic authority**：LLM 负责理解；权限与执行决策由确定性代码（Policy Gate / 安全预检）做出。
-- **Capability-scoped**：按 capability 拆分子图与工具集；不做「万能 Agent」。
+- **Capability-scoped**：按业务能力拆分子图与工具集（Read / Mutation / HighRisk 等）；**不是**历史 Router State 字段 `capability`。Router 唯一语义输出为 `route_intent`（见 `state-spec.md` / `graph-spec.md`）。不做「万能 Agent」。
 - **Harness hooks**：横切（事件、观测、审计、限流）挂在工具执行前后，不写进 agent / 工具循环内部（`architecture.md` §8.1）。
 - **Eval**：路由 / 安全误拒 / handoff 等指标用可重复离线集，不靠人工临时判断。
 

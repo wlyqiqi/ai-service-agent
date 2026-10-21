@@ -226,10 +226,10 @@
      channel.webhook_url）。
 - 回归：全量 pytest 204 passed + `langgraph validate` valid。
 
-## 11. 人工车道 + 页面契约 真机复验（2026-09-18 脚本化：10 步全 PASS）
+## 11. 人工车道真机复验（2026-09-18 脚本化：10 步全 PASS）
 
-- 目的：契约对齐（user-page-spec §10/§11）后，按页面 `createApi` 实际调用形状复验整条
-  「用户端页面契约 ↔ Runtime ↔ Chatwoot 坐席端 ↔ webhook 回写」人工车道；可重复执行。
+- 目的：按当时 Transport 契约（登录 / sessions / chat / handoff resolve；历史曾对齐已废止的 user-page-spec §10/§11）复验
+  「Runtime ↔ Chatwoot 坐席端 ↔ webhook 回写」人工车道；可重复执行。C 端主入口现为 Widget + AgentBot（ADR 0001）。
 - 脚本：`scripts/real_human_lane_smoke.py`（真实 ARK 模型 + 真实 Chatwoot；Runtime 绑
   `0.0.0.0:8000` 供 webhook 回推；每次全新临时 SQLite）。
 - 运行：`uv run --no-sync python scripts/real_human_lane_smoke.py`
@@ -266,7 +266,7 @@
 ## 13. P0 显式转人工入口检测（2026-09-18）
 
 - 目的：验证「用户明确要求转人工」在入口层 `detect_handoff_intent` 阶段直接进入 Human Lane，
-  即使 Router 原本可能把文本误判成其它 capability；**关键断言是 `handoff_created` + `mode=human`，不是 Router 分类**。
+  即使 Router 原本可能把文本误判成其它 `route_intent`；**关键断言是 `handoff_created` + `mode=human`，不是 Router 分类**。
 - 前置：Runtime（`ai-service-agent`，0.0.0.0:8000，真实 ARK + Chatwoot）运行中。
 - 脚本：`scripts/real_human_lane_smoke.py`（step 5 多短语按序重试兜底）。
 - 复验用例（至少两条）：
@@ -332,6 +332,6 @@
   - 3/3 SSE turn 均有 `done`，无 `error` 事件。
 - 观测：`ContextBudgetMiddleware` 记录 `context_policy_applied`；middleware 单测覆盖
   raw/selected、system prompt 计费、历史 tool chain 排除、当前轮 tool chain 保留。
-- 回归：focused regression 126 passed。全量 offline regression 暴露 76 个既有
-  Chatwoot / user-page / human-lane 相关失败，本次改动未触碰这些模块；相关
+- 回归：focused regression 126 passed。全量 offline regression 当时暴露 76 个既有
+  Chatwoot / human-lane 相关失败，本次改动未触碰这些模块；相关
   context/router/select/read 回归全部通过。
