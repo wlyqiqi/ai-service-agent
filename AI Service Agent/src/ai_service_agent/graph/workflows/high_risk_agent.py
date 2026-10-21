@@ -270,7 +270,11 @@ def make_high_risk_graph(
 
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})
-        if "clarify_missing" in ctx or ctx.get("tier_clarify"):
+        if (
+            "clarify_missing" in ctx
+            or ctx.get("tier_clarify")
+            or ctx.get("operation_clarify")
+        ):
             return "clarify"
         pending = ctx.get("pending_tool")
         if pending:

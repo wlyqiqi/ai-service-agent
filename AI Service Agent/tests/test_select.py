@@ -18,6 +18,7 @@ from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
+from ai_service_agent.tools.write import UpdatePhoneArgs
 
 
 class RecordingSelectModel(ToolCallingFakeModel):
@@ -165,7 +166,7 @@ def test_select_json_tool_list_uses_short_meta_description():
 
 
 def test_select_bindtools_system_states_ticket_versus_refund_boundary():
-    """真模型 Select 的系统提示与 JSON 模板规则 6 等价：工单跟进 ≠ 资金退回。"""
+    """真模型 Select 与 fake 同规则语义：工单跟进 ≠ 资金退回；输出仍为 tool_call。"""
     bound_model = AsyncMock()
     bound_model.ainvoke.return_value = AIMessage(
         content="",
@@ -180,12 +181,13 @@ def test_select_bindtools_system_states_ticket_versus_refund_boundary():
         "context": {},
     }))
 
-    assert model.bind_tools.call_args == call([tool], tool_choice="any")
+    assert model.bind_tools.call_args == call([tool], tool_choice="auto")
     system = bound_model.ainvoke.await_args.args[0][0].content
     assert "create_service_ticket" in system
     assert "refund_apply" in system
-    assert "核心诉求是售后处理，选 create_service_ticket，不要因「退货」改选 refund_apply" in system
-    assert "只有用户明确说出退款金额或「退钱」「退款」时，才选 refund_apply" in system
+    assert "售后" in system and "退款" in system
+    assert "最接近" not in system
+    assert "只输出 JSON" not in system
 
 
 def test_select_real_model_uses_bind_tools():
@@ -204,23 +206,55 @@ def test_select_real_model_uses_bind_tools():
         "context": {},
     }))
 
-    assert model.bind_tools.call_args == call([tool], tool_choice="any")
+    assert model.bind_tools.call_args == call([tool], tool_choice="auto")
     assert bound_model.ainvoke.await_count == 1
     assert output["context"]["pending_tool"]["tool"] == "update_phone"
 
 
-def _real_model_node(model) -> tuple[Callable[[dict], dict], MagicMock]:
+def test_select_real_model_system_includes_allowlist_and_examples():
+    """#110: 真实路径与 fake 共享 allowlist 工具行与业务示例（输出形状仍为 tool_call）。"""
+    bound_model = AsyncMock()
+    bound_model.ainvoke.return_value = AIMessage(
+        content="",
+        tool_calls=[{"name": "update_phone", "args": {"phone": "13800138000"}, "id": "call_1"}],
+    )
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+    node, _ = _real_model_node(model)
+    _select_result(node({
+        "messages": [HumanMessage(content="把手机号改成13800138000")],
+        "user_id": "u1",
+        "context": {},
+    }))
+
+    system = bound_model.ainvoke.await_args.args[0][0].content
+    assert "- update_phone:" in system
+    assert "参数：" in system
+    assert "phone" in system
+    assert "示例" in system
+    assert "update_phone" in system
+    assert "最接近的工具" not in system
+    assert "不要强行映射" in system or "不属于" in system
+
+
+def _real_model_node(model, *, tier: str = "mutation") -> tuple[Callable[[dict], dict], MagicMock]:
     tool = MagicMock()
     tool.name = "update_phone"
     registry = ToolRegistry()
     registry.register(
-        ToolMeta(name="update_phone", description="修改联系电话", min_risk_level="mutation"),
+        ToolMeta(
+            name="update_phone",
+            description="修改联系电话",
+            min_risk_level="mutation",
+            schema=UpdatePhoneArgs,
+        ),
         tool,
     )
-    return make_select_node(model, "mutation", [tool], registry), tool
+    return make_select_node(model, tier, [tool], registry), tool
 
 
-def test_select_real_model_rejects_missing_tool_calls():
+def test_select_real_model_no_tool_call_routes_to_operation_clarify():
+    """#110: tool_choice=auto 且无 tool_call → Operation Clarify，不是 select_parse_failed。"""
     bound_model = AsyncMock()
     bound_model.ainvoke.return_value = AIMessage(content="", tool_calls=[])
     model = MagicMock()
@@ -228,13 +262,40 @@ def test_select_real_model_rejects_missing_tool_calls():
     node, _ = _real_model_node(model)
 
     output = _select_result(node({
-        "messages": [HumanMessage(content="把手机号改成13800138000")],
+        "messages": [HumanMessage(content="帮我弄一下订单")],
         "user_id": "u1",
         "context": {},
     }))
 
-    assert output["context"]["precheck_reason"] == "select_parse_failed"
-    assert output["execution_status"] == "completed"
+    assert output["context"].get("operation_clarify") is True
+    assert "precheck_reason" not in output["context"]
+    assert "pending_tool" not in output["context"]
+    assert output.get("execution_status") != "completed"
+
+
+def test_select_real_model_no_tool_call_high_risk_routes_to_tier_clarify():
+    """#110: HighRisk 无 tool_call → tier clarify，不是 reject。"""
+    bound_model = AsyncMock()
+    bound_model.ainvoke.return_value = AIMessage(content="", tool_calls=[])
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+    tool = MagicMock()
+    tool.name = "cancel_order"
+    registry = ToolRegistry()
+    registry.register(
+        ToolMeta(name="cancel_order", description="取消订单", min_risk_level="high_risk"),
+        tool,
+    )
+    node = make_select_node(model, "high_risk", [tool], registry)
+
+    output = _select_result(node({
+        "messages": [HumanMessage(content="帮我处理一下")],
+        "user_id": "u1",
+        "context": {},
+    }))
+
+    assert output["context"].get("tier_clarify")
+    assert "precheck_reason" not in output["context"]
     assert "pending_tool" not in output["context"]
 
 

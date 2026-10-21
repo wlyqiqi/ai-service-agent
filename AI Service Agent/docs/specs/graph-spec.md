@@ -158,7 +158,7 @@
 | ReadGraph | `messages`、`context`、`user_id`、`allowed_tools` | `messages`、`execution_status` |
 | MutationGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class` | `messages`、`context`（Form / pending_tool 等）、`execution_status` |
 | HighRiskGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class`、`requires_approval` | `messages`、`context`、`pending_approval`、`execution_status` |
-| select（mutation） | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或 `tier_clarify`；成功/进表单时清零 `clarify_count`） |
+| select（mutation） | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或 `tier_clarify`；或无 tool_call 时 `operation_clarify`；成功/进表单时清零 `clarify_count`） |
 | select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`） |
 | prepare_form / form_interrupt（high_risk） | `context`（`pending_tool`、`form_session_id`） | Form Interrupt（缺参收集）；Confirm 后写 `pending_tool.args` 再进安全预检/审批；Cancel / 零候选不进审批 |
 | clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（HighRisk 零候选缺参 / 写图 `tier_mismatch`；有候选的 HighRisk 缺参与 Mutation 业务缺参不走此节点） |

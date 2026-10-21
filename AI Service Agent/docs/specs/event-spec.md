@@ -24,7 +24,7 @@
 | `safety_rejected` | `{rule, reason}` | 安全预检拒绝（见 safety-spec.md） |
 | `approval_required` | `{approval_id, summary, expires_at}` | HighRisk interrupt（见 approval-spec.md） |
 | `approval_updated` | `{approval_id, status}` | 审批状态变更 |
-| `clarification_required` | `{missing: [...], reason?: "tier_mismatch" \| "operation_unclear", candidates?: [...]}` | **HighRisk** select 参数不完整 / 低档工具档不匹配（tier_mismatch）→ clarify（普通轮，见 graph-spec.md §6.3）；**Operation Clarify**（mutation tool 未定、进 MutationGraph 之前，`reason:"operation_unclear"`，不发 `form_required`）；Mutation **档不匹配** `tier_mismatch` 仍可发。Mutation 业务字段缺参**不再**走本事件（改由 Mutation Form / `form_required`）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
+| `clarification_required` | `{missing: [...], reason?: "tier_mismatch" \| "operation_unclear", candidates?: [...]}` | **HighRisk** select 参数不完整 / 低档工具档不匹配 / 无 tool_call（tier_mismatch）→ clarify（普通轮，见 graph-spec.md §6.3）；**Operation Clarify**（mutation tool 未定：入口层 Hybrid Tool Resolution，或 Mutation select 在 `tool_choice=auto` 下未发起 tool_call 的逃逸，`reason:"operation_unclear"`，不发 `form_required`）；Mutation **档不匹配** `tier_mismatch` 仍可发。Mutation 业务字段缺参**不再**走本事件（改由 Mutation Form / `form_required`）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
 | `confirmation_required` | `{summary}` | **已弃用（Mutation 主路径）**：旧聊天确认 interrupt。Mutation 写路径现用 Form Interrupt → `form_required` / `form_rejected`（§2.2）。保留类型仅为兼容旧客户端 / harness 映射；新实现不得再从 MutationGraph 发出 |
 | `confirmation_updated` | `{action}` | 旧 Mutation 确认结果（confirm / cancel）；主路径由 Form Resume 取代，不再作为 Mutation happy path 事件 |
 | `form_required` | 见 §2.2 | Mutation **Form Interrupt** 首次挂起的 SSE 投影（权威挂起态仍是 checkpointer `__interrupt__`，见 `mutation-form-interrupt-spec.md` / `CONTEXT.md`） |
@@ -42,7 +42,7 @@
 | 子图 | 允许发出的事件 |
 |---|---|
 | ReadGraph | `tool_call` / `tool_result` / `token` / `error` / `done` |
-| MutationGraph | `tool_call` / `tool_result` / `form_required` / `form_rejected` / `token` / `error` / `done`（可选遗留：`clarification_required` 仅 `tier_mismatch`；**不得**再发 `confirmation_required` / `confirmation_updated`） |
+| MutationGraph | `tool_call` / `tool_result` / `form_required` / `form_rejected` / `token` / `error` / `done`（可选：`clarification_required` 的 `tier_mismatch`，以及 select 无 tool_call 时的 `operation_unclear`；**不得**再发 `confirmation_required` / `confirmation_updated`） |
 | HighRiskGraph | `tool_call` / `tool_result` / `clarification_required` / `approval_required` / `approval_updated` / `token` / `error` / `done` |
 
 - 任意子图触发 Handoff 时，外层先发 `handoff_requested`（挂起、mode 仍 `ai`）；`handoff_created` **仅**在后续 Seat Takeover 时发出。子图自身不直接发出这些事件。
