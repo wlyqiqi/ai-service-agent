@@ -3,6 +3,15 @@ import pytest
 from ai_service_agent.tools import kb as kb_module
 from ai_service_agent.tools.kb import kb_search
 
+# Finished CS / handoff copy must not appear in empty or unavailable returns.
+_FORBIDDEN_TOOL_COPY = (
+    "联系人工",
+    "人工客服",
+    "请换个说法",
+    "请稍后再试",
+    "未查询到相关知识",
+)
+
 
 class FakeClient:
     def __init__(self, result):
@@ -29,11 +38,14 @@ def test_kb_search_hit_with_sources(monkeypatch):
 def test_kb_search_no_result(monkeypatch):
     _patch(monkeypatch, {"context": "", "references": []})
     out = kb_search.invoke("不存在的知识")
-    assert "未查询到" in out
+    assert out == "检索结果：空"
+    for phrase in _FORBIDDEN_TOOL_COPY:
+        assert phrase not in out
 
 
 def test_kb_search_unavailable(monkeypatch):
     _patch(monkeypatch, {"error": "kb_unavailable"})
     out = kb_search.invoke("任何问题")
-    assert "暂不可用" in out
-    assert "人工客服" in out
+    assert out == "检索结果：不可用"
+    for phrase in _FORBIDDEN_TOOL_COPY:
+        assert phrase not in out

@@ -148,8 +148,10 @@ def test_read_system_prompt_forbids_placeholder_args_and_outage_paraphrase():
     from ai_service_agent.prompts import READ_SYSTEM_PROMPT
 
     assert "6. 调用工具时，不需要的筛选条件必须直接省略该参数，禁止填入 \"null\"、\"none\" 等占位字符串；" in READ_SYSTEM_PROMPT
-    assert "7. 工具返回错误时，不得将其转述为\"系统故障/数据源不可用\"。应先核对参数重试一次；" in READ_SYSTEM_PROMPT
-    assert "仍失败则如实告知用户具体原因，或引导其补充信息 / 转人工。" in READ_SYSTEM_PROMPT
+    assert "工具返回的是原始数据，不是最终话术" in READ_SYSTEM_PROMPT
+    assert "不要原样复述工具文本" in READ_SYSTEM_PROMPT
+    assert "系统故障" in READ_SYSTEM_PROMPT
+    assert "数据源不可用" in READ_SYSTEM_PROMPT
 
 
 def test_read_system_prompt_friendly_no_result_tone():
