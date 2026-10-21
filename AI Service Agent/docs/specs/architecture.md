@@ -9,9 +9,9 @@
 基于 LangGraph 的 AI 客服系统，采用**确定性工作流 + 智能体混合架构**：
 
 - 可预测、可审计：业务关键路径用确定性 workflow，只有需要自由度的地方才用 agent。
-- 按操作风险分层：读操作（Read）放开、变更操作（Mutation）用户确认、高风险操作（HighRisk）人工审批。
+- 按操作风险分层：读操作（Read）放开、变更操作（Mutation）Form Interrupt 确认、高风险操作（HighRisk）人工审批。
 - 完善的 harness：FastAPI 网关、会话持久化、归一化事件流、审批服务、安全预检、可观测性、错误兜底。
-- 多轮对话：每个 turn 重新路由；挂起的中断优先处理（Resume）。
+- 多轮对话：每个 turn 重新路由；挂起的中断由入口层 `Command(resume=...)` 优先续接。
 
 ## 2. 架构总览
 
@@ -31,15 +31,16 @@ CustomerServiceGraph (LangGraph 总图, SQLite Checkpointer)
    +- 入口 resume 调度（每次图调用前 aget_state 检测挂起中断；P1 定案，
    |     实测依据见 docs/decisions/2026-09-14-checkpointer-resume-handoff.md）
    |    +- 有挂起中断 -> Command(resume=<唯一 schema>, update={messages}) 从断点恢复子图（不重走 Router）
-   |    +- 无挂起中断 -> 新 run: Router
+   |    +- 无挂起中断 -> 新 run: Guard ∥ Router
    |
-   +- Router 节点 (LLM 结构化输出: capability + risk_level + confidence)
+   +- Guard（确定性规则包）∥ Router（LLM：route_intent + confidence）
    |         |
-   |         v  Policy 纯确定性映射 (capability x risk_level -> 子图)
+   |         v  Policy Gate 纯确定性映射 (route_intent -> target_graph / execution_class /
+   |              allowed_tools / requires_approval)
    |
    +- read      -> ReadGraph      (ReAct agent + 只读工具, 无业务 interrupt)
-   +- mutation  -> MutationGraph  (安全预检 -> interrupt 用户确认 -> 执行)
-   +- high_risk -> HighRiskGraph  (安全预检 -> interrupt 人工审批 -> 执行/拒绝)
+   +- mutation  -> MutationGraph  (select -> 预检 -> Form Interrupt -> Form Resume -> 执行)
+   +- high_risk -> HighRiskGraph  (select -> 预检/Form -> interrupt 人工审批 -> 执行/拒绝)
    +- fallback  -> Concierge 兜底 agent
    |
    +- 任意子图检测到转人工信号 -> interrupt(handoff_request) -> 外层接管（见上）
@@ -48,7 +49,7 @@ CustomerServiceGraph (LangGraph 总图, SQLite Checkpointer)
 Final Response (写回 messages, 统一出口 + 归一化事件)
 ```
 
-业务工具为共享层（ERP/CRM/API 客户端），按 `risk_level` 绑定可调用集合。详见 `graph-spec.md`、`tool-spec.md`、`safety-spec.md`。
+业务工具为共享层（ERP/CRM/API 客户端），按工具注册表的 `min_risk_level` 分层注入可调用集合（不是 Router State 字段）。详见 `graph-spec.md`、`tool-spec.md`、`safety-spec.md`。
 
 顶层会话流程（`conversation_mode` 判断 → AI / 人工双车道 → 循环回入口）见 `docs/diagrams/handoff-overview.svg`；AI 路径内部结构见 `graph-spec.md`。入口层职责与 `conversation_mode` 状态机见 `handoff-spec.md`。
 
@@ -58,7 +59,7 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 |---|---|
 | LangGraph 1.2.10 | StateGraph / interrupt / Command / 子图 / 7 种 stream_mode / Store 均实测可用 |
 | Agent 构建：`langchain.agents.create_agent` | `langgraph.prebuilt.create_react_agent` 已弃用（`LangGraphDeprecatedSinceV10`）；新 API 签名实测确认（`system_prompt`、`tools` 可空、`middleware`） |
-| 结构化输出：`response_format`（pydantic schema） | `create_agent` 支持；用于 Router 的 capability/risk_level/confidence 输出 |
+| 结构化输出：`with_structured_output` / function_calling | Router 唯一契约：`route_intent` + `confidence`（见 `graph-spec.md` §4） |
 | Checkpointer：`AsyncSqliteSaver`（`langgraph.checkpoint.sqlite.aio`） | 异步路径；`MemorySaver` 仅测试用 |
 | Store：`InMemoryStore` 起步 | 用户记忆/画像；接口按 `BaseStore` 抽象，可换 SQLite/Postgres |
 | 网关：FastAPI（需 `uv add fastapi`） | 当前环境未装，见审计 G7 |
@@ -165,7 +166,7 @@ docs/                     # project-audit.md + specs/
 | 状态机 | 取值 | 存储位置 | 管理位置 | 转移触发 |
 |---|---|---|---|---|
 | `conversation_mode` | `ai` / `human` | 轻量 `conversation_status`（独立表/Redis key，`conversation_id → mode`） | **入口层**（Conversation Runtime），不进 LangGraph | `ai→human`：收 `interrupt(handoff_request)` 后与建 Handoff Record **同一事务**原子切换；`human→ai`：人工 Resolve（前置校验 pending 审批仍有效；**审批归宿**不再是「继续挂起等 AI」——Seat Approver / Approval Side-Channel，见 [ADR-0002](../adr/0002-seat-approver-side-channel.md)；`handoff-spec.md` §1.3 / §5.1 归宿段已 supersede） |
-| `execution_status` | 9 值（`idle…waiting_handoff…failed`） | LangGraph **State 内字段**，随 checkpoint 持久化 | **图内**（Router / 子图 / ResumeHandler 按 turn 阶段置位） | `check_handoff` 抛 `handoff_request` 前置 `waiting_handoff`；Resolve 后 ResumeHandler 恢复转 `running` |
+| `execution_status` | 9 值（`idle…waiting_handoff…failed`） | LangGraph **State 内字段**，随 checkpoint 持久化 | **图内**（Router / 子图 / `final` 按 turn 阶段置位） | `check_handoff` 抛 `handoff_request` 前置 `waiting_handoff`；Resolve 后由入口层 `Command(resume=...)` 续接子图，最终由 `final` 置 `completed` |
 | 审批状态 | `pending / approved / rejected / expired` | Approval Service（轻量状态存储，同 `conversation_status` 定位） | 状态存储在外置服务（惰性过期）；**业务决策在图内** | 图发起 interrupt；HTTP 端点前置校验后 `Command(resume=...)` 恢复（见 `approval-spec.md` §3） |
 | Handoff 生命周期 | `created → 接管中 → resolved` | `handoff_record` 表 | **外层**创建 / resolve，与 mode 切换同事务 | 子图 `interrupt(handoff_request)` → 外层建 Record + 切 mode + `handoff_created`；`POST /handoffs/{id}/resolve` → `handoff_resolved` |
 

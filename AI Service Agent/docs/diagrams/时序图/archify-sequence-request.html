@@ -5738,7 +5738,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>&bull; START 同时分发到 guard 与 router_llm（并行节点）</li>
-          <li>&bull; policy_gate 为确定性 join 点，按 (capability, risk_level) 查映射表</li>
+          <li>&bull; policy_gate 为确定性 join 点，按 route_intent → PolicyDecision 派生</li>
           <li>&bull; guard fail → safety_final（不进子图）</li>
         </ul>
       </div>
