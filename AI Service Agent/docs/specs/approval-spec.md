@@ -78,7 +78,7 @@
 ## 4. 超时策略
 
 - `expires_at` 由配置决定（默认 30 分钟，可配）。
-- 图内不轮询：下个 turn 进入时若已过期，ResumeHandler 以 `Command(resume={"result":"expired"})` 恢复（schema 见 `graph-spec.md` §3），HighRiskGraph 按过期分支收尾。
+- 图内不轮询：下个 turn 进入时若已过期，**入口层 resume 调度**（`aget_state()`）以 `Command(resume={"result":"expired"})` 恢复（schema 见 `graph-spec.md` §3），HighRiskGraph 按过期分支收尾。无图内 ResumeHandler 节点。
 - 过期审批在服务侧标记 `expired`，人工端不再展示可操作项（惰性机械落库，见 §3.1，不构成业务决策）。
 
 ## 5. 人工端（v1）

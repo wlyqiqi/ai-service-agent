@@ -1,8 +1,13 @@
 # AI Service Agent — 项目审计报告
 
+> **历史审计快照（2026-09-11）**，不是现行架构说明。  
+> 当时的「缺口 / 建议目录 / 最小开发顺序」（D/E/H 节）及文中 `capability + risk_level` Router、空 ReAct、`ResumeHandler` 图节点等表述**均已过时**。  
+> **现行权威**：`docs/specs/`（尤其 `architecture.md` / `graph-spec.md` / `state-spec.md`）、`docs/adr/`、`pyproject.toml` / `.python-version`。  
+> B 节 LangGraph 能力表可作 API 实测参考，但版本号以当前安装环境为准；与本文冲突时以已安装包 + 现行 specs 为准。
+
 - 审计日期：2026-09-11
 - 审计角色：架构工程师（只读审计，未修改任何业务代码）
-- 审计方法：以**当前安装环境**为准（包内源码 + 类型定义 + 运行期冒烟验证），不以旧教程推断 API。Context7 MCP 在本会话不可用，故以安装包源码/签名作为权威依据，并用内存图做了真实运行验证。
+- 审计方法：以**当时安装环境**为准（包内源码 + 类型定义 + 运行期冒烟验证），不以旧教程推断 API。
 
 ---
 
@@ -76,16 +81,18 @@
 
 ---
 
-## D. 当前还缺少什么
+## D. 当时还缺少什么（2026-09-11 缺口清单 · 已过时）
+
+> 以下条目描述审计当日缺口；多数已在后续里程碑落地。勿据此判断仓库现状。
 
 1. **项目文档**：AGENTS.md、设计 spec、README 内容（全空）。
-2. **业务图**：Router（capability + risk_level 分类）、Read/Mutation/HighRisk 三子图、ResumeHandler、Fallback——目前只有空 ReAct。
-3. **Harness**：FastAPI 网关（**fastapi 未安装**）、会话管理（SqliteSaver 接线）、归一化事件协议、审批服务（approvals API + 超时）。
-4. **工具层**：工具注册表 + 按 risk_level 的权限绑定、知识库检索、订单/ERP stub。
+2. **业务图**：Router / Read/Mutation/HighRisk / Fallback（审计时仅空 ReAct；现行 Router 契约为 `route_intent`，resume 在入口层 harness）。
+3. **Harness**：FastAPI 网关、会话管理、归一化事件、审批服务。
+4. **工具层**：工具注册表 + 按工具 `min_risk_level` 分层注入、知识库检索、订单 stub。
 5. **内存/持久化**：Store（用户记忆）未接线。
-6. **可观测性**：`.env.example` 无 LANGSMITH_* 配置；structlog/opentelemetry 未接线。
-7. **测试**：pytest 未安装，无任何测试。
-8. **清理**：`.langgraph_api/`、`__pycache__/` 残留（gitignore 已覆盖 pycache，但 `.langgraph_api` 未在 `.gitignore`）。
+6. **可观测性**：LangSmith / structlog 等。
+7. **测试**：pytest 与测试矩阵。
+8. **清理**：`.langgraph_api/` 等残留。
 
 ---
 
@@ -107,7 +114,7 @@ src/ai_service_agent/
   graph/                  # 业务图
     state.py              # CustomerServiceState（TypedDict + reducers）
     builder.py            # 总图组装入口（langgraph.json 指向这里）
-    router.py             # Router 节点（capability + risk_level 结构化输出）+ 条件边 + ResumeHandler
+    router.py             # Router 节点（当时设想；现行为 route_intent + 入口层 resume）
     agents/               # agent 节点（用 langchain.agents.create_agent）
       faq.py              # FAQ/RAG agent（只读工具）
       service.py          # 业务 agent（读写工具）
@@ -172,18 +179,11 @@ agent.py                  # 删除或保留为兼容别名
 
 ---
 
-## H. 建议的最小开发顺序
+## H. 当时建议的最小开发顺序（2026-09-11 · 已过时）
 
-1. **文档先行**：`AGENTS.md` + 设计 spec（确认架构与 API 选型：`langchain.agents.create_agent`、`interrupt`/`Command`、SqliteSaver、FastAPI 网关）。
-2. **骨架**：`config.py`、`state.py`、`builder.py`（空总图 + Router stub）、改 `langgraph.json` 指向 builder，`langgraph validate` 通过。
-3. **Router**：结构化输出分类节点（capability + risk_level）+ 条件边 + 低置信度兜底；fake model 单测。
-4. **ReadGraph**：`create_agent` + 只读工具 + 工具注册表（risk 绑定）。
-5. **MutationGraph**：`interrupt()` 确认 + `Command(resume=...)` + SqliteSaver 持久化；e2e 覆盖恢复路径。
-6. **HighRiskGraph**：`interrupt()` 人工审批 + approvals 服务（approve/reject/超时）。
-7. **Harness**：安装 fastapi，REST + SSE/WS 流式，会话管理，归一化事件。
-8. **观测与健壮性**：LangSmith tracing、structlog、RetryPolicy/TimeoutPolicy/error_handler。
-9. **测试补齐**：pytest（dev 依赖）+ 单元/端到端测试矩阵。
-10. **交付态**：README、`langgraph up`/`build`（全局 CLI）验证、清理残留目录。
+> 审计当日路线图；后续已按 `mvp-first-mile` / P3–P5 / Form Interrupt / ADR 0001–0003 演进。新工作读现行 specs，勿按本节逐步执行。
+
+1. **文档先行** → 2. **骨架** → 3. **Router**（现行契约：`route_intent`）→ 4. **ReadGraph** → 5. **MutationGraph**（现行：Form Interrupt）→ 6. **HighRiskGraph** → 7. **Harness** → 8. **观测** → 9. **测试** → 10. **交付态**。
 
 ---
 

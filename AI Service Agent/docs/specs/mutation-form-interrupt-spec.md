@@ -85,7 +85,7 @@ For **`update_address`**, product UX is locked to four outbound states (AgentBot
 ### Runtime decoupling constraints (must hold)
 
 - Single source of truth for waiting-on-form: graph interrupt.
-- ResumeHandler remains generic over interrupt types.
+- Entry-layer resume scheduling remains generic over interrupt types (no in-graph ResumeHandler node; see `graph-spec.md` §3).
 - Form field schema derived from tool/graph, not duplicated as a second registry in the server.
 - Subgraph does not absorb Operation Clarify.
 
