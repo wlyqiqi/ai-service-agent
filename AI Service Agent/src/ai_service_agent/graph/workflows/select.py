@@ -25,7 +25,7 @@ from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_busin
 from ai_service_agent.tools.params import is_absent_sentinel
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.graph.runtime_context import GraphContext
-from ai_service_agent.prompts import SELECT_BINDTOOLS_SYSTEM, SELECT_SYSTEM_TEMPLATE
+from ai_service_agent.prompts import SELECT_BINDTOOLS_TEMPLATE, SELECT_SYSTEM_TEMPLATE
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.context.builders import build_recent_visible_context
 from ai_service_agent.graph.context.policy import make_select_policy
@@ -221,7 +221,8 @@ def make_select_node(
     if is_fake:
         bound = _bind_json(model)
     else:
-        bound = model.bind_tools(tier_tools, tool_choice="any")
+        # auto: allow no tool_call → Operation Clarify / tier clarify (#110)
+        bound = model.bind_tools(tier_tools, tool_choice="auto")
 
     def _reject(state: dict, reason: str) -> dict:
         try:
@@ -244,6 +245,23 @@ def make_select_node(
         # 不 reject（工具真实存在）、不进闸门、不执行。
         return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
 
+    def _no_tool_clarify(state: dict) -> dict:
+        """tool_choice=auto 且模型未发起 tool_call：聊天澄清，不 reject。
+
+        Mutation → Operation Clarify（tool 未定）；HighRisk → tier clarify。
+        """
+        ctx = {**state.get("context", {})}
+        ctx.pop("clarify_missing", None)
+        ctx.pop("pending_tool", None)
+        if tier == "high_risk":
+            ctx.pop("operation_clarify", None)
+            # Truthy marker only; clarify does not use the value as a tool name.
+            ctx["tier_clarify"] = True
+            return {"context": ctx}
+        ctx.pop("tier_clarify", None)
+        ctx["operation_clarify"] = True
+        return {"context": ctx}
+
     def _partial_args_for_form(args: dict, meta) -> dict:
         """Mutation Form prefills：保留已知 schema 字段 + request_id，不要求一次填齐。"""
         known = set(meta.schema.model_fields)
@@ -256,6 +274,7 @@ def make_select_node(
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("tier_clarify", None)
+        ctx.pop("operation_clarify", None)
         ctx.pop("cancellation_candidates", None)
         ctx["clarify_count"] = 0
         ctx["pending_tool"] = {
@@ -281,15 +300,16 @@ def make_select_node(
             selected_tools = [t for t in tier_tools if t.name in route_allowed]
         allowed = {t.name for t in selected_tools}
         tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
-        messages = _budgeted_select_messages(
-            state,
-            selected_tools,
-            SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
-                tool_list=tool_list,
-                examples=_build_examples(selected_tools, registry),
-            )),
-        )
+        examples = _build_examples(selected_tools, registry)
         if is_fake:
+            messages = _budgeted_select_messages(
+                state,
+                selected_tools,
+                SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
+                    tool_list=tool_list,
+                    examples=examples,
+                )),
+            )
             resp = await bound.ainvoke(messages, config=config)
             try:
                 payload = json.loads(resp.content)
@@ -301,11 +321,14 @@ def make_select_node(
             messages = _budgeted_select_messages(
                 state,
                 selected_tools,
-                SystemMessage(content=SELECT_BINDTOOLS_SYSTEM),
+                SystemMessage(content=SELECT_BINDTOOLS_TEMPLATE.format(
+                    tool_list=tool_list,
+                    examples=examples,
+                )),
             )
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
-                return _reject(state, "select_parse_failed")
+                return _no_tool_clarify(state)
             tool_call = result.tool_calls[0]
             tool_name = tool_call["name"]
             args = dict(tool_call.get("args") or {})
@@ -383,6 +406,7 @@ def make_select_node(
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("tier_clarify", None)
+        ctx.pop("operation_clarify", None)
         ctx.pop("cancellation_candidates", None)
         ctx["clarify_count"] = 0  # 完整成功 select 清零（D1 轮次语义）
         ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
