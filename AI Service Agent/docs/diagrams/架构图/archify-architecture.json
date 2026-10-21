@@ -249,7 +249,7 @@
       "dot": "emerald",
       "title": "编排",
       "items": [
-        "Guard 与 Router 并行，Policy 按 capability × risk_level 选择子图",
+        "Guard 与 Router 并行，Policy 按 route_intent 派生子图与 allowed_tools",
         "ReadGraph 走 ReAct；MutationGraph 用 Form Interrupt，确认后才写库",
         "HighRisk 由坐席旁路审批；Fallback 负责兜底与转人工信号"
       ]

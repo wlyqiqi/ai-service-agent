@@ -5609,7 +5609,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>编排</h3>
         </div>
         <ul>
-          <li>&bull; Guard 与 Router 并行，Policy 按 capability × risk_level 选择子图</li>
+          <li>&bull; Guard 与 Router 并行，Policy 按 route_intent 派生子图与 allowed_tools</li>
           <li>&bull; ReadGraph 走 ReAct；MutationGraph 用 Form Interrupt，确认后才写库</li>
           <li>&bull; HighRisk 由坐席旁路审批；Fallback 负责兜底与转人工信号</li>
         </ul>

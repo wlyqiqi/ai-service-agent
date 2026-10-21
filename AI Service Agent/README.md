@@ -10,10 +10,9 @@
 FastAPI Transport（REST / SSE，只做 Transport）
   └─ Conversation Runtime（conversation_mode 入口层判断：ai / human）
        └─ LangGraph CustomerServiceGraph
-            ├─ Guard（确定性 v1：恶意意图 / 情绪升级检测，先于 Router）
-            ├─ Router（json_mode 结构化输出：capability × risk_level，不执行工具）
-            ├─ Policy Gate（确定性映射 target_graph，不调 LLM）
-            ├─ Select + Safety Precheck（写操作参数澄清 / 预检 / recheck）
+            ├─ Guard ∥ Router（并行；Router 结构化输出 route_intent + confidence，不执行工具）
+            ├─ Policy Gate（route_intent → target_graph / allowed_tools / requires_approval，不调 LLM）
+            ├─ Select + Safety Precheck / Mutation Form Interrupt（写操作）
             ├─ 子图：ReadGraph(ReAct) / MutationGraph(显式 Workflow) / HighRiskGraph(人工审批)
             └─ Checkpointer（SQLite，thread_id）· interrupt / resume
 Harness：Approval Service · Handoff Service · Message Store · Conversation Status Store · 事件协议

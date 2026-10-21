@@ -48,7 +48,7 @@
 ## 2. Guard 节点（并行检测）
 
 - 与 Router **并行**执行，输入为同一份原始用户输入（`messages` + `user_id`），**不依赖 Router 的分类结果**，谁先完成不影响正确性。
-- 只输出 `guard_status`（pass / fail）与可选 `guard_reason`（fail 时的规则包名），不参与 capability/risk_level 分类，不执行 tools，不修改业务状态。
+- 只输出 `guard_status`（pass / fail）与可选 `guard_reason`（fail 时的规则包名），不参与 `route_intent` 分类，不执行 tools，不修改业务状态。
 - `fail` → 走安全收尾（见 `safety-spec.md` §1.5），Router 并行结果**不被消费**：实现上若调用可取消则取消，否则以"不消费其输出"兜底。
 - 检测信号与阈值定义见 `safety-spec.md` §1.5。
 - **实现形态（Guard v2）**：确定性命名规则包（阈值可配置，无模型 key，离线可测，低延迟）。**本阶段明确不做 LLM Guard**；语义绕过的残余风险由 Policy / `safety_check` / 审批与 handoff 上限承接。
@@ -155,9 +155,9 @@
 | GuardNode | `messages`（原始输入）、`user_id` | `guard_status`、`guard_reason` |
 | Router | `messages`、`user_id` | `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control` |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
-| ReadGraph | `messages`、`context` | `messages` |
-| MutationGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`（确认结果） |
-| HighRiskGraph | `messages`、`context`、`capability`、`risk_level` | `messages`、`context`、`pending_approval` |
+| ReadGraph | `messages`、`context`、`user_id`、`allowed_tools` | `messages`、`execution_status` |
+| MutationGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class` | `messages`、`context`（Form / pending_tool 等）、`execution_status` |
+| HighRiskGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class`、`requires_approval` | `messages`、`context`、`pending_approval`、`execution_status` |
 | select（mutation） | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或 `tier_clarify`；成功/进表单时清零 `clarify_count`） |
 | select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`） |
 | prepare_form / form_interrupt（high_risk） | `context`（`pending_tool`、`form_session_id`） | Form Interrupt（缺参收集）；Confirm 后写 `pending_tool.args` 再进安全预检/审批；Cancel / 零候选不进审批 |
