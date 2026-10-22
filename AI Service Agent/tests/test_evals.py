@@ -128,7 +128,9 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     assert report["case_count"] == 101
     assert report["dimensions"]["policy"]["summary"]["pass"] == 77
     assert report["dimensions"]["guard"]["summary"]["pass"] == 101
-    assert report["dimensions"]["routing"]["summary"]["pass"] == 71  # +CTRL-0100 fallback + CTRL-0101 guard_reject
+    # HighRisk approval/deny 与 Form + 可见 order_id 契约对齐后，routing 端到端应全绿（仅 handoff 动态信号 skip）
+    assert report["dimensions"]["routing"]["summary"]["pass"] == 93
+    assert report["dimensions"]["routing"]["summary"]["fail"] == 0
     assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 8}  # 动态信号保持 skip
 
 
