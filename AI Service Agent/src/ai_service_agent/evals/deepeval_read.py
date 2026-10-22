@@ -6,13 +6,17 @@ Judge：DEEPEVAL_JUDGE_*（缺省回落 LLM_*，并打印警告）
 
 判定：
   L0 坏答短路（硬）→ L1 expected_facts / 拒答启发式（硬）
-  → Faithfulness（硬）/ AnswerRelevancy（软）
-  → G-Eval Tone（软）/ G-Eval Citations（软；--citations-hard 且 must_cite_source 时可硬）
+  → Faithfulness（硬）
+  → AnswerRelevancy / G-Eval Tone / G-Eval Citations（软；默认跳过以省 Judge 调用）
+  → Citations 可在 --citations-hard 且 must_cite_source 时升为硬门（即使未开 --soft-metrics）
 
 用法：
-  python -m ai_service_agent.evals.deepeval_read \\
-    --category direct_fact,paraphrase,multi_hop --limit 10 \\
-    --out tmp/reports/deepeval_read_pilot.json
+  # 硬门扫面（默认）：L0/L1/Faithfulness；按类分批
+  python -m ai_service_agent.evals.deepeval_read --category direct_fact \\
+    --out tmp/reports/deepeval_read_direct_fact.json
+  # 补跑软指标
+  python -m ai_service_agent.evals.deepeval_read --soft-metrics --limit 10 \\
+    --out tmp/reports/deepeval_read_soft_pilot.json
 """
 
 from __future__ import annotations
@@ -417,6 +421,21 @@ def _metric_result(metric: Any) -> dict[str, Any]:
     }
 
 
+def metrics_to_run(*, soft_metrics: bool, citations_hard: bool) -> frozenset[str]:
+    """Which DeepEval metrics to invoke (Judge LLM calls).
+
+    Phase-1 hard path always includes Faithfulness. Soft metrics
+    (Relevancy / Tone / Citations) are off by default to cut Judge cost.
+    ``citations_hard`` still forces Citations even when soft metrics are off.
+    """
+    out: set[str] = {"FaithfulnessMetric"}
+    if soft_metrics:
+        out.update({"AnswerRelevancyMetric", "GEval_Tone", "GEval_Citations"})
+    elif citations_hard:
+        out.add("GEval_Citations")
+    return frozenset(out)
+
+
 def measure_deepeval_metrics(
     *,
     case: dict[str, Any],
@@ -427,6 +446,8 @@ def measure_deepeval_metrics(
     relevancy_threshold: float,
     tone_threshold: float,
     citations_threshold: float,
+    soft_metrics: bool = False,
+    citations_hard: bool = False,
 ) -> dict[str, Any]:
     from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, GEval
     from deepeval.test_case import LLMTestCase, SingleTurnParams
@@ -438,59 +459,73 @@ def measure_deepeval_metrics(
         retrieval_context=retrieval_context or None,
     )
     out: dict[str, Any] = {}
+    planned = metrics_to_run(soft_metrics=soft_metrics, citations_hard=citations_hard)
+    skip_soft = {"skipped": True, "reason": "soft_metrics_disabled"}
 
     # L2 Faithfulness (hard) — needs retrieval_context
-    if retrieval_context:
+    if "FaithfulnessMetric" in planned:
+        if retrieval_context:
+            try:
+                m = FaithfulnessMetric(
+                    threshold=faithfulness_threshold,
+                    model=judge,
+                    async_mode=False,
+                )
+                m.measure(tc)
+                out["FaithfulnessMetric"] = _metric_result(m)
+            except Exception as exc:  # noqa: BLE001 — report per-metric errors
+                out["FaithfulnessMetric"] = {"error": str(exc)}
+        else:
+            out["FaithfulnessMetric"] = {
+                "skipped": True,
+                "reason": "no_retrieval_context",
+            }
+
+    # L3 Answer Relevancy (soft)
+    if "AnswerRelevancyMetric" in planned:
         try:
-            m = FaithfulnessMetric(
-                threshold=faithfulness_threshold,
+            m = AnswerRelevancyMetric(
+                threshold=relevancy_threshold,
                 model=judge,
                 async_mode=False,
             )
             m.measure(tc)
-            out["FaithfulnessMetric"] = _metric_result(m)
-        except Exception as exc:  # noqa: BLE001 — report per-metric errors
-            out["FaithfulnessMetric"] = {"error": str(exc)}
+            out["AnswerRelevancyMetric"] = _metric_result(m)
+        except Exception as exc:  # noqa: BLE001
+            out["AnswerRelevancyMetric"] = {"error": str(exc)}
     else:
-        out["FaithfulnessMetric"] = {"skipped": True, "reason": "no_retrieval_context"}
-
-    # L3 Answer Relevancy (soft)
-    try:
-        m = AnswerRelevancyMetric(
-            threshold=relevancy_threshold,
-            model=judge,
-            async_mode=False,
-        )
-        m.measure(tc)
-        out["AnswerRelevancyMetric"] = _metric_result(m)
-    except Exception as exc:  # noqa: BLE001
-        out["AnswerRelevancyMetric"] = {"error": str(exc)}
+        out["AnswerRelevancyMetric"] = dict(skip_soft)
 
     # L4a Tone (soft)
-    try:
-        tone = GEval(
-            name="Tone",
-            criteria=(
-                "Evaluate whether the assistant reply is polite, professional, and "
-                "appropriate for Chengyuan (澄元) customer service in Chinese. "
-                "Friendly greetings, brief policy clarifications, and closing offers "
-                "to help further are acceptable and should not lower the score. "
-                "Lower the score only for rude, commanding, dismissive, or clearly "
-                "unprofessional tone."
-            ),
-            evaluation_params=[SingleTurnParams.ACTUAL_OUTPUT],
-            threshold=tone_threshold,
-            model=judge,
-            async_mode=False,
-        )
-        tone.measure(tc)
-        out["GEval_Tone"] = _metric_result(tone)
-    except Exception as exc:  # noqa: BLE001
-        out["GEval_Tone"] = {"error": str(exc)}
+    if "GEval_Tone" in planned:
+        try:
+            tone = GEval(
+                name="Tone",
+                criteria=(
+                    "Evaluate whether the assistant reply is polite, professional, and "
+                    "appropriate for Chengyuan (澄元) customer service in Chinese. "
+                    "Friendly greetings, brief policy clarifications, and closing offers "
+                    "to help further are acceptable and should not lower the score. "
+                    "Lower the score only for rude, commanding, dismissive, or clearly "
+                    "unprofessional tone."
+                ),
+                evaluation_params=[SingleTurnParams.ACTUAL_OUTPUT],
+                threshold=tone_threshold,
+                model=judge,
+                async_mode=False,
+            )
+            tone.measure(tc)
+            out["GEval_Tone"] = _metric_result(tone)
+        except Exception as exc:  # noqa: BLE001
+            out["GEval_Tone"] = {"error": str(exc)}
+    else:
+        out["GEval_Tone"] = dict(skip_soft)
 
     # L4b Citations — skip when no retrieval; soft unless caller hardens
     must_cite = bool(case.get("must_cite_source"))
-    if not retrieval_context:
+    if "GEval_Citations" not in planned:
+        out["GEval_Citations"] = {**skip_soft, "must_cite_source": must_cite}
+    elif not retrieval_context:
         out["GEval_Citations"] = {
             "skipped": True,
             "reason": "no_retrieval_context",
@@ -620,6 +655,7 @@ async def evaluate_case(
     tone_threshold: float,
     citations_threshold: float,
     citations_hard: bool,
+    soft_metrics: bool = False,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "id": case["id"],
@@ -671,6 +707,8 @@ async def evaluate_case(
         relevancy_threshold=relevancy_threshold,
         tone_threshold=tone_threshold,
         citations_threshold=citations_threshold,
+        soft_metrics=soft_metrics,
+        citations_hard=citations_hard,
     )
     row["metrics"] = metrics
 
@@ -701,6 +739,7 @@ async def run_all(
     tone_threshold: float,
     citations_threshold: float,
     citations_hard: bool,
+    soft_metrics: bool = False,
 ) -> dict[str, Any]:
     cases = load_knowledge_cases(
         data_dir,
@@ -742,6 +781,7 @@ async def run_all(
             tone_threshold=tone_threshold,
             citations_threshold=citations_threshold,
             citations_hard=citations_hard,
+            soft_metrics=soft_metrics,
         )
         results.append(row)
 
@@ -757,6 +797,7 @@ async def run_all(
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "data_dir": str(data_dir),
             "categories": list(categories) if categories else None,
+            "soft_metrics": soft_metrics,
             "thresholds": {
                 "faithfulness": faithfulness_threshold,
                 "relevancy": relevancy_threshold,
@@ -776,6 +817,7 @@ async def run_all(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "data_dir": str(data_dir),
         "categories": list(categories) if categories else None,
+        "soft_metrics": soft_metrics,
         "thresholds": {
             "faithfulness": faithfulness_threshold,
             "relevancy": relevancy_threshold,
@@ -792,7 +834,11 @@ async def run_all(
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Read quality-plane eval (DeepEval Faithfulness/Relevancy/G-Eval Tone+Citations)"
+        description=(
+            "Read quality-plane eval (DeepEval). "
+            "Default: hard gates only (L0/L1/Faithfulness). "
+            "Use --soft-metrics for Relevancy/Tone/Citations."
+        )
     )
     p.add_argument(
         "--data",
@@ -834,7 +880,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--citations-hard",
         action="store_true",
-        help="when must_cite_source=true, Citations success required for pass",
+        help=(
+            "when must_cite_source=true, Citations success required for pass "
+            "(also forces running Citations even if --no-soft-metrics)"
+        ),
+    )
+    p.add_argument(
+        "--soft-metrics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "run AnswerRelevancy + G-Eval Tone/Citations (default: off; "
+            "hard-only Phase-1 to cut Judge LLM calls)"
+        ),
     )
     return p
 
@@ -875,6 +933,7 @@ def main(argv: list[str] | None = None) -> int:
             tone_threshold=args.tone_threshold,
             citations_threshold=args.citations_threshold,
             citations_hard=args.citations_hard,
+            soft_metrics=args.soft_metrics,
         )
     )
     summary = report["summary"]

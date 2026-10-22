@@ -120,6 +120,76 @@ def test_decide_pass_phase1_faithfulness_hard():
     assert "citations_fail" in reasons2
 
 
+def test_metrics_to_run_hard_only_by_default():
+    assert dr.metrics_to_run(soft_metrics=False, citations_hard=False) == frozenset(
+        {"FaithfulnessMetric"}
+    )
+    assert dr.metrics_to_run(soft_metrics=True, citations_hard=False) == frozenset(
+        {
+            "FaithfulnessMetric",
+            "AnswerRelevancyMetric",
+            "GEval_Tone",
+            "GEval_Citations",
+        }
+    )
+    # citations-hard forces Citations even when soft metrics are off
+    assert dr.metrics_to_run(soft_metrics=False, citations_hard=True) == frozenset(
+        {"FaithfulnessMetric", "GEval_Citations"}
+    )
+
+
+def test_build_parser_soft_metrics_default_off():
+    p = dr.build_parser()
+    assert p.get_default("soft_metrics") is False
+    assert p.get_default("pause_s") == 0.0
+    ns = p.parse_args(["--soft-metrics"])
+    assert ns.soft_metrics is True
+    ns2 = p.parse_args(["--no-soft-metrics"])
+    assert ns2.soft_metrics is False
+
+
+def test_measure_skips_soft_metrics_without_judge_calls(monkeypatch):
+    """soft_metrics=False must not construct/measure soft DeepEval metrics."""
+
+    class _Boom:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(f"unexpected metric ctor: {self.__class__.__name__}")
+
+    class _FaithOk:
+        def __init__(self, *args, **kwargs):
+            self.score = 1.0
+            self.success = True
+            self.threshold = kwargs.get("threshold")
+            self.reason = "ok"
+
+        def measure(self, tc):
+            return self.score
+
+    import deepeval.metrics as metrics_mod
+
+    monkeypatch.setattr(metrics_mod, "FaithfulnessMetric", _FaithOk)
+    monkeypatch.setattr(metrics_mod, "AnswerRelevancyMetric", _Boom)
+    monkeypatch.setattr(metrics_mod, "GEval", _Boom)
+
+    out = dr.measure_deepeval_metrics(
+        case={"question": "Q", "expected_answer": "A", "must_cite_source": True},
+        actual_output="A",
+        retrieval_context=["chunk"],
+        judge=object(),
+        faithfulness_threshold=0.7,
+        relevancy_threshold=0.5,
+        tone_threshold=0.5,
+        citations_threshold=0.5,
+        soft_metrics=False,
+        citations_hard=False,
+    )
+    assert out["FaithfulnessMetric"]["success"] is True
+    assert out["AnswerRelevancyMetric"]["skipped"] is True
+    assert out["GEval_Tone"]["skipped"] is True
+    assert out["GEval_Citations"]["skipped"] is True
+    assert out["AnswerRelevancyMetric"]["reason"] == "soft_metrics_disabled"
+
+
 def test_build_input_messages_includes_conversation_context():
     case = {
         "question": "还是连不上",

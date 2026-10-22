@@ -32,19 +32,30 @@ Version Awareness、Knowledge Gap Detection。
 
 与控制面 `python -m ai_service_agent.evals` **并列**，评 ReadGraph 生成质量（非 Router/Policy）。
 
-```bash
-# Phase 1 默认切片：direct_fact + paraphrase + multi_hop（answerable）
-python -m ai_service_agent.evals.deepeval_read --limit 10 --out tmp/reports/deepeval_read_pilot.json
+默认只跑**硬门**（L0 / L1 / Faithfulness），跳过 Relevancy / Tone / Citations，以减少 Judge LLM 调用。
+软指标用 `--soft-metrics` 补跑；按类分批可降低限流与排障成本。
 
-# 指定类别 / id；Citations 在 must_cite_source 时升为硬门禁
+```bash
+# 硬门扫面（默认）：按类分批
+python -m ai_service_agent.evals.deepeval_read --category direct_fact \
+  --out tmp/reports/deepeval_read_direct_fact.json
+python -m ai_service_agent.evals.deepeval_read --category paraphrase \
+  --out tmp/reports/deepeval_read_paraphrase.json
+python -m ai_service_agent.evals.deepeval_read --category multi_hop \
+  --out tmp/reports/deepeval_read_multihop.json
+
+# 试点 / 限量；补跑软指标；Citations 升硬门（即使未开 --soft-metrics 也会测 Citations）
+python -m ai_service_agent.evals.deepeval_read --limit 10 --soft-metrics \
+  --out tmp/reports/deepeval_read_soft_pilot.json
 python -m ai_service_agent.evals.deepeval_read \
   --category direct_fact,paraphrase,multi_hop \
   --citations-hard \
   --out tmp/reports/deepeval_read.json
 ```
 
-判定：L0 坏答短路 → L1 `expected_facts` → Faithfulness（硬）/ AnswerRelevancy（软）/
-G-Eval Tone（软）/ G-Eval Citations（软，可选硬）。Judge 用 `DEEPEVAL_JUDGE_*`（缺省回落 `LLM_*`）。
+判定：L0 坏答短路 → L1 `expected_facts` → Faithfulness（硬）→ AnswerRelevancy / G-Eval Tone /
+G-Eval Citations（软，默认跳过；`--citations-hard` 且 `must_cite_source` 时可硬）。
+Judge 用 `DEEPEVAL_JUDGE_*`（缺省回落 `LLM_*`）。
 
 ## Ground Truth 原则
 
