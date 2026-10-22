@@ -363,7 +363,7 @@ def _load_env() -> dict[str, str | None]:
     return merged
 
 
-# SiliconFlow / DeepSeek-V4 judge: thinking on + effort high (OpenAI SDK → extra_body).
+# Judge thinking on + effort high (OpenAI SDK → extra_body; OfficeACE / SiliconFlow compatible).
 JUDGE_THINKING_GENERATION_KWARGS: dict[str, Any] = {
     "extra_body": {
         "enable_thinking": True,
@@ -375,8 +375,9 @@ JUDGE_THINKING_GENERATION_KWARGS: dict[str, Any] = {
 def make_judge_model():
     """Build DeepEval LocalModel from DEEPEVAL_JUDGE_* (fallback LLM_*).
 
-    Judge enables thinking at ``reasoning_effort=high`` (SiliconFlow DeepSeek-V4).
-    Runtime SUT models stay on ``enable_thinking=False`` via ``config._openai_compat_model``.
+    Prefer a complete ``DEEPEVAL_JUDGE_*`` profile (e.g. OfficeACE ``deepseek-v4-flash``)
+    separate from SiliconFlow runtime ``LLM_*``. Judge enables thinking at
+    ``reasoning_effort=high``. Runtime SUT stays ``enable_thinking=False``.
     """
     from deepeval.models import LocalModel
 
