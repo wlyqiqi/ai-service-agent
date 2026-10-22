@@ -135,6 +135,8 @@ class Settings(BaseSettings):
     lightrag_timeout_seconds: float = 15.0
     lightrag_mode: str = "naive"
     lightrag_top_k: int = 5
+    # 显式传给 /query，避免吃服务端 CHUNK_TOP_K 默认（客服低延迟：少而准）
+    lightrag_chunk_top_k: int = Field(default=5, ge=1)
     lightrag_include_references: bool = True
     lightrag_enable_rerank: bool = False
     lightrag_max_chunk_chars: int = Field(default=1200, ge=1)

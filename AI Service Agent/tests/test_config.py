@@ -157,6 +157,7 @@ def test_lightrag_defaults():
     assert s.lightrag_base_url == "http://localhost:9621"
     assert s.lightrag_mode == "naive"
     assert s.lightrag_top_k == 5
+    assert s.lightrag_chunk_top_k == 5
     assert s.lightrag_include_references is True
     assert s.lightrag_enable_rerank is False
     assert s.lightrag_max_chunk_chars == 1200

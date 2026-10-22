@@ -2,7 +2,7 @@
 
 只做「检索取上下文 + 引用来源」，不做生成：POST /query 参数
 mode=naive、only_need_context=true、include_references=true、
-include_chunk_content=true、enable_rerank=false、top_k=5
+include_chunk_content=true、enable_rerank=false、top_k=5、chunk_top_k=5
 （实测检索 0.35–0.66s/case，2026-09-18 复跑）。chunk 切分参数由 LightRAG 服务管理；
 本客户端只负责下游 prompt 预算：单 chunk 1200 字符、总 context 4000 字符。
 httpx 同步 Client 模块级单例（线程安全、连接复用）。离线测试用
@@ -27,6 +27,7 @@ class LightRagClient:
         timeout_seconds: Optional[float] = None,
         mode: Optional[str] = None,
         top_k: Optional[int] = None,
+        chunk_top_k: Optional[int] = None,
         include_references: Optional[bool] = None,
         enable_rerank: Optional[bool] = None,
         max_chunk_chars: Optional[int] = None,
@@ -38,6 +39,9 @@ class LightRagClient:
         self.timeout = timeout_seconds if timeout_seconds is not None else settings.lightrag_timeout_seconds
         self.mode = mode if mode is not None else settings.lightrag_mode
         self.top_k = top_k if top_k is not None else settings.lightrag_top_k
+        self.chunk_top_k = (
+            chunk_top_k if chunk_top_k is not None else settings.lightrag_chunk_top_k
+        )
         self.include_references = (
             include_references if include_references is not None else settings.lightrag_include_references
         )
@@ -66,6 +70,7 @@ class LightRagClient:
                     "include_references": self.include_references,
                     "include_chunk_content": True,
                     "top_k": self.top_k,
+                    "chunk_top_k": self.chunk_top_k,
                     "enable_rerank": self.enable_rerank,
                 },
             )

@@ -1,6 +1,7 @@
 """知识库检索（read 档）：调用 LightRAG-chengyuan /query 获取检索上下文与引用来源。
 
-OQ 定案：mode=naive（低延迟）；回复文本内引用（不改 event-spec）；不加缓存；不做自动同步。
+OQ 定案：mode=naive（低延迟）；chunk_top_k=5（请求显式传）；关 rerank；
+回复文本内引用（不改 event-spec）；不加缓存；不做自动同步。
 降级：不可达 / 无结果返回中性检索信号（无成品客服话术、无转人工引导）；话术由 ReadGraph 提示词负责。
 确定性、只读、无副作用。
 """

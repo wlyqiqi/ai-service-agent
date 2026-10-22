@@ -164,6 +164,15 @@ def test_read_system_prompt_friendly_no_result_tone():
     assert "换个说法" in READ_SYSTEM_PROMPT
 
 
+def test_read_system_prompt_concise_answer_and_single_kb_search():
+    from ai_service_agent.prompts import READ_SYSTEM_PROMPT
+
+    assert "先给结论" in READ_SYSTEM_PROMPT
+    assert "不要复述知识库原文" in READ_SYSTEM_PROMPT
+    assert "优先一次 kb_search" in READ_SYSTEM_PROMPT
+    assert "不要为润色再次检索" in READ_SYSTEM_PROMPT
+
+
 
 def test_read_graph_defaults_missing_user_id_for_injected_state():
     import json
