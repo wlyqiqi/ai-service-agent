@@ -22,7 +22,8 @@ from ai_service_agent.harness.tool_hooks import ToolHookMiddleware
 from ai_service_agent.prompts import READ_SYSTEM_PROMPT
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
 
-READ_MODEL_CALL_LIMIT = 3
+# multi_hop may spend several calls on kb_search before a final answer turn
+READ_MODEL_CALL_LIMIT = 5
 
 class ReadAgentState(TypedDict):
     """create_agent 子图状态：messages + user_id（D4 属主校验注入所需，safety-spec §1.4）。"""
