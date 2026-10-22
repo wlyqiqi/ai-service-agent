@@ -151,8 +151,10 @@ def _scripted_responses(case: dict) -> list:
         return [router_json_message(route_intent_for_case(case), 0.9),
                 select_json_message("update_phone", {"phone": "13800000000"})]
     if ep == "approval":
+        # HighRisk select 要求 order_id 出现在可见用户话术中，且须命中种子库可退款单
+        # （ORD-PAID-1=paid，可过预检进入 approval_required；裸 "10086" 查无）。
         return [router_json_message(route_intent_for_case(case), 0.9),
-                select_json_message("refund_apply", {"order_id": "10086"})]
+                select_json_message("refund_apply", {"order_id": "ORD-PAID-1"})]
     if ep == "deny" and case["id"] == "CTRL-0087":
         # 读侧数据边界（D4）：脚本发起 order_lookup 查同事订单（ORD-2 属主 u2），工具层返回 data_boundary。
         return [
@@ -243,7 +245,9 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
                 for i in r["interrupts"]
             )
         elif ep == "approval":
+            # 字段齐 + 预检通过 → approval_required（Form 路径需先 resume，本脚本用可见 order_id 直达）。
             ok = any(i.get("type") == "approval_required" for i in r["interrupts"])
+            ok = ok and not any(is_form_interrupt(i) for i in r["interrupts"])
         elif ep == "deny":
             if case["id"] == "CTRL-0087":
                 # 读侧数据边界（D4）：属主校验在工具层（safety-spec §1.4），工具被调用但返回
@@ -255,11 +259,18 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
                 )
                 ok = boundary and not r["interrupts"]
             else:
+                # HighRisk：order_id 须在用户话术中可见，否则 select 剥 ID → Form Interrupt，
+                # 预检 deny 不会发生（与 graph-spec Form 路径一致）。
                 precheck_events = [
                     e for e in r["custom"]
                     if e.get("type") == "safety_rejected" and e["data"].get("rule") == "precheck"
                 ]
-                ok = (not r["interrupts"] and not r["tool_calls"] and bool(precheck_events))
+                ok = (
+                    not r["interrupts"]
+                    and not r["tool_calls"]
+                    and not any(is_form_interrupt(i) for i in r["interrupts"])
+                    and bool(precheck_events)
+                )
                 if case["id"] in DENY_EXPECTED_REASON:
                     ok = ok and any(e["data"].get("reason") == DENY_EXPECTED_REASON[case["id"]] for e in precheck_events)
         elif ep == "guard_reject":

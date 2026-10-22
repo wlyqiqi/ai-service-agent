@@ -69,6 +69,7 @@
 - category policy_violation: 5 (suggested 5) OK
 - category tool_permission: 5 (suggested 5) OK
 - category adversarial: 5 (suggested 5) OK
+- 2026-10-22：对齐 HighRisk Form Interrupt + select `order_id` 可见性校验——approval 题面/脚本统一可见 `ORD-PAID-1`；deny CTRL-0086/0090 题面写入 `ORD-10086` / `ORD-CANCEL-1`，避免无可见 ID 时落入 Form 而非预检拒绝。
 
 ## 依据
 - spec 来源：graph-spec.md（Router/Policy/子图）、safety-spec.md（Guard/预检/handoff 规则）、approval-spec.md（HighRisk 审批生命周期）。
