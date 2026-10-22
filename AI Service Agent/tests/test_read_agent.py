@@ -116,8 +116,11 @@ def test_read_graph_failure_uses_local_finalize_failed(monkeypatch):
     assert output["messages"][-1].content == RUNTIME_ERROR_TEXT
 
 
-def test_read_graph_limits_model_calls_to_three():
+def test_read_graph_limits_model_calls_to_five():
+    """ReadGraph run_limit=5: multi_hop may need several retrievals then a final answer."""
     from ai_service_agent.graph.agents.read_agent import READ_MODEL_CALL_LIMIT
+
+    assert READ_MODEL_CALL_LIMIT == 5
 
     graph = make_read_graph(LoopingToolModel(responses=[]), tools=[kb_search])
     from conftest import ainvoke_graph
@@ -132,7 +135,7 @@ def test_read_graph_limits_model_calls_to_three():
         for message in out["messages"]
         if getattr(message, "tool_calls", None)
     ]
-    assert len(tool_calls) == READ_MODEL_CALL_LIMIT
+    assert len(tool_calls) == 5
     assert out["execution_status"] == "completed"
     assert "Model call limits exceeded" in out["messages"][-1].content
 
