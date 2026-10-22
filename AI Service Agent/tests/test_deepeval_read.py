@@ -1,0 +1,247 @@
+"""Unit tests for Read quality-plane helpers (no live LLM / DeepEval judge)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from ai_service_agent.evals import deepeval_read as dr
+
+ROOT = Path(__file__).resolve().parents[1]
+KNOWLEDGE = ROOT / "tests" / "evals" / "knowledge"
+
+
+def test_load_default_phase1_categories():
+    cases = dr.load_knowledge_cases(
+        KNOWLEDGE,
+        categories=("direct_fact", "paraphrase", "multi_hop"),
+        answerable_only=True,
+    )
+    cats = {c["category"] for c in cases}
+    assert cats == {"direct_fact", "paraphrase", "multi_hop"}
+    assert len(cases) == 26 + 16 + 21
+    assert all(c.get("answerable", True) for c in cases)
+
+
+def test_load_ids_and_limit(tmp_path):
+    p = tmp_path / "direct_fact.jsonl"
+    rows = [
+        {
+            "id": "KB-T1",
+            "category": "direct_fact",
+            "question": "Q1",
+            "answerable": True,
+            "expected_facts": ["a"],
+        },
+        {
+            "id": "KB-T2",
+            "category": "direct_fact",
+            "question": "Q2",
+            "answerable": True,
+            "expected_facts": ["b"],
+        },
+    ]
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    got = dr.load_knowledge_cases(tmp_path, categories=("direct_fact",), ids={"KB-T2"})
+    assert [c["id"] for c in got] == ["KB-T2"]
+    limited = dr.load_knowledge_cases(tmp_path, categories=("direct_fact",), limit=1)
+    assert len(limited) == 1
+
+
+def test_l0_rejects_empty_tech_greeting():
+    assert dr.check_l0("")[0] is False
+    assert dr.check_l0("抱歉，系统遇到技术问题，请稍后再试。")[0] is False
+    assert dr.check_l0("您好！有什么可以帮您？")[0] is False
+    ok, reason = dr.check_l0("JoyAir A1 炸篮容量为 4.5L。（来源：JoyAir_A1智能空气炸锅.md）")
+    assert ok is True
+    assert reason == "ok"
+
+
+def test_l1_facts_requires_numbers_and_tokens():
+    answer = "JoyAir A1 Pro 的额定功率是 1700 W，整机保修 12 个月。"
+    ok, hit, miss = dr.check_l1_facts(answer, ["JoyAir A1 Pro 额定功率 1700 W"])
+    assert ok is True
+    assert miss == []
+    assert hit
+
+    ok2, _, miss2 = dr.check_l1_facts(answer, ["JoyAir A1 Pro 额定功率 2100 W"])
+    assert ok2 is False
+    assert miss2
+
+
+def test_l1_facts_chinese_phrasing_variant():
+    """Multi-hop style: keyword overlap across split sentences (not full NL entailment)."""
+    answer = (
+        "JoyClean V1 的 HEPA 滤网建议每 6 个月更换一次。"
+        "滤网属于易耗件，正常损耗不在保修范围内。"
+    )
+    ok, hit, miss = dr.check_l1_facts(
+        answer,
+        ["V1 HEPA 滤网每 6 个月更换", "滤网等易耗件不在保修范围"],
+    )
+    assert ok is True, (hit, miss)
+    assert miss == []
+
+
+def test_l1_abstention_for_unanswerable():
+    case = {"answerable": False}
+    good = dr.check_l1(case, "知识库未查询到槟城上门维修的明确信息，建议以官方渠道确认为准。")
+    assert good["pass"] is True
+    bad = dr.check_l1(case, "可以，槟城全部支持免费上门维修。")
+    assert bad["pass"] is False
+
+
+def test_decide_pass_phase1_faithfulness_hard():
+    l1 = {"pass": True}
+    metrics_ok = {
+        "FaithfulnessMetric": {"score": 0.9, "success": True},
+        "GEval_Citations": {"score": 0.2, "success": False},
+    }
+    ok, reasons = dr.decide_pass(
+        l0_ok=True,
+        l1=l1,
+        metrics=metrics_ok,
+        citations_hard=False,
+        must_cite_source=True,
+    )
+    assert ok is True
+    assert reasons == []
+
+    ok2, reasons2 = dr.decide_pass(
+        l0_ok=True,
+        l1=l1,
+        metrics=metrics_ok,
+        citations_hard=True,
+        must_cite_source=True,
+    )
+    assert ok2 is False
+    assert "citations_fail" in reasons2
+
+
+def test_metrics_to_run_hard_only_by_default():
+    assert dr.metrics_to_run(soft_metrics=False, citations_hard=False) == frozenset(
+        {"FaithfulnessMetric"}
+    )
+    assert dr.metrics_to_run(soft_metrics=True, citations_hard=False) == frozenset(
+        {
+            "FaithfulnessMetric",
+            "AnswerRelevancyMetric",
+            "GEval_Tone",
+            "GEval_Citations",
+        }
+    )
+    # citations-hard forces Citations even when soft metrics are off
+    assert dr.metrics_to_run(soft_metrics=False, citations_hard=True) == frozenset(
+        {"FaithfulnessMetric", "GEval_Citations"}
+    )
+
+
+def test_build_parser_soft_metrics_default_off():
+    p = dr.build_parser()
+    assert p.get_default("soft_metrics") is False
+    assert p.get_default("pause_s") == 0.0
+    ns = p.parse_args(["--soft-metrics"])
+    assert ns.soft_metrics is True
+    ns2 = p.parse_args(["--no-soft-metrics"])
+    assert ns2.soft_metrics is False
+
+
+def test_make_judge_model_enables_thinking_high(monkeypatch):
+    captured: dict = {}
+
+    class _FakeLocal:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("LLM_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.siliconflow.cn/v1")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.delenv("DEEPEVAL_JUDGE_MODEL", raising=False)
+    monkeypatch.delenv("DEEPEVAL_JUDGE_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPEVAL_JUDGE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "deepeval.models.LocalModel",
+        _FakeLocal,
+    )
+    monkeypatch.setattr(dr, "_load_env", lambda: {
+        "LLM_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+        "LLM_BASE_URL": "https://api.siliconflow.cn/v1",
+        "LLM_API_KEY": "sk-test",
+    })
+
+    with pytest.warns(UserWarning, match="DEEPEVAL_JUDGE"):
+        dr.make_judge_model()
+
+    gen = captured.get("generation_kwargs") or {}
+    body = gen.get("extra_body") or {}
+    assert body.get("enable_thinking") is True
+    assert body.get("reasoning_effort") == "high"
+    assert captured.get("temperature") == 0
+
+
+def test_measure_skips_soft_metrics_without_judge_calls(monkeypatch):
+    """soft_metrics=False must not construct/measure soft DeepEval metrics."""
+
+    class _Boom:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(f"unexpected metric ctor: {self.__class__.__name__}")
+
+    class _FaithOk:
+        def __init__(self, *args, **kwargs):
+            self.score = 1.0
+            self.success = True
+            self.threshold = kwargs.get("threshold")
+            self.reason = "ok"
+
+        def measure(self, tc):
+            return self.score
+
+    import deepeval.metrics as metrics_mod
+
+    monkeypatch.setattr(metrics_mod, "FaithfulnessMetric", _FaithOk)
+    monkeypatch.setattr(metrics_mod, "AnswerRelevancyMetric", _Boom)
+    monkeypatch.setattr(metrics_mod, "GEval", _Boom)
+
+    out = dr.measure_deepeval_metrics(
+        case={"question": "Q", "expected_answer": "A", "must_cite_source": True},
+        actual_output="A",
+        retrieval_context=["chunk"],
+        judge=object(),
+        faithfulness_threshold=0.7,
+        relevancy_threshold=0.5,
+        tone_threshold=0.5,
+        citations_threshold=0.5,
+        soft_metrics=False,
+        citations_hard=False,
+    )
+    assert out["FaithfulnessMetric"]["success"] is True
+    assert out["AnswerRelevancyMetric"]["skipped"] is True
+    assert out["GEval_Tone"]["skipped"] is True
+    assert out["GEval_Citations"]["skipped"] is True
+    assert out["AnswerRelevancyMetric"]["reason"] == "soft_metrics_disabled"
+
+
+def test_build_input_messages_includes_conversation_context():
+    case = {
+        "question": "还是连不上",
+        "conversation_context": ["我的 JoyClean S1 连不上 Wi-Fi。", "我已经重启过设备了。"],
+    }
+    msgs = dr.build_input_messages(case)
+    assert msgs[-1].content == "还是连不上"
+    assert any(getattr(m, "content", None) == "我的 JoyClean S1 连不上 Wi-Fi。" for m in msgs)
+
+
+def test_summarize_counts():
+    summary = dr.summarize(
+        [
+            {"pass": True, "category": "direct_fact"},
+            {"pass": False, "category": "direct_fact"},
+            {"pass": True, "category": "multi_hop", "error": None},
+        ]
+    )
+    assert summary["total"] == 3
+    assert summary["pass"] == 2
+    assert summary["fail"] == 1
+    assert summary["by_category"]["direct_fact"]["pass"] == 1

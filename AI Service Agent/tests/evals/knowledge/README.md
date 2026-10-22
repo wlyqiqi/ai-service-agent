@@ -28,6 +28,36 @@
 Multi-document Reasoning、Multi-turn Context Understanding、Abstention、Hallucination Resistance、
 Version Awareness、Knowledge Gap Detection。
 
+## Read 质量面 runner（DeepEval）
+
+与控制面 `python -m ai_service_agent.evals` **并列**，评 ReadGraph 生成质量（非 Router/Policy）。
+
+默认只跑**硬门**（L0 / L1 / Faithfulness），跳过 Relevancy / Tone / Citations，以减少 Judge LLM 调用。
+软指标用 `--soft-metrics` 补跑；按类分批可降低限流与排障成本。
+
+```bash
+# 硬门扫面（默认）：按类分批
+python -m ai_service_agent.evals.deepeval_read --category direct_fact \
+  --out tmp/reports/deepeval_read_direct_fact.json
+python -m ai_service_agent.evals.deepeval_read --category paraphrase \
+  --out tmp/reports/deepeval_read_paraphrase.json
+python -m ai_service_agent.evals.deepeval_read --category multi_hop \
+  --out tmp/reports/deepeval_read_multihop.json
+
+# 试点 / 限量；补跑软指标；Citations 升硬门（即使未开 --soft-metrics 也会测 Citations）
+python -m ai_service_agent.evals.deepeval_read --limit 10 --soft-metrics \
+  --out tmp/reports/deepeval_read_soft_pilot.json
+python -m ai_service_agent.evals.deepeval_read \
+  --category direct_fact,paraphrase,multi_hop \
+  --citations-hard \
+  --out tmp/reports/deepeval_read.json
+```
+
+判定：L0 坏答短路 → L1 `expected_facts` → Faithfulness（硬）→ AnswerRelevancy / G-Eval Tone /
+G-Eval Citations（软，默认跳过；`--citations-hard` 且 `must_cite_source` 时可硬）。
+Judge 用 `DEEPEVAL_JUDGE_*`（缺省回落 `LLM_*`），并开启 thinking（`reasoning_effort=high`）；
+runtime LLM 节点保持 `enable_thinking=false`。
+
 ## Ground Truth 原则
 
 - 每个 answerable case 的 expected_answer / expected_facts 均可从知识库文档验证（见 ground_truth_document_ids / ground_truth_sections）。
