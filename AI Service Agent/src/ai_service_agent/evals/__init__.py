@@ -1,1 +1,5 @@
-"""离线确定性评估（AGENTS.md §16）：基于 tests/evals/control/ 数据集，不依赖真实模型。"""
+"""离线评估。
+
+- 控制面（确定性）：`python -m ai_service_agent.evals` → `runner` + `tests/evals/control/`
+- 质量面（Read / DeepEval）：`python -m ai_service_agent.evals.deepeval_read` + `tests/evals/knowledge/`
+"""

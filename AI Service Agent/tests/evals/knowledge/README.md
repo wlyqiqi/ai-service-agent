@@ -28,6 +28,24 @@
 Multi-document Reasoning、Multi-turn Context Understanding、Abstention、Hallucination Resistance、
 Version Awareness、Knowledge Gap Detection。
 
+## Read 质量面 runner（DeepEval）
+
+与控制面 `python -m ai_service_agent.evals` **并列**，评 ReadGraph 生成质量（非 Router/Policy）。
+
+```bash
+# Phase 1 默认切片：direct_fact + paraphrase + multi_hop（answerable）
+python -m ai_service_agent.evals.deepeval_read --limit 10 --out tmp/reports/deepeval_read_pilot.json
+
+# 指定类别 / id；Citations 在 must_cite_source 时升为硬门禁
+python -m ai_service_agent.evals.deepeval_read \
+  --category direct_fact,paraphrase,multi_hop \
+  --citations-hard \
+  --out tmp/reports/deepeval_read.json
+```
+
+判定：L0 坏答短路 → L1 `expected_facts` → Faithfulness（硬）/ AnswerRelevancy（软）/
+G-Eval Tone（软）/ G-Eval Citations（软，可选硬）。Judge 用 `DEEPEVAL_JUDGE_*`（缺省回落 `LLM_*`）。
+
 ## Ground Truth 原则
 
 - 每个 answerable case 的 expected_answer / expected_facts 均可从知识库文档验证（见 ground_truth_document_ids / ground_truth_sections）。
