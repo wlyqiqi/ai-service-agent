@@ -50,7 +50,7 @@ class ToolMeta:
 
 | 工具 | 类型 | min_risk_level | 说明 |
 |---|---|---|---|
-| `kb_search` | 知识库检索 | read | 真实 LightRAG-chengyuan 检索（read 档）：`only_need_context` / `include_references` / `naive` / 关 rerank；返回上下文 + 参考来源；不可达 / 无结果返回中性检索信号（无成品客服话术、无转人工引导，话术由 ReadGraph 提示词负责）；引用来源在回复文本内标注（event-spec 不变） |
+| `kb_search` | 知识库检索 | read | 真实 LightRAG-chengyuan 检索（read 档）：`only_need_context` / `include_references` / `naive` / `top_k=5` / `chunk_top_k=5`（请求显式传，不吃服务端 CHUNK_TOP_K 默认）/ 关 rerank；返回上下文 + 参考来源；不可达 / 无结果返回中性检索信号（无成品客服话术、无转人工引导，话术由 ReadGraph 提示词负责）；引用来源在回复文本内标注（event-spec 不变） |
 | `order_lookup` | 订单查询 | read | **数据源替换（2026-09-19，同 `kb_search` stub→真实检索模式）**：内部实现从写死 stub 改为查询模拟电商库 `data/mock_ecommerce.db`（`scripts/seed_mock_db.py` 确定性生成，配置 `mock_ecommerce_db_path`，只读连接，库缺失/损坏确定性降级）；解析顺序 = `ORDER_STORE` 评测夹具（相对时间语义，CTRL-0086/0090 依赖，永远优先）→ 模拟电商库 → `not_found`；ToolMeta.schema 与对外接口/返回字段不变；**P4（D4）属主校验**不变：`user_id` 经 `langgraph.prebuilt.InjectedState` 注入，仅返回本人订单，越权拒绝 |
 | `my_orders` | 我的订单列表 | read | 登录用户名下最近 10 单（倒序）；`status` 可选过滤（paid/shipped/delivered/completed/refunding/refunded/cancelled）；零业务参数即可用——身份即授权（`user_id` 经 InjectedState 注入，不由模型/用户提供）；只读连接（mode=ro），库缺失降级 `data_source_unavailable`（2026-09-19） |
 | `shipment_query` | 物流查询 | read | 登录用户订单物流；`order_id` 可选（提供则精确查 + D4 属主校验，缺省优先返回在途订单物流，最多 5 条）；cancelled 单返回「已取消，无物流信息」；只读连接（mode=ro），库缺失降级 `data_source_unavailable`（2026-09-19） |

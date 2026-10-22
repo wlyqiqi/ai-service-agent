@@ -18,6 +18,8 @@ def test_query_context_parses_references_and_context():
         assert body["only_need_context"] is True
         assert body["include_references"] is True
         assert body["include_chunk_content"] is True
+        assert body["top_k"] == 5
+        assert body["chunk_top_k"] == 5
         assert body["enable_rerank"] is False
         return httpx.Response(200, json={
             "response": "",
