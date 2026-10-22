@@ -55,7 +55,8 @@ python -m ai_service_agent.evals.deepeval_read \
 
 判定：L0 坏答短路 → L1 `expected_facts` → Faithfulness（硬）→ AnswerRelevancy / G-Eval Tone /
 G-Eval Citations（软，默认跳过；`--citations-hard` 且 `must_cite_source` 时可硬）。
-Judge 用 `DEEPEVAL_JUDGE_*`（缺省回落 `LLM_*`）。
+Judge 用 `DEEPEVAL_JUDGE_*`（缺省回落 `LLM_*`），并开启 thinking（`reasoning_effort=high`）；
+runtime LLM 节点保持 `enable_thinking=false`。
 
 ## Ground Truth 原则
 

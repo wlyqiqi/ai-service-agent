@@ -202,6 +202,8 @@ def _openai_compat_model(
         timeout=timeout,
         max_tokens=max_tokens,
         max_retries=0,
+        # Runtime LLM nodes: always non-thinking (SiliconFlow DeepSeek/Qwen).
+        # DeepEval judge enables thinking separately in evals.deepeval_read.
         extra_body={
             "enable_thinking": False,
             "chat_template_kwargs": {"enable_thinking": False},

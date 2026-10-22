@@ -43,10 +43,12 @@ def test_model_profile_factories(monkeypatch):
     assert router.max_tokens == 256
     assert router.max_retries == 0
     assert router.extra_body["enable_thinking"] is False
+    assert router.extra_body["chat_template_kwargs"]["enable_thinking"] is False
     assert str(router.openai_api_base).startswith("https://api.siliconflow.cn")
     assert router.model_name == "Qwen/Qwen3.6-35B-A3B"
     assert router_fb is not None
     assert router_fb.model_name == "deepseek-ai/DeepSeek-V4-Flash"
+    assert router_fb.extra_body["enable_thinking"] is False
     assert str(router_fb.openai_api_base).startswith("https://api.siliconflow.cn")
 
     assert select.temperature == 0.0
@@ -59,6 +61,10 @@ def test_model_profile_factories(monkeypatch):
     assert read.model_name == "deepseek-ai/DeepSeek-V4-Flash"
     assert select.model_name == read.model_name
     assert fallback.model_name == read.model_name
+    # All runtime LLM-node profiles keep think mode off
+    for m in (select, read, fallback):
+        assert m.extra_body["enable_thinking"] is False
+        assert m.extra_body["chat_template_kwargs"]["enable_thinking"] is False
     assert config_mod.make_model().max_tokens == read.max_tokens
 
 

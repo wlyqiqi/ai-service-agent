@@ -3,6 +3,7 @@
 数据：tests/evals/knowledge/*.jsonl
 被测：ReadGraph + LLM_*（SUT）
 Judge：DEEPEVAL_JUDGE_*（缺省回落 LLM_*，并打印警告）
+  Judge 默认开启 thinking（enable_thinking + reasoning_effort=high）；SUT/runtime LLM 节点保持关闭。
 
 判定：
   L0 坏答短路（硬）→ L1 expected_facts / 拒答启发式（硬）
@@ -362,8 +363,21 @@ def _load_env() -> dict[str, str | None]:
     return merged
 
 
+# SiliconFlow / DeepSeek-V4 judge: thinking on + effort high (OpenAI SDK → extra_body).
+JUDGE_THINKING_GENERATION_KWARGS: dict[str, Any] = {
+    "extra_body": {
+        "enable_thinking": True,
+        "reasoning_effort": "high",
+    }
+}
+
+
 def make_judge_model():
-    """Build DeepEval LocalModel from DEEPEVAL_JUDGE_* (fallback LLM_*)."""
+    """Build DeepEval LocalModel from DEEPEVAL_JUDGE_* (fallback LLM_*).
+
+    Judge enables thinking at ``reasoning_effort=high`` (SiliconFlow DeepSeek-V4).
+    Runtime SUT models stay on ``enable_thinking=False`` via ``config._openai_compat_model``.
+    """
     from deepeval.models import LocalModel
 
     env = _load_env()
@@ -408,6 +422,7 @@ def make_judge_model():
         base_url=base_url,
         api_key=api_key,
         temperature=0,
+        generation_kwargs=dict(JUDGE_THINKING_GENERATION_KWARGS),
         **kwargs,
     )
 

@@ -148,6 +148,39 @@ def test_build_parser_soft_metrics_default_off():
     assert ns2.soft_metrics is False
 
 
+def test_make_judge_model_enables_thinking_high(monkeypatch):
+    captured: dict = {}
+
+    class _FakeLocal:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("LLM_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.siliconflow.cn/v1")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.delenv("DEEPEVAL_JUDGE_MODEL", raising=False)
+    monkeypatch.delenv("DEEPEVAL_JUDGE_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPEVAL_JUDGE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "deepeval.models.LocalModel",
+        _FakeLocal,
+    )
+    monkeypatch.setattr(dr, "_load_env", lambda: {
+        "LLM_MODEL": "deepseek-ai/DeepSeek-V4-Flash",
+        "LLM_BASE_URL": "https://api.siliconflow.cn/v1",
+        "LLM_API_KEY": "sk-test",
+    })
+
+    with pytest.warns(UserWarning, match="DEEPEVAL_JUDGE"):
+        dr.make_judge_model()
+
+    gen = captured.get("generation_kwargs") or {}
+    body = gen.get("extra_body") or {}
+    assert body.get("enable_thinking") is True
+    assert body.get("reasoning_effort") == "high"
+    assert captured.get("temperature") == 0
+
+
 def test_measure_skips_soft_metrics_without_judge_calls(monkeypatch):
     """soft_metrics=False must not construct/measure soft DeepEval metrics."""
 
