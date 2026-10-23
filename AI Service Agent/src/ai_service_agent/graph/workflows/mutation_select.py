@@ -20,7 +20,6 @@ from ai_service_agent.graph.workflows.safety import incomplete_business_fields
 from ai_service_agent.graph.workflows.select import (
     _bind_json,
     _budgeted_select_messages,
-    _build_examples,
     _describe_args_schema,
     _is_uuid4,
     _normalize_placeholder_args,
@@ -32,6 +31,254 @@ from ai_service_agent.prompts import (
 from ai_service_agent.tools.registry import ToolRegistry
 
 _TIER = "mutation"
+
+# Fake（json）与 Real（bind_tools）决策对齐，输出形态按路径分流。HighRisk select 仍用
+# select._build_examples，不读这里。
+# 行为用例：
+# 1. 改地址 / 改电话 / 备注 / 开票 / 售后且话术完整 → 选对应工具，只填句中已有字段。
+# 2. 开票句无金额 → create_invoice 不含 amount（schema 字段为 company / tax_no）。
+# 3. 缺参仍选工具：档案类（地址优先，否则电话）与订单写（备注优先，否则开票 / 售后）各一条。
+# 4. 「改一下订单」→ 不选工具，只列举当前工具对应能力。
+# 5. 「退款」等列表外 → 不选工具、不映射，说明当前能办哪些。
+# 6. 同时有地址和电话时，「改联系方式」→ 追问；同时有开票和备注且混说 → 追问。
+_MUTATION_EXAMPLE_TEXTS: dict[str, tuple[str, dict]] = {
+    "update_address": (
+        "订单 ORD-10086 收货地址改成北京市朝阳区望京SOHO",
+        {"order_id": "ORD-10086", "address": "北京市朝阳区望京SOHO"},
+    ),
+    "update_phone": (
+        "帮我换个手机号，新号 13800138000",
+        {"phone": "13800138000"},
+    ),
+    "update_order_note": (
+        "给订单 ORD-10086 加个备注：放驿站就行",
+        {"order_id": "ORD-10086", "note": "放驿站就行"},
+    ),
+    "create_invoice": (
+        "订单 ORD-10086 开票，抬头星辰科技有限公司，税号 91110108MA01AB12CD",
+        {
+            "order_id": "ORD-10086",
+            "company": "星辰科技有限公司",
+            "tax_no": "91110108MA01AB12CD",
+        },
+    ),
+    "create_service_ticket": (
+        "订单 ORD-10086 申请售后，屏幕有裂痕",
+        {"order_id": "ORD-10086", "reason": "屏幕有裂痕"},
+    ),
+}
+
+_MUTATION_MISSING_USER_TEXTS = {
+    "update_address": "我想改个收货地址",
+    "update_phone": "我要换绑手机号",
+    "update_order_note": "给订单加个备注",
+    "create_invoice": "给我开一张发票",
+    "create_service_ticket": "我要申请售后",
+}
+
+_CAPABILITY_LABELS = {
+    "update_address": "改收货地址",
+    "update_phone": "改联系电话",
+    "update_order_note": "加订单备注",
+    "create_invoice": "开发票",
+    "create_service_ticket": "申请售后",
+}
+
+_PROFILE_MISSING_PRIORITY = ("update_address", "update_phone")
+_ORDER_MISSING_PRIORITY = ("update_order_note", "create_invoice", "create_service_ticket")
+
+
+def _first_present(priority: tuple[str, ...], names: set[str]) -> str | None:
+    for name in priority:
+        if name in names:
+            return name
+    return None
+
+
+def _known_args(tool_name: str, args: dict, registry: ToolRegistry) -> dict:
+    """保留 schema 字段（不含 request_id），丢掉示例里多出来的键。"""
+    meta = registry.meta_for(tool_name)
+    if meta is None or meta.schema is None:
+        return {key: value for key, value in args.items() if key != "request_id"}
+    allowed = set(meta.schema.model_fields) - {"request_id"}
+    return {key: value for key, value in args.items() if key in allowed}
+
+
+def _fallback_example(tool, registry: ToolRegistry) -> tuple[str, dict] | None:
+    meta = registry.meta_for(tool.name)
+    if meta is None or meta.schema is None:
+        return None
+    required = [
+        name
+        for name, info in meta.schema.model_fields.items()
+        if name != "request_id" and info.is_required()
+    ]
+    if not required:
+        return None
+    return (tool.description, {name: f"{name}示例" for name in required})
+
+
+def _fmt_tool_call(name: str, args: dict) -> str:
+    if not args:
+        return f"{name}()"
+    parts = [
+        f"{key}={json.dumps(value, ensure_ascii=False)}"
+        for key, value in args.items()
+    ]
+    return f"{name}({', '.join(parts)})"
+
+
+def _labels_for(tools: list, registry: ToolRegistry) -> list[str]:
+    labels = []
+    for tool in tools:
+        label = _CAPABILITY_LABELS.get(tool.name)
+        if not label:
+            meta = registry.meta_for(tool.name)
+            desc = (meta.description if meta is not None else "") or tool.name
+            label = desc.strip().rstrip("。")
+        labels.append(label)
+    return labels
+
+
+def _join_or(labels: list[str]) -> str:
+    if not labels:
+        return "当前允许的写操作"
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]}或{labels[1]}"
+    return "、".join(labels[:-1]) + f"或{labels[-1]}"
+
+
+def _vague_content(labels: list[str]) -> str:
+    if not labels:
+        return "请直接说一下您要办理的事项。"
+    if len(labels) == 1:
+        return f"目前可以帮您{labels[0]}。请说一下具体要怎么办。"
+    if len(labels) == 2:
+        return f"您是要{labels[0]}，还是{labels[1]}？请直接说一下。"
+    return f"您是要{'、'.join(labels[:-1])}，还是{labels[-1]}？请直接说一下。"
+
+
+def _refund_content(labels: list[str]) -> str:
+    return (
+        "退款不在当前能办的范围内。目前可以帮您"
+        f"{_join_or(labels)}，请直接说要办哪一项。"
+    )
+
+
+def _render_pair(user: str, json_body: str, real_body: str, mode: str) -> str:
+    if mode == "json":
+        return f"用户：{user}\n输出：{json_body}"
+    return f"用户：{user}\n行为：{real_body}"
+
+
+def _json_tool(name: str, args: dict) -> str:
+    return json.dumps({"tool": name, "args": args}, ensure_ascii=False)
+
+
+def _json_clarify(content: str) -> str:
+    return json.dumps({"tool": None, "content": content}, ensure_ascii=False)
+
+
+def _build_mutation_examples(tier_tools: list, registry: ToolRegistry, mode: str) -> str:
+    """按当前工具集生成 Mutation Select few-shot。
+
+    mode="json" 保持 {"tool": ...}；mode="bind_tools" 只描述 tool_call 或纯文本，
+    不出现 JSON tool 载荷。列表里没有的工具，对应正例不注入。
+    """
+    if mode not in ("json", "bind_tools"):
+        raise ValueError(f"unknown mutation example mode: {mode!r}")
+    names = {tool.name for tool in tier_tools}
+    parts: list[str] = []
+
+    for tool in tier_tools:
+        example = _MUTATION_EXAMPLE_TEXTS.get(tool.name)
+        if example is None:
+            example = _fallback_example(tool, registry)
+            if example is None:
+                continue
+        user_text, args = example
+        args = _known_args(tool.name, args, registry)
+        parts.append(
+            _render_pair(
+                user_text,
+                _json_tool(tool.name, args),
+                f"发起 tool_call：{_fmt_tool_call(tool.name, args)}",
+                mode,
+            )
+        )
+
+    for name in (
+        _first_present(_PROFILE_MISSING_PRIORITY, names),
+        _first_present(_ORDER_MISSING_PRIORITY, names),
+    ):
+        if name is None:
+            continue
+        user_text = _MUTATION_MISSING_USER_TEXTS.get(name, f"我要使用{name}")
+        parts.append(
+            _render_pair(
+                f"{user_text}（参数不完整）",
+                _json_tool(name, {}),
+                (
+                    f"发起 tool_call：{_fmt_tool_call(name, {})}"
+                    "（参数不完整，只填已知参数；缺参交后续表单，不要改用纯文本追问）"
+                ),
+                mode,
+            )
+        )
+
+    labels = _labels_for(tier_tools, registry)
+    vague = _vague_content(labels)
+    refund = _refund_content(labels)
+    parts.append(
+        _render_pair(
+            "帮我改一下订单",
+            _json_clarify(vague),
+            f"不发起 tool_call，纯文本追问：{vague}",
+            mode,
+        )
+    )
+    parts.append(
+        _render_pair(
+            "我要退款",
+            _json_clarify(refund),
+            f"不发起 tool_call，纯文本说明当前能办的并请用户重说：{refund}",
+            mode,
+        )
+    )
+
+    if "update_address" in names and "update_phone" in names:
+        contact = (
+            f"您是要{_CAPABILITY_LABELS['update_address']}，"
+            f"还是{_CAPABILITY_LABELS['update_phone']}？"
+        )
+        parts.append(
+            _render_pair(
+                "帮我改一下联系方式",
+                _json_clarify(contact),
+                f"不发起 tool_call，纯文本追问：{contact}",
+                mode,
+            )
+        )
+    if "create_invoice" in names and "update_order_note" in names:
+        mixed = (
+            f"您是要{_CAPABILITY_LABELS['create_invoice']}，"
+            f"还是{_CAPABILITY_LABELS['update_order_note']}？请说一下先办哪一项。"
+        )
+        parts.append(
+            _render_pair(
+                "订单 ORD-10086 既要开票又要加备注，我还没定先办哪个",
+                _json_clarify(mixed),
+                f"不发起 tool_call，纯文本追问：{mixed}",
+                mode,
+            )
+        )
+
+    text = "\n\n".join(parts)
+    if mode == "bind_tools" and '{"tool":' in text:
+        raise ValueError("bind_tools mutation examples must not include JSON tool few-shots")
+    return text
 
 
 def make_mutation_select_node(
@@ -138,7 +385,11 @@ def make_mutation_select_node(
             selected_tools = [t for t in tier_tools if t.name in route_allowed]
         allowed = {t.name for t in selected_tools}
         tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
-        examples = _build_examples(selected_tools, registry)
+        examples = _build_mutation_examples(
+            selected_tools,
+            registry,
+            "json" if is_fake else "bind_tools",
+        )
         if is_fake:
             messages = _budgeted_select_messages(
                 state,
