@@ -144,7 +144,13 @@ def verify_chatwoot_signature(
 
 
 class ChatwootClient:
-    """Chatwoot API inbox 客户端（httpx）。调用方负责 try/except 降级。"""
+    """Chatwoot API inbox 客户端（httpx）。调用方负责 try/except 降级。
+
+    ``api_token``：坐席 / Account Application API（toggle_status、labels、Contact 同步等）。
+    ``bot_api_token``：Agent Bot ``access_token``；出站 bot 气泡必须用它，Widget 才会
+    把 ``sender`` 显示为 Agent Bot（name/avatar），而不是坐席 Profile。
+    未配置时 ``send_bot_message`` 回退到 ``api_token``（兼容旧环境，气泡可能像坐席）。
+    """
 
     def __init__(
         self,
@@ -154,16 +160,21 @@ class ChatwootClient:
         api_token: str,
         mapping: ChatwootMappingStore,
         client: httpx.AsyncClient | None = None,
+        bot_api_token: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.account_id = account_id
         self.inbox_id = inbox_id
         self.api_token = api_token
+        self.bot_api_token = (bot_api_token or "").strip() or None
         self.mapping = mapping
         self.client = client or httpx.AsyncClient(trust_env=False)  # Chatwoot 为本地基础设施，不走环境代理
 
     def _headers(self) -> dict:
         return {"api_access_token": self.api_token}
+
+    def _bot_headers(self) -> dict:
+        return {"api_access_token": self.bot_api_token or self.api_token}
 
     async def _create_contact(self, name: str) -> int:
         r = await self.client.post(
@@ -275,7 +286,7 @@ class ChatwootClient:
         cw_id = rec["chatwoot_conversation_id"]
         r = await self.client.post(
             f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/toggle_typing_status",
-            headers=self._headers(),
+            headers=self._bot_headers(),
             json={"typing_status": "off"},
         )
         r.raise_for_status()
@@ -283,7 +294,7 @@ class ChatwootClient:
     async def send_as_contact(self, conversation_id: str, content: str) -> None:
         rec = self.mapping.get(conversation_id)
         body = {"content": content, "sender_type": "Contact", "message_type": "incoming"}
-        await self._post_message(conversation_id, body)
+        await self._post_message(conversation_id, body, as_bot=False)
 
     async def send_bot_message(
         self,
@@ -300,7 +311,7 @@ class ChatwootClient:
             body["content_type"] = content_type
         if content_attributes is not None:
             body["content_attributes"] = content_attributes
-        await self._post_message(conversation_id, body)
+        await self._post_message(conversation_id, body, as_bot=True)
 
     async def send_interactive_message(
         self,
@@ -319,13 +330,15 @@ class ChatwootClient:
             content_attributes,
             private=private,
         )
-    async def _post_message(self, conversation_id: str, body: dict) -> None:
+
+    async def _post_message(self, conversation_id: str, body: dict, *, as_bot: bool = False) -> None:
         rec = self.mapping.get(conversation_id)
         if rec is None:
             return  # 未建立 Chatwoot conversation：跳过，不阻塞 Runtime
+        headers = self._bot_headers() if as_bot else self._headers()
         r = await self.client.post(
             f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{rec['chatwoot_conversation_id']}/messages",
-            headers=self._headers(),
+            headers=headers,
             json=body,
         )
         r.raise_for_status()

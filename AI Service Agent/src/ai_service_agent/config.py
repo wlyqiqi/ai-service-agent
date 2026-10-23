@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     chatwoot_account_id: int | None = Field(default=None, validation_alias="CHATWOOT_ACCOUNT_ID")
     chatwoot_inbox_id: int | None = Field(default=None, validation_alias="CHATWOOT_INBOX_ID")
     chatwoot_api_token: str | None = Field(default=None, validation_alias="CHATWOOT_API_TOKEN")
+    # Agent Bot access_token：出站 bot 气泡的 sender=agent_bot（与坐席 CHATWOOT_API_TOKEN 分开）。
+    chatwoot_agent_bot_token: str | None = Field(
+        default=None, validation_alias="CHATWOOT_AGENT_BOT_TOKEN"
+    )
     chatwoot_webhook_secret: str | None = Field(default=None, validation_alias="CHATWOOT_WEBHOOK_SECRET")
     chatwoot_agent_bot_secret: str | None = Field(default=None, validation_alias="CHATWOOT_AGENT_BOT_SECRET")
     chatwoot_website_token: str | None = Field(default=None, validation_alias="CHATWOOT_WEBSITE_TOKEN")

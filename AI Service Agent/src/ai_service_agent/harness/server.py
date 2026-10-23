@@ -236,6 +236,7 @@ def create_app(
             inbox_id=settings_chatwoot.chatwoot_inbox_id,
             api_token=settings_chatwoot.chatwoot_api_token,
             mapping=mapping,
+            bot_api_token=settings_chatwoot.chatwoot_agent_bot_token,
         )
     webhook_secret = chatwoot_webhook_secret or settings_chatwoot.chatwoot_webhook_secret
     widget_hmac_secret = chatwoot_hmac_secret or settings_chatwoot.chatwoot_hmac_secret
