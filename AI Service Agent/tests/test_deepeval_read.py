@@ -149,6 +149,8 @@ def test_build_parser_soft_metrics_default_off():
 
 
 def test_make_judge_model_enables_thinking_high(monkeypatch):
+    # deepeval is an optional eval dependency; CI installs the offline baseline only.
+    pytest.importorskip("deepeval.models")
     captured: dict = {}
 
     class _FakeLocal:
@@ -183,6 +185,8 @@ def test_make_judge_model_enables_thinking_high(monkeypatch):
 
 def test_measure_skips_soft_metrics_without_judge_calls(monkeypatch):
     """soft_metrics=False must not construct/measure soft DeepEval metrics."""
+    # deepeval is an optional eval dependency; CI installs the offline baseline only.
+    metrics_mod = pytest.importorskip("deepeval.metrics")
 
     class _Boom:
         def __init__(self, *args, **kwargs):
@@ -197,8 +201,6 @@ def test_measure_skips_soft_metrics_without_judge_calls(monkeypatch):
 
         def measure(self, tc):
             return self.score
-
-    import deepeval.metrics as metrics_mod
 
     monkeypatch.setattr(metrics_mod, "FaithfulnessMetric", _FaithOk)
     monkeypatch.setattr(metrics_mod, "AnswerRelevancyMetric", _Boom)
