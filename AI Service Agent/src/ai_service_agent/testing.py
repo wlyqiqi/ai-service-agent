@@ -50,6 +50,13 @@ def select_json_message(tool: str, args: dict) -> AIMessage:
     return AIMessage(content=json.dumps({"tool": tool, "args": args}, ensure_ascii=False))
 
 
+def select_clarify_message(content: str = "") -> AIMessage:
+    """Fake select：无 tool（ADR 0004 Mutation Operation Clarify 内联追问）。"""
+    return AIMessage(
+        content=json.dumps({"tool": None, "content": content}, ensure_ascii=False)
+    )
+
+
 class ApprovalFlowFakeModel(ToolCallingFakeModel):
     """离线：Router -> order/high_risk；select -> refund_apply；其余回显。"""
 

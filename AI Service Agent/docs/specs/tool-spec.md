@@ -21,8 +21,8 @@ class ToolMeta:
   - HighRiskGraph：`read` + `mutation` + `high_risk`。
 - ReadGraph 永远拿不到写工具（构建期过滤，而非运行期拦截）。
 - 写图 select 节点允许集为**档内严格**（P5 B2b）：仅 `min_risk_level == tier` 的写工具可被选中；
-  只读工具不进入写图 select 允许集与系统提示，若模型仍选中已注册低档工具 → `tier_clarify` 澄清
-  （普通轮，见 graph-spec.md §6.2/§6.3），未知工具仍拒绝。ToolNode 工具注入保持分层。
+  只读工具不进入写图 select 允许集与系统提示。HighRisk 若仍选中已注册低档工具 → `tier_clarify` 澄清
+  （普通轮，见 graph-spec.md §6.3）；Mutation 选中未绑定/低档工具 → `unknown_tool`（ADR 0004）。ToolNode 工具注入保持分层。
 
 ## Allowed Tools（Router v2）
 

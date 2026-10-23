@@ -62,6 +62,24 @@ def test_policy_gate_corrects_address_mutation(enabled):
     assert update["allowed_tools"] == ["update_address", "update_phone"]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我要改收货地址",
+        "改下收货地址",
+        "改收货地址",
+        "帮我改一下收货地址",
+    ],
+)
+def test_policy_gate_corrects_colloquial_address_mutation(enabled, text):
+    """ADR 0004: colloquial 改/改下 must normalize so allowed_tools include update_address."""
+    update = _policy_gate(
+        {"route_intent": "order_mutation", "messages": [HumanMessage(content=text)]}
+    )
+    assert update["route_intent"] == "account_profile_update"
+    assert update["allowed_tools"] == ["update_address", "update_phone"]
+
+
 def test_policy_gate_corrects_phone_mutation(enabled):
     state = {
         "route_intent": "order_mutation",

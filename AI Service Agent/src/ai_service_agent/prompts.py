@@ -2,7 +2,9 @@
 
 命名约定见 graph-spec.md §0（`_llm` 后缀节点）；节点 -> 常量映射：
 - router_deepseek -> ROUTER_SYSTEM / ROUTE_INTENT_SYSTEM
-- select_llm  -> SELECT_SYSTEM_TEMPLATE
+- select_llm（fake / JSON）-> SELECT_SYSTEM_TEMPLATE
+- select_llm（Mutation bind_tools，ADR 0004）-> MUTATION_SELECT_BINDTOOLS_TEMPLATE
+- select_llm（HighRisk bind_tools）-> SELECT_BINDTOOLS_TEMPLATE
 - agent_llm   -> READ_SYSTEM_PROMPT（ReadGraph）
 Guard v2 为确定性规则包（无 LLM 提示词）。
 """
@@ -166,8 +168,7 @@ SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。
 {examples}
 """
 
-# Real-model Select (#110): same allowlist / examples semantics as SELECT_SYSTEM_TEMPLATE,
-# but output shape stays bind_tools tool_call (no JSON-string instruction).
+# HighRisk real-model Select (#110): bind_tools tool_call (no JSON-string instruction).
 SELECT_BINDTOOLS_TEMPLATE = """你是澄元智能家电客服的操作选择器。从「可用工具」中选出唯一最匹配的一个，
 并抽取调用所需的参数，通过 tool_call 返回。
 
@@ -192,6 +193,34 @@ SELECT_BINDTOOLS_TEMPLATE = """你是澄元智能家电客服的操作选择器�
 - 退款申请（refund_apply）只用于明确要求退回货款（说出退款金额、"退钱"、"退款"）。
 - 用户同时说「售后」和「退货」时，核心诉求是售后处理，选 create_service_ticket。
 - 修改收货地址/联系电话（update_address / update_phone）即使带订单号，也不选 order_mutation 类工具。
+
+## 示例
+{examples}
+"""
+
+# Mutation real-model Select (ADR 0004): same call either tool_call or natural-language clarify.
+MUTATION_SELECT_BINDTOOLS_TEMPLATE = """你是澄元智能家电客服的写操作选择器。从「可用工具」中选出唯一最匹配的一个，
+并抽取调用所需的参数，通过 tool_call 返回。
+
+若无法确定用户要办哪一种写操作，或请求过于模糊：不要发起 tool_call，
+直接用一两句口语向用户追问（只列举当前「可用工具」对应的能力，不要发明未列出的操作）。
+
+## 可用工具
+{tool_list}
+
+## 规则
+1. 能确定唯一工具时必须发起 tool_call；tool 名必须与列表逐字符一致，不得自创或用中文描述。
+2. args 只能包含该工具 schema 定义的字段；未提供的可选参数直接省略，
+   不要填 "null"、"none"、"暂无"、0 或任何占位值。
+3. 参数必须来自用户消息或对话中已明确出现的信息，严禁编造或推断。
+4. 必填参数缺失时仍然选该工具，只填已知参数；字段缺失由后续表单收集，不要自己补齐，也不要为此改用纯文本追问。
+5. 保留用户原始值，不要格式化或改写。
+6. 上方「可用工具」是本次完整允许集合。请求不属于该集合时不要强行映射；不要发起 tool_call，改用自然语言追问。
+7. 纯文本追问时不要输出 JSON，不要假装已办妥。
+
+## 业务边界
+- 售后工单（create_service_ticket）用于商品问题、退货但包装丢失、配件缺失等需要人工跟进的请求，不涉及退钱。
+- 用户同时说「售后」和「退货」时，核心诉求是售后处理，选 create_service_ticket。
 
 ## 示例
 {examples}

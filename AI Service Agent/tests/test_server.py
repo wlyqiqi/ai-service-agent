@@ -955,12 +955,14 @@ def test_confirm_precheck_failure_reissues_form_rejected_same_session(tmp_path, 
 
 
 def test_vague_mutation_operation_clarify_then_form_interrupt(tmp_path, monkeypatch):
-    """Vague mutation-like intent uses Operation Clarify outside MutationGraph.
+    """Vague mutation intent: Mutation select_llm clarifies inline (ADR 0004).
 
-    Seam: Conversation Runtime /chat + /actions/confirm (issue #21).
+    Seam: Conversation Runtime /chat + /actions/confirm.
     Turn 1: chat asks operation type — no form_required / Mutation Form.
     Turn 2: concrete update_address intent opens Form Interrupt; Confirm writes.
     """
+    from ai_service_agent.testing import select_clarify_message
+
     business_db = tmp_path / "mock_ecommerce.db"
 
     class _WriteSettings:
@@ -982,6 +984,10 @@ def test_vague_mutation_operation_clarify_then_form_interrupt(tmp_path, monkeypa
     form_address = "北京市朝阳区望京 Operation Clarify 路 1 号"
     model = ToolCallingFakeModel(responses=[
         router_json_message("order_mutation", 0.9),
+        select_clarify_message(
+            "好的，您是想修改订单相关信息。请问具体要办理哪一项呢？"
+            "例如：收货地址、联系电话、订单备注、开发票，或申请售后工单。"
+        ),
         router_json_message("account_profile_update", 0.9),
         select_json_message(
             "update_address",

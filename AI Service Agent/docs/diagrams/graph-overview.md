@@ -13,12 +13,11 @@ flowchart TD
     C -- "否" --> G["Guard ∥ Router<br/>并行；Router 产出 route_intent + confidence"]
     G --> P["Policy Gate<br/>route_intent → target_graph / allowed_tools / …"]
     P --> SF["safety_final<br/>Guard fail"]
-    P --> OC["operation_clarify<br/>mutation tool 未定"]
     P --> RD["ReadGraph<br/>ReAct + 只读工具"]
-    P --> MU["MutationGraph<br/>select → 预检 → Form Interrupt → 执行"]
+    P --> MU["MutationGraph<br/>select（tool 或 Operation Clarify）→ 预检 → Form Interrupt → 执行"]
     P --> HR["HighRiskGraph<br/>select → 预检/Form → 审批 interrupt"]
     P --> FB["Fallback<br/>unknown / 兜底"]
-    SF & OC & RD & MU & HR & FB --> F["Final Response<br/>写回 messages + 归一化事件"]
+    SF & RD & MU & HR & FB --> F["Final Response<br/>写回 messages + 归一化事件"]
     RD & MU & HR & FB --> HO["interrupt(handoff_request)<br/>外层：建 Record + 切 mode + 发事件"]
     HO -.-> H
     F --> PRE{"发送前重校验 mode == ai ?<br/>读实时值"}
@@ -32,6 +31,6 @@ flowchart TD
 
 - Guard 为确定性规则包（与 Router 并行）；fail 走 `safety_final`，不消费 Router 分类结果做子图路由。
 - Router 唯一语义输出是 `route_intent` + `confidence`；子图选择由 Policy Gate 确定性派生（见 `state-spec.md`）。
-- Mutation 主路径用 Form Interrupt（`form_required`），不是聊天 `confirmation_required`。
+- Mutation 主路径用 Form Interrupt（`form_required`），不是聊天 `confirmation_required`；tool 未定由 Mutation `select_llm` 内联 Operation Clarify（ADR 0004），无入口 Hybrid。
 - Form / 审批挂起时父图 `execution_status` 常仍为 `routing`；对外权威是 checkpointer `__interrupt__`。
 - `conversation_id=session_id`、`thread_id` 一对一映射见 `handoff-spec.md` §5.1。pending 审批「继续挂起等 AI」归宿 **已废止**（[ADR-0002](../adr/0002-seat-approver-side-channel.md)）。
