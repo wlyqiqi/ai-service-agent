@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler, make_timeout_policy
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
@@ -22,7 +23,7 @@ from ai_service_agent.tools.write import UpdatePhoneArgs
 
 
 class RecordingSelectModel(ToolCallingFakeModel):
-    """记录最后一次系统提示（select 的 json_mode 契约提示）。"""
+    """记录最后一次系统提示（Mutation Select 的 json_mode 契约提示）。"""
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         object.__setattr__(self, "seen_system", next(
@@ -44,8 +45,8 @@ def _select_node():
     model = RecordingSelectModel(responses=[
         select_json_message("update_address", {"address": "朝阳区"}),
     ])
-    node = make_select_node(
-        model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    node = make_mutation_select_node(
+        model, DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
     )
     return model, node
 
@@ -77,7 +78,7 @@ async def test_select_uses_previous_turn_for_clarification():
                 tool_calls=[{"name": "update_address", "args": {}, "id": "call-1", "type": "tool_call"}],
             )
 
-    node = make_select_node(CaptureToolModel(), "mutation", tools=[], registry=ToolRegistry())
+    node = make_mutation_select_node(CaptureToolModel(), tools=[], registry=ToolRegistry())
     state = {
         "messages": [
             HumanMessage(content="我要修改地址"),
@@ -145,13 +146,14 @@ def test_select_system_template_examples_match_tier():
     assert "参数不完整" in model.seen_system                     # 缺参示例
 
 
-def test_select_system_template_service_ticket_vs_refund_boundary():
-    """售后/退款边界：select prompt 必须包含 create_service_ticket ≠ refund_apply 的对照示例。"""
+def test_select_system_template_service_ticket_boundary():
+    """Mutation Select：售后工单边界在本档提示词内；不含 HighRisk 退款工具。"""
     model, node = _select_node()
     _select_result(node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}}))
     assert "售后工单" in model.seen_system
-    assert "退款申请" in model.seen_system
     assert "退货" in model.seen_system
+    assert "refund_apply" not in model.seen_system
+    assert "cancel_order" not in model.seen_system
 
 
 def test_select_json_tool_list_uses_short_meta_description():
@@ -238,7 +240,7 @@ def test_select_real_model_system_includes_allowlist_and_examples():
     assert "不要强行映射" in system or "不属于" in system
 
 
-def _real_model_node(model, *, tier: str = "mutation") -> tuple[Callable[[dict], dict], MagicMock]:
+def _real_model_node(model) -> tuple[Callable[[dict], dict], MagicMock]:
     tool = MagicMock()
     tool.name = "update_phone"
     registry = ToolRegistry()
@@ -251,7 +253,7 @@ def _real_model_node(model, *, tier: str = "mutation") -> tuple[Callable[[dict],
         ),
         tool,
     )
-    return make_select_node(model, tier, [tool], registry), tool
+    return make_mutation_select_node(model, [tool], registry), tool
 
 
 def test_select_real_model_no_tool_call_mutation_clarifies_inline(monkeypatch):
@@ -260,7 +262,7 @@ def test_select_real_model_no_tool_call_mutation_clarifies_inline(monkeypatch):
 
     events = []
     monkeypatch.setattr(
-        "ai_service_agent.graph.workflows.select.get_stream_writer",
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
         lambda: events.append,
     )
     bound_model = AsyncMock()
@@ -302,9 +304,8 @@ def test_select_mutation_low_tier_tool_rejects_unknown_tool():
     model = ToolCallingFakeModel(responses=[
         select_json_message("order_lookup", {"order_id": "ORD-1"}),
     ])
-    node = make_select_node(
+    node = make_mutation_select_node(
         model,
-        "mutation",
         DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")
         + DEFAULT_TOOL_REGISTRY.for_risk_level("read"),
         DEFAULT_TOOL_REGISTRY,
@@ -368,27 +369,26 @@ def test_select_timeout_routes_to_local_error_handler(monkeypatch):
         model = SlowSelectFakeModel(responses=[
             select_json_message("update_address", {"address": "朝阳区"}),
         ])
-        node = make_select_node(
+        node = make_mutation_select_node(
             model,
-            "mutation",
             DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
             DEFAULT_TOOL_REGISTRY,
         )
         builder = StateGraph(CustomerServiceState)
         builder.set_node_defaults(error_handler=make_subgraph_error_handler("finalize_failed"))
         builder.add_node(
-            "select_llm",
+            "mutation_select_llm",
             node,
             retry_policy=RETRY_LLM,
             timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
         )
         builder.add_node("finalize_failed", lambda state: None)
-        builder.add_edge(START, "select_llm")
-        builder.add_edge("select_llm", "finalize_failed")
+        builder.add_edge(START, "mutation_select_llm")
+        builder.add_edge("mutation_select_llm", "finalize_failed")
         builder.add_edge("finalize_failed", END)
         graph = builder.compile()
 
-        node_spec = graph.nodes["select_llm"]
+        node_spec = graph.nodes["mutation_select_llm"]
         assert inspect.iscoroutinefunction(node_spec.bound.afunc)
         assert node_spec.timeout == TimeoutPolicy(run_timeout=0.05)
 

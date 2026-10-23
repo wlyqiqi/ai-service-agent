@@ -17,7 +17,7 @@ from ai_service_agent.graph import builder as builder_mod
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.agents.tool_args import ToolArgumentNormalizationMiddleware
 from ai_service_agent.graph.builder import build_graph
-from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools import orders as orders_mod
@@ -249,9 +249,8 @@ def test_order_lookup_order_id_null_is_a_missing_argument_not_not_found(monkeypa
 
 def _mutation_select(args: dict):
     model = ToolCallingFakeModel(responses=[select_json_message("update_order_note", args)])
-    return make_select_node(
+    return make_mutation_select_node(
         model,
-        "mutation",
         DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
         DEFAULT_TOOL_REGISTRY,
     )
@@ -408,9 +407,8 @@ def test_null_address_and_note_are_missing_fields_not_stored_values():
 
 def _mutation_select_for(tool_name: str, args: dict):
     model = ToolCallingFakeModel(responses=[select_json_message(tool_name, args)])
-    return make_select_node(
+    return make_mutation_select_node(
         model,
-        "mutation",
         DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
         DEFAULT_TOOL_REGISTRY,
     )

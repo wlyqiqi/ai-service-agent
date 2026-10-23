@@ -8,7 +8,8 @@
 - 当前 `_llm` 节点清单（v0.1.0）：
   - 顶层：`router_llm`（json_mode 结构化分类）
   - ReadGraph：`agent_llm`（ReAct agent，`create_agent`）
-  - MutationGraph / HighRiskGraph：`select_llm`（json_mode 工具 + 参数提取）
+  - MutationGraph：`mutation_select_llm`（Mutation Select；工具选择或内联 Operation Clarify）
+  - HighRiskGraph：`select_llm`（json_mode 工具 + 参数提取）
 - 确定性节点（关键词 / 模板 / 预检 / 中断 / 收尾）**不得**使用 `_llm` 后缀。
 - `guard` 节点当前为实现**确定性 v1**（关键词/正则），非 `_llm` 节点；若未来升级为 LLM Guard，须改名并同步本清单。
 - 新增任何 LLM 节点时必须遵循本约定，并在本节登记。
@@ -103,7 +104,7 @@
 ### 6.2 MutationGraph（workflow）
 
 - 确定性流程（Mutation Form / Form Interrupt，见 `mutation-form-interrupt-spec.md` / `CONTEXT.md`）：**select（确认 tool；业务字段可不全）** → **安全预检**（`safety-spec.md`；缺参时仅做登录/档位等闸门，字段完备性延后）→ **Form Interrupt**（`interrupt(value=..., response_schema=...)`，SSE 投影 `form_required` / `form_rejected`）→ **Form Resume**（`Command(resume=...)` Confirm/Cancel）→ **recheck** → ToolNode 写一次 / 取消收尾。
-- **不再**把 Mutation 主路径建成聊天 `clarification_required` → `confirmation_required` / `confirm_pause` 仪式。业务字段由 Mutation Form 收集（Form-Only Write）；Operation Clarify（tool 未定）由 Mutation `select_llm` 同一次调用用自然语言追问完成（ADR 0004 / `CONTEXT.md`），不经入口 Hybrid / 子图外澄清节点。
+- **不再**把 Mutation 主路径建成聊天 `clarification_required` → `confirmation_required` / `confirm_pause` 仪式。业务字段由 Mutation Form 收集（Form-Only Write）；Operation Clarify（tool 未定）由 Mutation Select（`mutation_select_llm`）同一次调用用自然语言追问完成（ADR 0004 / `CONTEXT.md`），不经入口 Hybrid / 子图外澄清节点。
 - select：tool 已知即写 `pending_tool`（已知字段作 prefills）；真 schema 类型/未知字段错误仍 `safety_rejected`。Mutation 允许集档内严格：只读/未绑定工具 → `unknown_tool`（无 `tier_clarify`）。HighRisk 选中已注册低档工具仍 → `tier_clarify` → clarify（`reason:"tier_mismatch"`）。
 - Form Resume Confirm 对应结构化字段 + `action:"confirm"`；Cancel 为 `action:"cancel"` 哨兵（schema 见 §3 / event-spec §2.2）。Cancel → 收尾不写库。
 - **Form Resume 后、执行前 recheck（D6 + Form Interrupt）**：校验 Form Resume 字段 + 业务预检；失败则同一 `form_session_id` 再次 Form Interrupt（`form_rejected`），不走 `safety_rejected` 收尾。确认结果写入 `context`（§9），不新增 State 字段。
@@ -158,7 +159,7 @@
 | ReadGraph | `messages`、`context`、`user_id`、`allowed_tools` | `messages`、`execution_status` |
 | MutationGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class` | `messages`、`context`（Form / pending_tool 等）、`execution_status` |
 | HighRiskGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class`、`requires_approval` | `messages`、`context`、`pending_approval`、`execution_status` |
-| select（mutation） | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或无 tool_call 时内联追问：写 `messages` + `clarification_required`/`operation_unclear` + `clarify_count` 自增 / 超限 fallback；成功/进表单时清零 `clarify_count`） |
+| mutation_select_llm | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或无 tool_call 时内联追问：写 `messages` + `clarification_required`/`operation_unclear` + `clarify_count` 自增 / 超限 fallback；成功/进表单时清零 `clarify_count`） |
 | select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`） |
 | prepare_form / form_interrupt（high_risk） | `context`（`pending_tool`、`form_session_id`） | Form Interrupt（缺参收集）；Confirm 后写 `pending_tool.args` 再进安全预检/审批；Cancel / 零候选不进审批 |
 | clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（仅 HighRisk：零候选缺参 / `tier_mismatch`；Mutation Operation Clarify 不经本节点） |

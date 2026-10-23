@@ -8,6 +8,10 @@ LangGraph 客服运行时：按风险档分流读/写/高风险操作，写操�
 处理 `min_risk_level == mutation` 的写操作子图（改地址、改电话、备注、开票、售后工单等）；不含退款/取消。显式 `StateGraph` workflow，不用 ReAct agent 主路径。
 _Avoid_: 把 HighRisk 审批流称作 Mutation；Mutation 主路径用 create_react_agent
 
+**Mutation Select**:
+MutationGraph 内专属的写操作选择 LLM 节点（图内名 `mutation_select_llm`）：自有模型工厂与提示词，一次调用要么发出本档 tool_call，要么自然语言做 Operation Clarify；缺业务字段仍选 tool，交 Mutation Form。不与 HighRisk / Read 的 select 共享节点、提示词或模型实例。
+_Avoid_: 与 HighRisk 共用 `make_select_node` / `make_select_model` / 通用 select 提示词；把 Mutation Select 做成 ReAct 工具循环
+
 **Mutation Form**:
 仅在 **tool 已确定** 且需要业务字段时，由客户端按 interrupt 载荷 / `response_schema` 渲染的结构化填参 UI；不是操作类型菜单。
 _Avoid_: 用表单做操作类型选择；自造与 interrupt 无关的第二套挂起语义
@@ -25,8 +29,8 @@ Mutation Form 中订单字段一律以下拉选择（含仅一笔可操作订单
 _Avoid_: 单笔自动填 order_id；聊天里口述选单后再出表单
 
 **Operation Clarify**:
-Mutation 内 tool 未定（专用 `select_llm` 未发出 tool_call）时，由**同一次** select 响应的自然语言追问问清要办哪种写操作；本轮普通 END，用户下一句从总图再进。问清并选出 tool 后才 Form Interrupt。Mutation 不设 `tier_clarify` 固定澄清；未绑定工具走拒绝。
-_Avoid_: 用表单做操作类型菜单；入口层 Hybrid / 子图外专用澄清节点；再挂第二个 LLM 只为生成追问；Mutation 固定模板澄清（含 tier_clarify）；与 HighRisk 共用同一套 select 提示词作为长期形态
+Mutation 内 tool 未定（Mutation Select 未发出 tool_call）时，由**同一次**响应的自然语言追问问清要办哪种写操作；本轮普通 END，用户下一句从总图再进。问清并选出 tool 后才 Form Interrupt。Mutation 不设 `tier_clarify` 固定澄清；未绑定工具走拒绝。
+_Avoid_: 用表单做操作类型菜单；入口层 Hybrid / 子图外专用澄清节点；再挂第二个 LLM 只为生成追问；Mutation 固定模板澄清（含 tier_clarify）；与 HighRisk 共用同一套 select 提示词或 select 节点
 
 **Form-Only Write**:
 Mutation 写库只接受 Form Resume `action=confirm` 成功路径上的结构化值；Form Interrupt 挂起期间纯文本不得写库。挂起中的非 Form 提交可由 Transport 走 Implicit Cancel 清 interrupt 后再按新 turn 路由，仍不得把该纯文本当写库真源。

@@ -59,12 +59,25 @@ class Settings(BaseSettings):
     # 分档 temperature / max output tokens（非 hook；设在 ChatOpenAI 实例上）
     router_temperature: float = Field(default=0.0, ge=0.0, validation_alias="ROUTER_TEMPERATURE")
     select_temperature: float = Field(default=0.0, ge=0.0, validation_alias="SELECT_TEMPERATURE")
+    # Mutation Select 专属；None 时回落 SELECT_* / LLM_*（CONTEXT.md Mutation Select）
+    mutation_select_temperature: float | None = Field(
+        default=None, ge=0.0, validation_alias="MUTATION_SELECT_TEMPERATURE"
+    )
     read_temperature: float = Field(default=0.3, ge=0.0, validation_alias="READ_TEMPERATURE")
     fallback_temperature: float = Field(
         default=0.3, ge=0.0, validation_alias="FALLBACK_TEMPERATURE"
     )
     router_max_tokens: int = Field(default=256, ge=1, validation_alias="ROUTER_MAX_TOKENS")
     select_max_tokens: int = Field(default=512, ge=1, validation_alias="SELECT_MAX_TOKENS")
+    mutation_select_max_tokens: int | None = Field(
+        default=None, ge=1, validation_alias="MUTATION_SELECT_MAX_TOKENS"
+    )
+    mutation_select_model_name: str | None = Field(
+        default=None, validation_alias="MUTATION_SELECT_MODEL_NAME"
+    )
+    mutation_select_model_timeout_seconds: float | None = Field(
+        default=None, ge=0.1, validation_alias="MUTATION_SELECT_MODEL_TIMEOUT_SECONDS"
+    )
     read_max_tokens: int = Field(default=1024, ge=1, validation_alias="READ_MAX_TOKENS")
     fallback_max_tokens: int = Field(default=512, ge=1, validation_alias="FALLBACK_MAX_TOKENS")
     # Context 输入预算（trim_messages / ContextBudgetMiddleware）
@@ -309,7 +322,7 @@ def make_router_fallback_model() -> ChatOpenAI | None:
 
 
 def make_select_model() -> ChatOpenAI:
-    """Mutation / HighRisk select_llm 专用模型。"""
+    """HighRisk select_llm 专用模型（Mutation 见 make_mutation_select_model）。"""
     settings = get_settings()
     _assert_model_timeout_under_node(
         settings.llm_model_timeout_seconds,
@@ -322,6 +335,43 @@ def make_select_model() -> ChatOpenAI:
         temperature=settings.select_temperature,
         timeout=settings.llm_model_timeout_seconds,
         max_tokens=settings.select_max_tokens,
+        api_key=api_key,
+        base_url=endpoint,
+    )
+
+
+def make_mutation_select_model() -> ChatOpenAI:
+    """Mutation Select 专用模型；MUTATION_SELECT_* 缺省回落 SELECT_* / LLM_*。"""
+    settings = get_settings()
+    model_timeout = (
+        settings.mutation_select_model_timeout_seconds
+        if settings.mutation_select_model_timeout_seconds is not None
+        else settings.llm_model_timeout_seconds
+    )
+    _assert_model_timeout_under_node(
+        model_timeout,
+        settings.llm_node_timeout_seconds,
+        "mutation_select",
+    )
+    name, endpoint, api_key = _llm_profile()
+    override_name = (settings.mutation_select_model_name or "").strip()
+    if override_name:
+        name = override_name
+    temperature = (
+        settings.mutation_select_temperature
+        if settings.mutation_select_temperature is not None
+        else settings.select_temperature
+    )
+    max_tokens = (
+        settings.mutation_select_max_tokens
+        if settings.mutation_select_max_tokens is not None
+        else settings.select_max_tokens
+    )
+    return _openai_compat_model(
+        name,
+        temperature=temperature,
+        timeout=model_timeout,
+        max_tokens=max_tokens,
         api_key=api_key,
         base_url=endpoint,
     )

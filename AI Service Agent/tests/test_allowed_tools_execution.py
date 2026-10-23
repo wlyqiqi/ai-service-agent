@@ -1,7 +1,7 @@
 import pytest
 from langchain_core.messages import HumanMessage
 
-from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 
@@ -15,9 +15,8 @@ async def test_mutation_select_rejects_tool_outside_allowed_tools():
         )]
     )
     registry = DEFAULT_TOOL_REGISTRY
-    select = make_select_node(
+    select = make_mutation_select_node(
         model,
-        "mutation",
         registry.for_risk_level("mutation"),
         registry,
     )
@@ -47,9 +46,8 @@ async def test_mutation_select_prompt_only_contains_allowed_tools():
         )]
     )
     registry = DEFAULT_TOOL_REGISTRY
-    select = make_select_node(
+    select = make_mutation_select_node(
         model,
-        "mutation",
         registry.for_risk_level("mutation"),
         registry,
     )

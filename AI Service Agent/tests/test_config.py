@@ -53,6 +53,10 @@ def test_model_profile_factories(monkeypatch):
 
     assert select.temperature == 0.0
     assert select.max_tokens == 512
+    mutation_select = config_mod.make_mutation_select_model()
+    assert mutation_select.temperature == 0.0
+    assert mutation_select.max_tokens == 512
+    assert mutation_select.model_name == select.model_name
     assert read.temperature == 0.3
     assert read.max_tokens == 1024
     assert fallback.temperature == 0.3
@@ -62,10 +66,46 @@ def test_model_profile_factories(monkeypatch):
     assert select.model_name == read.model_name
     assert fallback.model_name == read.model_name
     # All runtime LLM-node profiles keep think mode off
-    for m in (select, read, fallback):
+    for m in (select, mutation_select, read, fallback):
         assert m.extra_body["enable_thinking"] is False
         assert m.extra_body["chat_template_kwargs"]["enable_thinking"] is False
     assert config_mod.make_model().max_tokens == read.max_tokens
+
+
+def test_mutation_select_model_overrides_fall_back_to_select(monkeypatch):
+    """MUTATION_SELECT_* unset → SELECT_*; set → dedicated Mutation Select profile."""
+    import ai_service_agent.config as config_mod
+
+    base = Settings(
+        _env_file=None,
+        llm_model_api_key="sk-test",
+        llm_model_endpoint="https://api.siliconflow.cn/v1",
+        llm_model_name="deepseek-ai/DeepSeek-V4-Flash",
+        select_temperature=0.0,
+        select_max_tokens=512,
+    )
+    monkeypatch.setattr(config_mod, "get_settings", lambda: base)
+    defaulted = config_mod.make_mutation_select_model()
+    assert defaulted.temperature == 0.0
+    assert defaulted.max_tokens == 512
+    assert defaulted.model_name == "deepseek-ai/DeepSeek-V4-Flash"
+
+    overridden = Settings(
+        _env_file=None,
+        llm_model_api_key="sk-test",
+        llm_model_endpoint="https://api.siliconflow.cn/v1",
+        llm_model_name="deepseek-ai/DeepSeek-V4-Flash",
+        select_temperature=0.0,
+        select_max_tokens=512,
+        mutation_select_temperature=0.2,
+        mutation_select_max_tokens=256,
+        mutation_select_model_name="mutation-select-special",
+    )
+    monkeypatch.setattr(config_mod, "get_settings", lambda: overridden)
+    custom = config_mod.make_mutation_select_model()
+    assert custom.temperature == 0.2
+    assert custom.max_tokens == 256
+    assert custom.model_name == "mutation-select-special"
 
 
 def test_model_timeout_must_be_under_node_timeout(monkeypatch):

@@ -1,8 +1,8 @@
-"""工具选择（OQ-2）：LLM 结构化输出 {tool, args} + 确定性校验兜底。
+"""HighRisk 工具选择（OQ-2）：LLM 结构化输出 {tool, args} + 确定性校验兜底。
 
 LLM 负责理解，确定性代码负责校验：工具必须在档内。
-Mutation：tool 已知即写 pending_tool（字段可不全 → Form Interrupt prefills）。
 HighRisk：有可操作订单但缺 order_id → pending_tool（Form Interrupt 收集）；零候选仍 clarify；完整则 pending_tool。
+Mutation Select 见 mutation_select.py（独立节点 / 提示词 / 模型）。
 真 schema 类型/未知字段错误 -> safety_rejected，不进入 interrupt。
 """
 
@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.tools import BaseTool
 from langchain_core.runnables import RunnableConfig
@@ -21,13 +21,11 @@ from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 
 from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
-from ai_service_agent.graph.workflows.copy import clarify_fallback_text, operation_clarify_text
 from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_business_fields
 from ai_service_agent.tools.params import is_absent_sentinel
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.prompts import (
-    MUTATION_SELECT_BINDTOOLS_TEMPLATE,
     SELECT_BINDTOOLS_TEMPLATE,
     SELECT_SYSTEM_TEMPLATE,
 )
@@ -207,13 +205,17 @@ def make_select_node(
     registry: ToolRegistry,
     order_repository: OrderRepository | None = None,
 ) -> Callable[[dict], Awaitable[dict]]:
-    # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具；
-    # 只读工具不进入写图 select（ToolNode 分层注入不变，select 是写图唯一工具选择闸）。
+    """HighRisk select_llm。Mutation 请用 make_mutation_select_node。"""
+    if tier != "high_risk":
+        raise ValueError(
+            f"make_select_node only supports tier='high_risk'; got {tier!r}. "
+            "Use make_mutation_select_node for Mutation Select."
+        )
+    # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具。
     tier_tools = [
         t for t in tools
         if (meta := registry.meta_for(t.name)) is not None and meta.min_risk_level == tier
     ]
-    tier_allowed = {t.name for t in tier_tools}
     lines_by_name = {}
     for t in tier_tools:
         meta = registry.meta_for(t.name)
@@ -226,7 +228,7 @@ def make_select_node(
     if is_fake:
         bound = _bind_json(model)
     else:
-        # auto: allow no tool_call → Operation Clarify / tier clarify (#110)
+        # auto: allow no tool_call → tier clarify (#110)
         bound = model.bind_tools(tier_tools, tool_choice="auto")
 
     def _reject(state: dict, reason: str) -> dict:
@@ -234,78 +236,31 @@ def make_select_node(
             get_stream_writer()({"type": "safety_rejected", "data": {"rule": "precheck", "reason": reason}})
         except RuntimeError:
             pass
-        # 普通 dict 返回 + 条件边路由（LangGraph 1.2.11 实测：Command(goto) 不会抑制静态出边，
-        # 静态后继与 goto 目标会并发执行导致双写；决策路由一律走条件边）
         return {"context": {**state.get("context", {}), "precheck_reason": reason}, "execution_status": "completed"}
 
     def _clarify(state: dict, missing: list[str]) -> dict:
-        # 参数不完整 != 拒绝（D1）：只写 clarify_missing，由条件边路由到 clarify 节点（普通轮）。
-        # 不发 safety_rejected；execution_status 由 clarify 节点置 clarifying。
-        # Mutation 主路径不再走此分支（见 _pending_for_form）。
-        # HighRisk 有候选时走 Form；零候选或非本档工具仍聊天补参。
         return {"context": {**state.get("context", {}), "clarify_missing": missing}}
 
     def _tier_clarify(state: dict, tool_name: str) -> dict:
-        # HighRisk B2b：已注册低档工具在写图内被选中 = 意图与风险档不匹配 -> 澄清（普通轮）。
-        # Mutation（ADR 0004）不再走此支路，见下方 unknown_tool。
         return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
 
-    def _operation_clarify_inline(state: dict, content: str) -> dict:
-        """Mutation ADR 0004：无 tool_call 时同一次 select 用 content 追问并 END。"""
-        ctx = {**state.get("context", {})}
-        ctx.pop("clarify_missing", None)
-        ctx.pop("pending_tool", None)
-        ctx.pop("tier_clarify", None)
-        ctx.pop("operation_clarify", None)
-        ctx.pop("cancellation_candidates", None)
-        count = int(ctx.get("clarify_count", 0))
-        max_turns = get_settings().clarify_max_turns
-        if count >= max_turns:
-            return {
-                "messages": [AIMessage(content=clarify_fallback_text())],
-                "context": {**ctx, "clarify_count": count + 1},
-                "execution_status": "completed",
-            }
-        text = (content or "").strip() or operation_clarify_text()
-        try:
-            get_stream_writer()(
-                {
-                    "type": "clarification_required",
-                    "data": {"missing": [], "reason": "operation_unclear"},
-                }
-            )
-        except RuntimeError:
-            pass
-        return {
-            "messages": [AIMessage(content=text)],
-            "context": {**ctx, "clarify_count": count + 1},
-            "execution_status": "clarifying",
-        }
-
     def _no_tool_clarify(state: dict, content: str = "") -> dict:
-        """tool_choice=auto 且模型未发起 tool_call：聊天澄清，不 reject。
-
-        Mutation → 同一次 select 内联 Operation Clarify；HighRisk → tier clarify 节点。
-        """
-        if tier == "mutation":
-            return _operation_clarify_inline(state, content)
+        """tool_choice=auto 且模型未发起 tool_call：HighRisk → tier clarify 节点。"""
+        del content  # HighRisk 不消费 LLM 追问文案；固定话术由 clarify 节点产出。
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("pending_tool", None)
         ctx.pop("operation_clarify", None)
-        # Truthy marker only; clarify does not use the value as a tool name.
         ctx["tier_clarify"] = True
         return {"context": ctx}
 
     def _partial_args_for_form(args: dict, meta) -> dict:
-        """Mutation Form prefills：保留已知 schema 字段 + request_id，不要求一次填齐。"""
         known = set(meta.schema.model_fields)
         partial = {key: value for key, value in args.items() if key in known}
         partial.setdefault("request_id", str(uuid.uuid4()))
         return partial
 
     def _pending_for_form(state: dict, tool_name: str, args: dict) -> dict:
-        """Mutation：tool 已知即落 pending_tool，缺参由 Form Interrupt 收集（Form-Only Write）。"""
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("tier_clarify", None)
@@ -336,11 +291,6 @@ def make_select_node(
         allowed = {t.name for t in selected_tools}
         tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
         examples = _build_examples(selected_tools, registry)
-        bindtools_template = (
-            MUTATION_SELECT_BINDTOOLS_TEMPLATE
-            if tier == "mutation"
-            else SELECT_BINDTOOLS_TEMPLATE
-        )
         if is_fake:
             messages = _budgeted_select_messages(
                 state,
@@ -365,7 +315,7 @@ def make_select_node(
             messages = _budgeted_select_messages(
                 state,
                 selected_tools,
-                SystemMessage(content=bindtools_template.format(
+                SystemMessage(content=SELECT_BINDTOOLS_TEMPLATE.format(
                     tool_list=tool_list,
                     examples=examples,
                 )),
@@ -377,10 +327,8 @@ def make_select_node(
             tool_name = tool_call["name"]
             args = dict(tool_call.get("args") or {})
 
-        if tier == "high_risk" and tool_name in ("cancel_order", "refund_apply"):
+        if tool_name in ("cancel_order", "refund_apply"):
             if args.get("order_id") and str(args["order_id"]) not in _visible_text(state):
-                # The model may only narrow a user-provided identifier; it may
-                # never invent one or silently choose from a candidate list.
                 args.pop("order_id", None)
 
         if tool_name in ("cancel_order", "refund_apply") and not args.get("order_id"):
@@ -397,12 +345,11 @@ def make_select_node(
                     candidates = []
             if not candidates:
                 return _clarify(state, ["order_id"])
-            if tier == "high_risk":
-                meta = registry.meta_for(tool_name)
-                if meta is not None and meta.schema is not None:
-                    return _pending_for_form(
-                        state, tool_name, _partial_args_for_form(args, meta)
-                    )
+            meta = registry.meta_for(tool_name)
+            if meta is not None and meta.schema is not None:
+                return _pending_for_form(
+                    state, tool_name, _partial_args_for_form(args, meta)
+                )
             return {
                 "context": {
                     **state.get("context", {}),
@@ -420,8 +367,7 @@ def make_select_node(
         if route_allowed is not None and tool_name not in route_allowed:
             return _reject(state, "tool_not_allowed")
         if tool_name not in allowed:
-            # Mutation ADR 0004: no tier_clarify fixed-copy path — reject unbound tools.
-            if tier == "high_risk" and RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
+            if RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
                 return _tier_clarify(state, tool_name)
             return _reject(state, "unknown_tool")
         if meta.schema is not None:
@@ -431,29 +377,20 @@ def make_select_node(
             except ValidationError as exc:
                 errors = exc.errors()
                 missing = [e["loc"][0] for e in errors if e["type"] == "missing" and e["loc"]]
-                # 只有"全部为缺必填"才走缺参路径；混有类型/格式错误仍按 invalid_args 拒绝
                 if missing and len(missing) == len(errors):
                     missing = [f for f in missing if f != "request_id"]
                     if missing:
-                        if tier == "mutation":
-                            return _pending_for_form(
-                                state, tool_name, _partial_args_for_form(args, meta)
-                            )
                         return _clarify(state, missing)
                 return _reject(state, "invalid_args")
             incomplete = incomplete_business_fields(args, meta)
             if incomplete:
-                if tier == "mutation":
-                    return _pending_for_form(
-                        state, tool_name, _partial_args_for_form(args, meta)
-                    )
                 return _clarify(state, incomplete)
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("tier_clarify", None)
         ctx.pop("operation_clarify", None)
         ctx.pop("cancellation_candidates", None)
-        ctx["clarify_count"] = 0  # 完整成功 select 清零（D1 轮次语义）
+        ctx["clarify_count"] = 0
         ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
         return {"context": ctx}
 
