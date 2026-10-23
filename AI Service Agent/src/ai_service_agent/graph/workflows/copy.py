@@ -64,13 +64,45 @@ def clarify_tier_text() -> str:
     return "您的请求涉及较高风险操作，但我无法确定具体要执行哪一项（如：申请退款、取消订单），麻烦您明确说明一下。"
 
 
-def operation_clarify_text() -> str:
-    """Operation Clarify：tool 未定前用聊天问清操作类型（不用表单做操作类型菜单）。"""
-    return (
-        "好的，您是想修改订单相关信息。请问具体要办理哪一项呢？"
-        "例如：收货地址、联系电话、订单备注、开发票，或申请售后工单。"
-        "直接告诉我即可～"
-    )
+# 写操作能力的中文标签：示例生成与追问话术共用这一处，避免两边各写一份而漂移。
+CAPABILITY_LABELS = {
+    "update_address": "改收货地址",
+    "update_phone": "改联系电话",
+    "update_order_note": "加订单备注",
+    "create_invoice": "开发票",
+    "create_service_ticket": "申请售后",
+}
+
+
+def join_cn(labels: Sequence[str]) -> str:
+    """['A','B','C'] -> 'A、B或C'；空列表返回兜底短语。"""
+    items = [item for item in labels if item]
+    if not items:
+        return "当前允许的写操作"
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]}或{items[1]}"
+    return "、".join(items[:-1]) + f"或{items[-1]}"
+
+
+def operation_clarify_text(tools: Sequence[str] | None = None) -> str:
+    """Operation Clarify：tool 未定前用聊天问清操作类型（不用表单做操作类型菜单）。
+
+    传入当前白名单时只列举白名单内的能力——否则用户会被告知系统此刻不会做的事
+    （如 ``account_profile_update`` 只有改地址/改电话，却提到开票和售后）。
+    无白名单信息时退回完整列举。
+    """
+    labels = [
+        CAPABILITY_LABELS[name] for name in (tools or ()) if name in CAPABILITY_LABELS
+    ]
+    if not labels:
+        return (
+            "好的，您是想修改订单相关信息。请问具体要办理哪一项呢？"
+            "例如：收货地址、联系电话、订单备注、开发票，或申请售后工单。"
+            "直接告诉我即可～"
+        )
+    return f"好的，目前可以帮您{join_cn(labels)}。请直接告诉我要办哪一项～"
 
 
 def clarify_fallback_text() -> str:
