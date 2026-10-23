@@ -141,6 +141,8 @@ async def test_send_as_contact_posts_content_and_skips_without_mapping(tmp_path)
 
 @pytest.mark.asyncio
 async def test_send_bot_message_posts_outgoing_content(tmp_path):
+    import json
+
     def handler(request):
         assert request.headers["api_access_token"] == "tok"
         body = json.loads(request.content)
@@ -155,6 +157,38 @@ async def test_send_bot_message_posts_outgoing_content(tmp_path):
     await cw.send_bot_message("c1", "Hello from AI")
     assert len(calls) == 1
     assert mapping.is_runtime_message(100) is True
+
+
+@pytest.mark.asyncio
+async def test_send_bot_message_uses_agent_bot_access_token(tmp_path):
+    """Widget sender=agent_bot only when posts use Agent Bot access_token."""
+    import json
+
+    def handler(request):
+        return Response(200, json={"id": 201})
+
+    conn = sqlite3.connect(tmp_path / "m.db")
+    mapping = ChatwootMappingStore(conn)
+    tokens: list[str] = []
+
+    async def wrapper(request):
+        tokens.append(request.headers["api_access_token"])
+        body = json.loads(request.content)
+        tokens.append(body.get("message_type"))  # type: ignore[arg-type]
+        return handler(request)
+
+    http = AsyncClient(transport=MockTransport(wrapper))
+    cw = ChatwootClient(
+        "http://cw.test", 3, 2, "seat-tok", mapping, client=http, bot_api_token="bot-tok"
+    )
+    mapping.put("c1", 555)
+    await cw.send_bot_message("c1", "AI reply")
+    assert tokens[0] == "bot-tok"
+    assert tokens[1] == "outgoing"
+    # Contact sync stays on seat Application token
+    await cw.send_as_contact("c1", "ping")
+    assert tokens[2] == "seat-tok"
+    assert tokens[3] == "incoming"
 
 
 @pytest.mark.asyncio

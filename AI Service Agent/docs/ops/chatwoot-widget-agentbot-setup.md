@@ -102,18 +102,25 @@ POST {RUNTIME_BASE}/webhooks/chatwoot
 2. 设置 **Outgoing URL** = `{RUNTIME_BASE}/webhooks/agent_bot`
 3. 将 bot **挂到** 上一步的 Website Inbox
 4. 复制 AgentBot 用于出站 webhook 签名的 secret / access token（以你实例 UI 标注为准；须与 Runtime 校验用同一密钥）
+5. **身份展示（官方）**：为该 Bot 设置独立 **Name** + **Avatar**（与坐席 Profile 不同）。Widget 按每条消息的 `sender` 显示名字/头像——Bot 气泡用 Agent Bot，人工气泡用坐席 User；**不要**指望改 Inbox 顶栏名来区分 AI/人工。
 
 ### 官方依据
 
-- 创建 Agent Bot（字段 `outgoing_url`）：  
-  <https://developers.chatwoot.com/api-reference/account-agentbots/create-an-agent-bot>
+- 创建 / 更新 Agent Bot（`name`、`avatar` / `avatar_url`、`outgoing_url`）：  
+  <https://developers.chatwoot.com/api-reference/account-agentbots/create-an-agent-bot>  
+  <https://developers.chatwoot.com/api-reference/account-agentbots/update-an-agent-bot>
+- Widget 用 `message.sender`（`agent_bot` vs User）渲染气泡身份；无 sender 时才退回默认 BOT / Inbox 图。
 
 ### 落到 Runtime
 
 | Chatwoot | `.env` | Settings |
 |---|---|---|
 | AgentBot webhook 签名密钥 | `CHATWOOT_AGENT_BOT_SECRET` | `chatwoot_agent_bot_secret` |
+| AgentBot **access_token**（出站气泡 sender） | `CHATWOOT_AGENT_BOT_TOKEN` | `chatwoot_agent_bot_token` |
 | Outgoing URL | （填在 Chatwoot，不进 `.env`） | → `POST /webhooks/agent_bot` |
+| 坐席 Application API token | `CHATWOOT_API_TOKEN` | `chatwoot_api_token` |
+
+`CHATWOOT_AGENT_BOT_TOKEN` = Agent Bot 详情里的 **access_token**（不是 webhook secret）。Runtime 的 `send_bot_message` 必须用该 token 发 outgoing，Widget 才会把 AI 气泡标成 Bot 的 name/avatar。若误用坐席 `CHATWOOT_API_TOKEN` 发 bot 文案，气泡会显示成坐席本人（与人工共用身份）。
 
 Runtime 校验签名并接受 payload 后立刻返回 200。LLM、Graph、出站 Chatwoot 调用在后台执行，避免 Chatwoot 默认 5 秒读超时把会话标成 open。
 
@@ -214,13 +221,14 @@ uv run --no-sync python scripts/check_seat_gated_webhooks.py
 CHATWOOT_BASE_URL=https://your-chatwoot.example
 CHATWOOT_WEBSITE_TOKEN=               # Inbox website_token
 CHATWOOT_HMAC_SECRET=                 # Identity Validation token
-CHATWOOT_AGENT_BOT_SECRET=            # AgentBot → Runtime 签名
+CHATWOOT_AGENT_BOT_SECRET=            # AgentBot → Runtime 签名（webhook HMAC）
+CHATWOOT_AGENT_BOT_TOKEN=             # AgentBot access_token（出站气泡 sender=bot）
 
-# --- 坐席 API（出站 bot/form + 人工车道）---
+# --- 坐席 API（Account API：toggle_status / labels / Contact 同步）---
 CHATWOOT_ENABLED=true
 CHATWOOT_ACCOUNT_ID=
 CHATWOOT_INBOX_ID=
-CHATWOOT_API_TOKEN=
+CHATWOOT_API_TOKEN=                   # 坐席 Application token（勿与 AGENT_BOT_TOKEN 混用）
 CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 ```
 
@@ -245,8 +253,12 @@ CHATWOOT_WEBHOOK_SECRET=              # Chatwoot → /webhooks/chatwoot
 - [ ] Inbox 为 Website / `web_widget`，`CHATWOOT_WEBSITE_TOKEN` 已填  
 - [ ] Identity Validation 已开且 `CHATWOOT_HMAC_SECRET` 与控制台 token 一致  
 - [ ] AgentBot `outgoing_url` = `{RUNTIME_BASE}/webhooks/agent_bot`，且已绑定该 Inbox  
+- [ ] Agent Bot **Name / Avatar** 已设，且与坐席 Profile 姓名/头像不同  
+- [ ] 坐席 Profile 已设真人显示名 + 头像（控制台上传；勿与 Bot 同图）  
+- [ ] `CHATWOOT_AGENT_BOT_TOKEN` = Agent Bot access_token；AI 气泡 sender 为 bot 名，不是坐席名  
 - [ ] `CHATWOOT_AGENT_BOT_SECRET` 校验通过（错误 secret 会 401）  
 - [ ] `CHATWOOT_ENABLED` + API 字段齐全；Widget 发「你好」有 bot 回复  
+- [ ] 坐席 Take over 后人工回复气泡 = 坐席名/头像（与 AI 气泡可区分）  
 - [ ] AgentBot payload 中 `contact.identifier` = 登录 `user_id`  
 - [ ] Account Webhook URL = `{RUNTIME_BASE}/webhooks/chatwoot`，secret = `CHATWOOT_WEBHOOK_SECRET`  
 - [ ] Account Webhook **已订阅** `conversation_status_changed`（**不是** AgentBot Outgoing URL）  
