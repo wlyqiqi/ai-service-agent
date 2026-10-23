@@ -301,7 +301,7 @@
         darkMode: "light"
       };
 
-      if (!window.$chatwoot) {
+      if (!window.chatwootSDK) {
         await new Promise((resolve, reject) => {
           const script = document.createElement("script");
           script.src = `${widgetBaseUrl}/packs/js/sdk.js`;
@@ -317,30 +317,71 @@
         return false;
       }
 
-      window.chatwootSDK.run({ websiteToken, baseUrl: widgetBaseUrl });
-
-      if (window.$chatwoot) {
-        await new Promise((resolve) => {
-          const check = () => {
-            if (document.querySelector(".woot-widget-holder") && document.querySelector(".woot--bubble-holder")) { resolve(); return; }
-            requestAnimationFrame(check);
+      // run() once only — re-running remounts an anonymous visitor and races past setUser.
+      if (!window.$chatwoot) {
+        const ready = new Promise((resolve) => {
+          const onReady = () => {
+            window.removeEventListener("chatwoot:ready", onReady);
+            resolve();
           };
-          check();
+          window.addEventListener("chatwoot:ready", onReady);
+          window.setTimeout(resolve, 4000);
         });
-        const userId = auth && auth.user && auth.user.id ? auth.user.id : "chatwoot-user";
-        window.$chatwoot.setUser(userId, {
-          name: displayName(auth) || "用户",
-          email: auth && auth.user && auth.user.id ? `${auth.user.id}@chengyuan.local` : undefined,
-          identifier_hash: identity && identity.identifier_hash ? identity.identifier_hash : undefined
-        });
-        window.$chatwoot.toggleBubbleVisibility("show");
-        window.$chatwoot.toggle("open");
-        updateServiceStatus("客服已开启", "ready");
-        return true;
+        window.chatwootSDK.run({ websiteToken, baseUrl: widgetBaseUrl });
+        await ready;
       }
 
-      updateServiceStatus("客服加载失败，请重试", "error");
-      return false;
+      if (!window.$chatwoot) {
+        updateServiceStatus("客服加载失败，请重试", "error");
+        return false;
+      }
+
+      await new Promise((resolve) => {
+        const check = () => {
+          if (document.querySelector(".woot-widget-holder") && document.querySelector(".woot--bubble-holder")) {
+            resolve();
+            return;
+          }
+          requestAnimationFrame(check);
+        };
+        check();
+      });
+
+      const userId =
+        (identity && identity.identifier) ||
+        (auth && auth.user && auth.user.id) ||
+        "chatwoot-user";
+      const hash = identity && identity.identifier_hash ? identity.identifier_hash : undefined;
+      if (!hash) {
+        updateServiceStatus("客服身份校验不可用，请稍后重试", "error");
+        return false;
+      }
+
+      // Do NOT reset() here: reset() spins up a fresh anonymous Contact and races
+      // past setUser (hmac_mandatory → identifier stays null → Runtime skips graph).
+      // Only clear prior Widget keys when binding a different identifier.
+      try {
+        const prev = window.localStorage.getItem(`cw_user_${websiteToken}`);
+        if (prev && prev !== userId) {
+          Object.keys(window.localStorage)
+            .filter((k) => k.includes(websiteToken) || k.startsWith("cw_"))
+            .forEach((k) => window.localStorage.removeItem(k));
+        }
+      } catch (error) {
+        /* private mode */
+      }
+
+      window.$chatwoot.setUser(userId, {
+        name: displayName(auth) || "用户",
+        email: `${userId}@chengyuan.local`,
+        identifier_hash: hash
+      });
+      // Identity must land before the thread opens; otherwise AgentBot sees nil identifier.
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      window.$chatwoot.toggleBubbleVisibility("show");
+      window.$chatwoot.toggle("open");
+      updateServiceStatus("客服已开启", "ready");
+      return true;
     } catch (error) {
       console.warn("Chatwoot widget failed to load", error);
       updateServiceStatus("客服加载失败，请重试", "error");
@@ -355,12 +396,10 @@
       openLoginDialog();
       return;
     }
-    if (window.$chatwoot) {
-      window.$chatwoot.toggle("open");
-      return;
-    }
     try {
       if (!conversationId) await bootstrapSession();
+      // Always re-run Identity bind (setUser). A bare toggle("open") reuses the
+      // previous anonymous Widget thread and Runtime will ignore those messages.
       await openChatwootWidget();
     } catch (error) {
       if (error.status === 401) {
