@@ -299,7 +299,7 @@ def test_select_real_model_no_tool_call_mutation_clarifies_inline(monkeypatch):
         "user_id": "u1",
         "context": {},
     }))
-    assert empty["messages"][-1].content == operation_clarify_text()
+    assert empty["messages"][-1].content == operation_clarify_text(["update_phone"])
 
 
 def test_select_mutation_low_tier_tool_rejects_unknown_tool():
