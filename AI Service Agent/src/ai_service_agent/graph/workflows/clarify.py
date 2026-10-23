@@ -4,7 +4,8 @@
 - `clarify_missing`（HighRisk 缺参 / 零候选）
 - `tier_clarify`（HighRisk 档不匹配，或 HighRisk 无 tool_call）
 
-Mutation Operation Clarify 由 select_llm 内联完成（ADR 0004），不再经本节点。
+Mutation Operation Clarify 由 mutation_select_llm 内联完成（ADR 0004），不再经本节点。
+HighRisk 无 tool_call / 档不匹配仍经本节点（ADR 0005 P0 不内联 Operation Clarify）。
 解析失败/未知工具/schema 错误仍走 select 的 _reject（safety_rejected）。
 轮次计数存 context["clarify_count"]，完整成功 select 清零，
 超过 Settings.clarify_max_turns -> 确定性 fallback 文案 + completed（不再澄清）。

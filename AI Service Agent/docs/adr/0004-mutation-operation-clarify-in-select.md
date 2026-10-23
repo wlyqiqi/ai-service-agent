@@ -17,7 +17,7 @@ Mutation 上「要办哪种写操作」未定时，不再经入口 Hybrid Tool R
 - 再挂 `clarify_llm` 第二节点 — rejected：增加延迟
 - 用 Mutation Form 当操作类型菜单 — rejected：既有 glossary / Form 边界
 - Mutation 保留 `tier_clarify` 固定话术 — rejected：又一条澄清路径；`bind_tools(tier_tools)` 下几乎不触发
-- HighRisk 一并改 LLM 追问 / 同改 select 提示词 — deferred：本变更只改 Mutation
+- HighRisk 一并改 LLM 追问 / 同改 select 提示词 — deferred：本变更只改 Mutation；HighRisk **P0 外壳隔离**见 ADR 0005（澄清策略仍属后续 P1）
 
 ## Consequences
 
@@ -28,4 +28,4 @@ Mutation 上「要办哪种写操作」未定时，不再经入口 Hybrid Tool R
 
 ## Follow-on（grilled 2026-10-23，已实现）
 
-Mutation Select 完全独立于 HighRisk select：`make_mutation_select_node` + `make_mutation_select_model`（`MUTATION_SELECT_*` 缺省回落 `SELECT_*`）+ 图内节点 `mutation_select_llm`；提示词按 Mutation 职责重写（含 Fake `MUTATION_SELECT_SYSTEM_TEMPLATE`）；动态 `{examples}` 保留；节点 Retry/Timeout 复用 `RETRY_LLM` 模板。允许共享无业务语义纯函数。HighRisk 本轮不动。术语见 `CONTEXT.md`（Mutation Select）。
+Mutation Select 完全独立于 HighRisk select：`make_mutation_select_node` + `make_mutation_select_model`（`MUTATION_SELECT_*` 缺省回落 `SELECT_*`）+ 图内节点 `mutation_select_llm`；提示词按 Mutation 职责重写（含 Fake `MUTATION_SELECT_SYSTEM_TEMPLATE`）；动态 `{examples}` 保留；节点 Retry/Timeout 复用 `RETRY_LLM` 模板。允许共享无业务语义纯函数。HighRisk Select P0 外壳隔离见 ADR 0005。术语见 `CONTEXT.md`（Mutation Select）。

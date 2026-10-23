@@ -53,7 +53,7 @@ def test_build_graph_compiles_async_llm_timeout_policies(monkeypatch):
 
         high_risk_graph = graph.nodes["high_risk_graph"].bound
         assert_async_timeout(
-            high_risk_graph.nodes["select_llm"],
+            high_risk_graph.nodes["high_risk_select_llm"],
             TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
         )
     finally:

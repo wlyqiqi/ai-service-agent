@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.graph.workflows import clarify as clarify_mod
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT, clarify_missing_text
-from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
 from ai_service_agent.harness.streaming import event_stream
 from conftest import ainvoke_graph
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
@@ -370,9 +370,8 @@ def test_stale_cancel_candidates_do_not_affect_other_tool_clarify(monkeypatch, s
     assert "订单号" in first["messages"][-1].content
 
     high_risk_reg = make_tool_registry(MagicMock())
-    select_node = make_select_node(
+    select_node = make_high_risk_select_node(
         ToolCallingFakeModel(responses=[select_json_message("refund_apply", {})]),
-        "high_risk",
         high_risk_reg.for_risk_level("high_risk"),
         high_risk_reg,
     )

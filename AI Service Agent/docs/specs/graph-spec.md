@@ -9,7 +9,7 @@
   - 顶层：`router_llm`（json_mode 结构化分类）
   - ReadGraph：`agent_llm`（ReAct agent，`create_agent`）
   - MutationGraph：`mutation_select_llm`（Mutation Select；工具选择或内联 Operation Clarify）
-  - HighRiskGraph：`select_llm`（json_mode 工具 + 参数提取）
+  - HighRiskGraph：`high_risk_select_llm`（HighRisk Select；cancel/refund 工具选择；无 tool_call → tier_clarify）
 - 确定性节点（关键词 / 模板 / 预检 / 中断 / 收尾）**不得**使用 `_llm` 后缀。
 - `guard` 节点当前为实现**确定性 v1**（关键词/正则），非 `_llm` 节点；若未来升级为 LLM Guard，须改名并同步本清单。
 - 新增任何 LLM 节点时必须遵循本约定，并在本节登记。
@@ -160,7 +160,7 @@
 | MutationGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class` | `messages`、`context`（Form / pending_tool 等）、`execution_status` |
 | HighRiskGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class`、`requires_approval` | `messages`、`context`、`pending_approval`、`execution_status` |
 | mutation_select_llm | `messages`、`context` | `context`（`pending_tool`，业务字段可不全作 Form prefills；或无 tool_call 时内联追问：写 `messages` + `clarification_required`/`operation_unclear` + `clarify_count` 自增 / 超限 fallback；成功/进表单时清零 `clarify_count`） |
-| select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`） |
+| high_risk_select_llm | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`。P0 不内联 Operation Clarify） |
 | prepare_form / form_interrupt（high_risk） | `context`（`pending_tool`、`form_session_id`） | Form Interrupt（缺参收集）；Confirm 后写 `pending_tool.args` 再进安全预检/审批；Cancel / 零候选不进审批 |
 | clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（仅 HighRisk：零候选缺参 / `tier_mismatch`；Mutation Operation Clarify 不经本节点） |
 | prepare_form / form_interrupt（mutation） | `context`（`pending_tool`、`form_session_id`、`form_errors`） | Form Interrupt（对外权威）；子图内 `execution_status=waiting_confirmation`（不并回父图）；Confirm 后写 `pending_tool.args`（Form Resume 真源） |

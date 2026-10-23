@@ -56,7 +56,7 @@ from ai_service_agent.graph.workflows.safety import (
     safety_final,
 )
 from ai_service_agent.graph.workflows.clarify import make_clarify_node
-from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
 
@@ -214,7 +214,7 @@ def make_high_risk_graph(
         7. 其余                          -> approval_approved_text
         除 1/2 外 execution_status 一律 completed。
 
-        防御：pending_tool 可能不存在（select_llm 崩溃时 error_handler 直接 goto 本节点），
+        防御：pending_tool 可能不存在（high_risk_select_llm 崩溃时 error_handler 直接 goto 本节点），
         故 tool 一律用 `(context.get("pending_tool") or {}).get("tool", "")` 读取。
         """
         ctx = state.get("context") or {}
@@ -304,8 +304,8 @@ def make_high_risk_graph(
     handler = make_subgraph_error_handler("finalize")
     builder.set_node_defaults(error_handler=handler)
     builder.add_node(
-        "select_llm",
-        make_select_node(model, "high_risk", tools, registry, order_repository),
+        "high_risk_select_llm",
+        make_high_risk_select_node(model, tools, registry, order_repository),
         retry_policy=RETRY_LLM,
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
@@ -333,9 +333,9 @@ def make_high_risk_graph(
         ),
     )
     builder.add_node("finalize", finalize)
-    builder.add_edge(START, "select_llm")
+    builder.add_edge(START, "high_risk_select_llm")
     builder.add_conditional_edges(
-        "select_llm", _select_target,
+        "high_risk_select_llm", _select_target,
         {
             "clarify": "clarify",
             "prepare_form": "prepare_form",
