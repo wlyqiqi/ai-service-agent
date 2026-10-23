@@ -108,7 +108,7 @@ def test_select_system_template_forbids_extra_fields():
 def test_select_system_template_has_example():
     model, node = _select_node()
     _select_result(node({"messages": [HumanMessage(content="改一下收货地址")], "context": {}}))
-    assert "示例：" in model.seen_system
+    assert "## 示例" in model.seen_system
     assert "update_address" in model.seen_system
 
 
@@ -215,7 +215,7 @@ def test_select_real_model_uses_bind_tools():
 
 
 def test_select_real_model_system_includes_allowlist_and_examples():
-    """#110: 真实路径与 fake 共享 allowlist 工具行与业务示例（输出形状仍为 tool_call）。"""
+    """真实路径注入同一 allowlist，示例描述 tool_call / 纯文本，不喂 JSON tool few-shot。"""
     bound_model = AsyncMock()
     bound_model.ainvoke.return_value = AIMessage(
         content="",
@@ -238,6 +238,9 @@ def test_select_real_model_system_includes_allowlist_and_examples():
     assert "update_phone" in system
     assert "最接近的工具" not in system
     assert "不要强行映射" in system or "不属于" in system
+    assert "示例仅说明意图与参数" in system
+    assert '{"tool":' not in system
+    assert "发起 tool_call：update_phone" in system
 
 
 def _real_model_node(model) -> tuple[Callable[[dict], dict], MagicMock]:
