@@ -78,6 +78,19 @@ class Settings(BaseSettings):
     mutation_select_model_timeout_seconds: float | None = Field(
         default=None, ge=0.1, validation_alias="MUTATION_SELECT_MODEL_TIMEOUT_SECONDS"
     )
+    # HighRisk Select 专属；None 时回落 SELECT_* / LLM_*（CONTEXT.md HighRisk Select）
+    high_risk_select_temperature: float | None = Field(
+        default=None, ge=0.0, validation_alias="HIGH_RISK_SELECT_TEMPERATURE"
+    )
+    high_risk_select_max_tokens: int | None = Field(
+        default=None, ge=1, validation_alias="HIGH_RISK_SELECT_MAX_TOKENS"
+    )
+    high_risk_select_model_name: str | None = Field(
+        default=None, validation_alias="HIGH_RISK_SELECT_MODEL_NAME"
+    )
+    high_risk_select_model_timeout_seconds: float | None = Field(
+        default=None, ge=0.1, validation_alias="HIGH_RISK_SELECT_MODEL_TIMEOUT_SECONDS"
+    )
     read_max_tokens: int = Field(default=1024, ge=1, validation_alias="READ_MAX_TOKENS")
     fallback_max_tokens: int = Field(default=512, ge=1, validation_alias="FALLBACK_MAX_TOKENS")
     # Context 输入预算（trim_messages / ContextBudgetMiddleware）
@@ -321,20 +334,38 @@ def make_router_fallback_model() -> ChatOpenAI | None:
     )
 
 
-def make_select_model() -> ChatOpenAI:
-    """HighRisk select_llm 专用模型（Mutation 见 make_mutation_select_model）。"""
+def make_high_risk_select_model() -> ChatOpenAI:
+    """HighRisk Select 专用模型；HIGH_RISK_SELECT_* 缺省回落 SELECT_* / LLM_*。"""
     settings = get_settings()
+    model_timeout = (
+        settings.high_risk_select_model_timeout_seconds
+        if settings.high_risk_select_model_timeout_seconds is not None
+        else settings.llm_model_timeout_seconds
+    )
     _assert_model_timeout_under_node(
-        settings.llm_model_timeout_seconds,
+        model_timeout,
         settings.llm_node_timeout_seconds,
-        "select",
+        "high_risk_select",
     )
     name, endpoint, api_key = _llm_profile()
+    override_name = (settings.high_risk_select_model_name or "").strip()
+    if override_name:
+        name = override_name
+    temperature = (
+        settings.high_risk_select_temperature
+        if settings.high_risk_select_temperature is not None
+        else settings.select_temperature
+    )
+    max_tokens = (
+        settings.high_risk_select_max_tokens
+        if settings.high_risk_select_max_tokens is not None
+        else settings.select_max_tokens
+    )
     return _openai_compat_model(
         name,
-        temperature=settings.select_temperature,
-        timeout=settings.llm_model_timeout_seconds,
-        max_tokens=settings.select_max_tokens,
+        temperature=temperature,
+        timeout=model_timeout,
+        max_tokens=max_tokens,
         api_key=api_key,
         base_url=endpoint,
     )

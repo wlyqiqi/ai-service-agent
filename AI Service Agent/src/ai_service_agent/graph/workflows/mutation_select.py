@@ -37,8 +37,8 @@ from ai_service_agent.tools.registry import ToolRegistry
 
 _TIER = "mutation"
 
-# Fake（json）与 Real（bind_tools）决策对齐，输出形态按路径分流。HighRisk select 仍用
-# select._build_examples，不读这里。
+# Fake（json）与 Real（bind_tools）决策对齐，输出形态按路径分流。HighRisk Select 见
+# high_risk_select._build_examples，不读这里。
 # 行为用例：
 # 1. 改地址 / 改电话 / 备注 / 开票 / 售后且话术完整 → 选对应工具，只填句中已有字段。
 # 2. 开票句无金额 → create_invoice 不含 amount（schema 字段为 company / tax_no）。

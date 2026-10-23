@@ -1,37 +1,21 @@
-"""HighRisk 工具选择（OQ-2）：LLM 结构化输出 {tool, args} + 确定性校验兜底。
+"""Select 共享纯函数（无业务语义）：供 Mutation Select / HighRisk Select 复用。
 
-LLM 负责理解，确定性代码负责校验：工具必须在档内。
-HighRisk：有可操作订单但缺 order_id → pending_tool（Form Interrupt 收集）；零候选仍 clarify；完整则 pending_tool。
-Mutation Select 见 mutation_select.py（独立节点 / 提示词 / 模型）。
-真 schema 类型/未知字段错误 -> safety_rejected，不进入 interrupt。
+节点工厂见 mutation_select.make_mutation_select_node 与
+high_risk_select.make_high_risk_select_node。本模块不提供 make_select_node。
 """
 
-import asyncio
-import json
 import uuid
-from collections.abc import Awaitable, Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.tools import BaseTool
-from langchain_core.runnables import RunnableConfig
-from pydantic import ValidationError
-from langgraph.config import get_stream_writer
-from langgraph.runtime import Runtime
 
-from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
-from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_business_fields
-from ai_service_agent.tools.params import is_absent_sentinel
-from ai_service_agent.tools.registry import ToolRegistry
-from ai_service_agent.graph.runtime_context import GraphContext
-from ai_service_agent.prompts import (
-    SELECT_BINDTOOLS_TEMPLATE,
-    SELECT_SYSTEM_TEMPLATE,
-)
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.context.builders import build_recent_visible_context
 from ai_service_agent.graph.context.policy import make_select_policy
+from ai_service_agent.tools.params import is_absent_sentinel
+
 
 def _describe_args_schema(meta) -> str:
     """从 ToolMeta.schema 自动列出参数字段契约（request_id 由系统自动注入，不要求模型输出）。"""
@@ -113,7 +97,7 @@ def _is_uuid4(value: str) -> bool:
 
 
 def _normalize_placeholder_args(args: dict, meta) -> dict:
-    """将模型占位符归一为「未提供」，供 D1 缺参澄清（不把空参当 schema 拒绝）。
+    """将模型占位符归一为「未提供」，供缺参澄清（不把空参当 schema 拒绝）。
 
     - None / 空白字符串 / 缺省哨兵（"null" 等）→ 删除字段
     - int/float <= 0 → 删除字段（如 amount=0 的开票占位）
@@ -175,223 +159,3 @@ def _budgeted_select_messages(
         allow_partial=False,
     )
     return [system_message, *selected]
-
-
-def _visible_text(state: dict) -> str:
-    parts: list[str] = []
-    for message in state.get("messages", []):
-        if isinstance(message, dict):
-            parts.append(str(message.get("content", "")))
-        else:
-            parts.append(str(getattr(message, "content", "")))
-    return "\n".join(parts)
-
-
-def _order_repository(
-    runtime: Runtime[GraphContext] | None,
-    fallback: OrderRepository | None,
-) -> OrderRepository | None:
-    if runtime is not None and runtime.context is not None:
-        repository = getattr(runtime.context, "order_repository", None)
-        if repository is not None:
-            return repository
-    return fallback
-
-
-def make_select_node(
-    model,
-    tier: str,
-    tools: list,
-    registry: ToolRegistry,
-    order_repository: OrderRepository | None = None,
-) -> Callable[[dict], Awaitable[dict]]:
-    """HighRisk select_llm。Mutation 请用 make_mutation_select_node。"""
-    if tier != "high_risk":
-        raise ValueError(
-            f"make_select_node only supports tier='high_risk'; got {tier!r}. "
-            "Use make_mutation_select_node for Mutation Select."
-        )
-    # B2b（P5 D2）：写图 select 档内严格——允许集与系统提示仅含 min_risk_level == tier 的工具。
-    tier_tools = [
-        t for t in tools
-        if (meta := registry.meta_for(t.name)) is not None and meta.min_risk_level == tier
-    ]
-    lines_by_name = {}
-    for t in tier_tools:
-        meta = registry.meta_for(t.name)
-        line = f"- {t.name}: {meta.description}"
-        contract = _describe_args_schema(meta)
-        if contract:
-            line += f"\n  参数：{contract}"
-        lines_by_name[t.name] = line
-    is_fake = isinstance(model, FakeMessagesListChatModel)
-    if is_fake:
-        bound = _bind_json(model)
-    else:
-        # auto: allow no tool_call → tier clarify (#110)
-        bound = model.bind_tools(tier_tools, tool_choice="auto")
-
-    def _reject(state: dict, reason: str) -> dict:
-        try:
-            get_stream_writer()({"type": "safety_rejected", "data": {"rule": "precheck", "reason": reason}})
-        except RuntimeError:
-            pass
-        return {"context": {**state.get("context", {}), "precheck_reason": reason}, "execution_status": "completed"}
-
-    def _clarify(state: dict, missing: list[str]) -> dict:
-        return {"context": {**state.get("context", {}), "clarify_missing": missing}}
-
-    def _tier_clarify(state: dict, tool_name: str) -> dict:
-        return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
-
-    def _no_tool_clarify(state: dict, content: str = "") -> dict:
-        """tool_choice=auto 且模型未发起 tool_call：HighRisk → tier clarify 节点。"""
-        del content  # HighRisk 不消费 LLM 追问文案；固定话术由 clarify 节点产出。
-        ctx = {**state.get("context", {})}
-        ctx.pop("clarify_missing", None)
-        ctx.pop("pending_tool", None)
-        ctx.pop("operation_clarify", None)
-        ctx["tier_clarify"] = True
-        return {"context": ctx}
-
-    def _partial_args_for_form(args: dict, meta) -> dict:
-        known = set(meta.schema.model_fields)
-        partial = {key: value for key, value in args.items() if key in known}
-        partial.setdefault("request_id", str(uuid.uuid4()))
-        return partial
-
-    def _pending_for_form(state: dict, tool_name: str, args: dict) -> dict:
-        ctx = {**state.get("context", {})}
-        ctx.pop("clarify_missing", None)
-        ctx.pop("tier_clarify", None)
-        ctx.pop("operation_clarify", None)
-        ctx.pop("cancellation_candidates", None)
-        ctx["clarify_count"] = 0
-        ctx["pending_tool"] = {
-            "tool": tool_name,
-            "args": args,
-            "request_id": args["request_id"],
-        }
-        return {"context": ctx}
-
-    async def select(
-        state: dict,
-        config: RunnableConfig | None = None,
-        runtime: Runtime[GraphContext] | None = None,
-    ) -> dict:
-        current_context = {**state.get("context", {})}
-        current_context.pop("cancellation_candidates", None)
-        state = {**state, "context": current_context}
-        route_allowed = state.get("allowed_tools")
-        if route_allowed is None:
-            selected_tools = tier_tools
-        else:
-            route_allowed = {str(name) for name in route_allowed}
-            selected_tools = [t for t in tier_tools if t.name in route_allowed]
-        allowed = {t.name for t in selected_tools}
-        tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
-        examples = _build_examples(selected_tools, registry)
-        if is_fake:
-            messages = _budgeted_select_messages(
-                state,
-                selected_tools,
-                SystemMessage(content=SELECT_SYSTEM_TEMPLATE.format(
-                    tool_list=tool_list,
-                    examples=examples,
-                )),
-            )
-            resp = await bound.ainvoke(messages, config=config)
-            try:
-                payload = json.loads(resp.content)
-                tool_name = payload.get("tool")
-                if not tool_name:
-                    return _no_tool_clarify(
-                        state, str(payload.get("content") or payload.get("clarify") or "")
-                    )
-                args = dict(payload.get("args") or {})
-            except Exception:
-                return _reject(state, "select_parse_failed")
-        else:
-            messages = _budgeted_select_messages(
-                state,
-                selected_tools,
-                SystemMessage(content=SELECT_BINDTOOLS_TEMPLATE.format(
-                    tool_list=tool_list,
-                    examples=examples,
-                )),
-            )
-            result = await bound.ainvoke(messages, config=config)
-            if not result.tool_calls:
-                return _no_tool_clarify(state, str(result.content or ""))
-            tool_call = result.tool_calls[0]
-            tool_name = tool_call["name"]
-            args = dict(tool_call.get("args") or {})
-
-        if tool_name in ("cancel_order", "refund_apply"):
-            if args.get("order_id") and str(args["order_id"]) not in _visible_text(state):
-                args.pop("order_id", None)
-
-        if tool_name in ("cancel_order", "refund_apply") and not args.get("order_id"):
-            repository = _order_repository(runtime, order_repository)
-            candidates: list[dict] = []
-            if repository is not None:
-                try:
-                    candidates = await asyncio.to_thread(
-                        repository.list_actionable_orders,
-                        state.get("user_id", ""),
-                        tool_name,
-                    )
-                except (OrderRepositoryUnavailable, ValueError):
-                    candidates = []
-            if not candidates:
-                return _clarify(state, ["order_id"])
-            meta = registry.meta_for(tool_name)
-            if meta is not None and meta.schema is not None:
-                return _pending_for_form(
-                    state, tool_name, _partial_args_for_form(args, meta)
-                )
-            return {
-                "context": {
-                    **state.get("context", {}),
-                    "clarify_missing": ["order_id"],
-                    "cancellation_candidates": candidates,
-                }
-            }
-        existing = args.get("request_id")
-        if not isinstance(existing, str) or not _is_uuid4(existing):
-            args["request_id"] = str(uuid.uuid4())
-        meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
-        if meta is None:
-            return _reject(state, "unknown_tool")
-        route_allowed = state.get("allowed_tools")
-        if route_allowed is not None and tool_name not in route_allowed:
-            return _reject(state, "tool_not_allowed")
-        if tool_name not in allowed:
-            if RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
-                return _tier_clarify(state, tool_name)
-            return _reject(state, "unknown_tool")
-        if meta.schema is not None:
-            args = _normalize_placeholder_args(args, meta)
-            try:
-                args = meta.schema.model_validate(args).model_dump()
-            except ValidationError as exc:
-                errors = exc.errors()
-                missing = [e["loc"][0] for e in errors if e["type"] == "missing" and e["loc"]]
-                if missing and len(missing) == len(errors):
-                    missing = [f for f in missing if f != "request_id"]
-                    if missing:
-                        return _clarify(state, missing)
-                return _reject(state, "invalid_args")
-            incomplete = incomplete_business_fields(args, meta)
-            if incomplete:
-                return _clarify(state, incomplete)
-        ctx = {**state.get("context", {})}
-        ctx.pop("clarify_missing", None)
-        ctx.pop("tier_clarify", None)
-        ctx.pop("operation_clarify", None)
-        ctx.pop("cancellation_candidates", None)
-        ctx["clarify_count"] = 0
-        ctx["pending_tool"] = {"tool": tool_name, "args": args, "request_id": args["request_id"]}
-        return {"context": ctx}
-
-    return select

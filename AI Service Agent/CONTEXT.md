@@ -12,6 +12,10 @@ _Avoid_: 把 HighRisk 审批流称作 Mutation；Mutation 主路径用 create_re
 MutationGraph 内专属的写操作选择 LLM 节点（图内名 `mutation_select_llm`）：自有模型工厂与提示词，一次调用要么发出本档 tool_call，要么自然语言做 Operation Clarify；缺业务字段仍选 tool，交 Mutation Form。不与 HighRisk / Read 的 select 共享节点、提示词或模型实例。
 _Avoid_: 与 HighRisk 共用 `make_select_node` / `make_select_model` / 通用 select 提示词；把 Mutation Select 做成 ReAct 工具循环
 
+**HighRisk Select**:
+HighRiskGraph 内专属的高风险操作选择 LLM 节点（图内名 `high_risk_select_llm`）：自有模型工厂（`HIGH_RISK_SELECT_*` 缺省回落 `SELECT_*`）与专属提示词，本档仅 cancel/refund；缺参或无 tool_call/档不匹配仍走既有 clarify 与 Form/审批拓扑（P0 不内联 Operation Clarify）。不与 Mutation / Read 的 select 共享节点、提示词或模型实例。
+_Avoid_: 继续叫通用 `select_llm` / 保留 `make_select_node` 或 `select_model` 别名；P0 把 Mutation 式口语追问塞进 HighRisk Select；把 HighRisk Select 做成 ReAct 工具循环
+
 **Mutation Form**:
 仅在 **tool 已确定** 且需要业务字段时，由客户端按 interrupt 载荷 / `response_schema` 渲染的结构化填参 UI；不是操作类型菜单。
 _Avoid_: 用表单做操作类型选择；自造与 interrupt 无关的第二套挂起语义

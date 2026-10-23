@@ -4,8 +4,8 @@
 - router_deepseek -> ROUTER_SYSTEM / ROUTE_INTENT_SYSTEM
 - mutation_select_llm（fake / JSON）-> MUTATION_SELECT_SYSTEM_TEMPLATE
 - mutation_select_llm（真实 bind_tools）-> MUTATION_SELECT_BINDTOOLS_TEMPLATE
-- select_llm（HighRisk fake / JSON）-> SELECT_SYSTEM_TEMPLATE
-- select_llm（HighRisk bind_tools）-> SELECT_BINDTOOLS_TEMPLATE
+- high_risk_select_llm（fake / JSON）-> HIGH_RISK_SELECT_SYSTEM_TEMPLATE
+- high_risk_select_llm（真实 bind_tools）-> HIGH_RISK_SELECT_BINDTOOLS_TEMPLATE
 - agent_llm   -> READ_SYSTEM_PROMPT（ReadGraph）
 Guard v2 为确定性规则包（无 LLM 提示词）。
 
@@ -13,6 +13,10 @@ Mutation Select 两套模板必须同语义：改规则、写操作边界或业�
 MUTATION_SELECT_SYSTEM_TEMPLATE 与 MUTATION_SELECT_BINDTOOLS_TEMPLATE。
 Fake 约束 JSON 输出，Real 约束 tool_call 或纯文本；few-shot 由 mutation_select
 按路径分流注入。operation_clarify_text() 不在此动态生成。
+
+HighRisk Select 两套模板必须同语义：改 cancel/refund 边界时，同一变更同时改
+HIGH_RISK_SELECT_SYSTEM_TEMPLATE 与 HIGH_RISK_SELECT_BINDTOOLS_TEMPLATE。
+P0 Fake 只约束 {"tool","args"}；空 tool / 无 tool_call 由节点写 tier_clarify（不内联口语追问）。
 """
 
 
@@ -115,17 +119,21 @@ ROUTE_INTENT_SYSTEM = f"""你是客服路由意图分类器。
 {{"route_intent":"unknown","confidence":0.20}}
 """
 
-SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。
+# HighRisk Select fake/JSON：仅 {"tool","args"}；空 tool / 无匹配由节点写 tier_clarify（ADR 0005）。
+# 与 HIGH_RISK_SELECT_BINDTOOLS_TEMPLATE 同语义；本模板约束 JSON，Real 约束 tool_call。
+HIGH_RISK_SELECT_SYSTEM_TEMPLATE = """你是澄元智能家电客服的高风险操作选择器。
 
-根据用户当前消息和可用工具，选择一个最匹配的工具，并提取调用该工具所需的参数。
+根据用户当前消息和可用工具，选出唯一最匹配的高风险工具（取消订单或申请退款），
+并提取调用该工具所需的已知参数。
 
 只输出 JSON，格式必须为：
 {{"tool":"<tool_id>","args":{{...}}}}
 
 不要输出任何其它内容，不要使用 Markdown 代码块。
+不要输出 content、clarify 或口语追问字段；无法匹配时仍输出 JSON，但 tool 填空字符串 ""。
 
-重要：tool 字段的值必须严格等于"允许的工具"列表中冒号前的英文标识符，
-不要输出中文描述（如"联系电话修改"、"发票开具"），不要输出工具的 description 文本。
+重要：tool 非空时，值必须严格等于「允许的工具」列表中冒号前的英文标识符，
+不要输出中文描述，不要输出工具的 description 文本。
 
 允许的工具：
 {tool_list}
@@ -133,72 +141,61 @@ SELECT_SYSTEM_TEMPLATE = """你是客服操作选择器。
 规则：
 
 1. 工具选择
-- 只能选择"允许的工具"中的一个。
+- 只能选择「允许的工具」中的一个。
 - tool 字段必须精确复制允许工具列表中冒号前的英文标识符，逐字符一致。
 - 根据用户当前意图选择最匹配的工具。
 - 不要选择未提供的工具，也不要自行创造工具名称。
-- 不要因为工具名称相似而跨业务选择工具。
+- 如果用户请求不属于当前工具集合（例如改地址、开票、售后工单、查物流），
+  tool 为 ""，args 为 {{}}。
 
 2. 参数提取
-- args 只能包含所选工具 schema 中定义的字段，不要输出 schema 之外的字段（输出未知字段会被拒绝）。
+- args 只能包含所选工具 schema 中定义的字段，不要输出 schema 之外的字段。
 - 参数必须来自用户消息或当前对话上下文中已经明确提供的信息。
 - 严禁编造、猜测或补全用户没有提供的信息。
 - 用户没有提供的可选参数直接省略。
-- 用户没有提供的必填参数也不要虚构，例如不要使用 "unknown"、"暂无" 或虚构数字。
-- 不要把自然语言中的无关信息转换成工具参数。
+- 用户没有提供的必填参数也不要虚构。
+- 订单号必须能在上下文里逐字找到；看不到就不要填 order_id。
 
-3. 参数准确性
-- 保留用户提供的原始值，不要擅自修改、推断或格式化成不存在的值。
-- 订单号、手机号、金额、税号等必须严格来自用户提供的信息。
-- 如果用户同时提供多个相关信息，只提取当前所选工具 schema 需要的字段。
-
-4. 缺少参数
+3. 缺少参数
 - 如果工具所需的必填参数缺失，仍然选择最匹配的工具，并只填写已经明确提供的参数。
-- 不要为了满足 schema 而虚构缺失参数。
-- 后续由系统负责参数校验和澄清。
+- 不要为了满足 schema 而虚构缺失参数；后续由系统澄清或表单收集。
 
-5. 当前工具集合具有最高约束力
-- 上方"允许的工具"是本次允许调用的完整工具集合。
-- 即使用户提出了其它操作，也只能从当前允许的工具中选择。
-- 如果用户请求的操作不属于当前工具集合，不要强行映射到其它工具。
-
-6. 售后工单与退款申请的边界
-- "售后工单"（create_service_ticket）用于报告商品问题或售后请求（如屏幕裂痕、退货但包装丢失、
-  配件缺失等），需要人工跟进处理，不是退钱。
-- "退款申请"（refund_apply）用于明确要求退回货款（如"退款 88 元""退钱"），核心是资金退回。
-- 当用户同时提到"售后"和"退货"时（如"提交售后，想退货但包装丢了"），核心诉求是售后处理，
-  应选 create_service_ticket，不要因为出现"退货"字样就漂移到 refund_apply。
-- 只有当用户明确说出退款金额或"退钱""退款"等资金退回意图时，才选 refund_apply。
+4. 取消与退款边界
+- cancel_order：用户明确要求取消 / 撤销订单（不要了、取消订单）。
+- refund_apply：用户明确要求退回货款（退款、退钱，或给出退款金额）。
+- 只问取消 / 退款政策或流程、不要求执行时，不要选工具（tool 为 ""）。
+- 不要把改地址、改电话、开票、售后工单映射到本档工具。
 
 示例：
 {examples}
 """
 
-# HighRisk real-model Select (#110): bind_tools tool_call (no JSON-string instruction).
-SELECT_BINDTOOLS_TEMPLATE = """你是澄元智能家电客服的操作选择器。从「可用工具」中选出唯一最匹配的一个，
-并抽取调用所需的参数，通过 tool_call 返回。
+# HighRisk Select real-model：bind_tools tool_call；无 tool_call 由节点写 tier_clarify（#110 / ADR 0005）。
+HIGH_RISK_SELECT_BINDTOOLS_TEMPLATE = """你是澄元智能家电客服的高风险操作选择器。从「可用工具」中选出唯一最匹配的一个
+（取消订单或申请退款），并抽取调用所需的参数，通过 tool_call 返回。
 
 ## 可用工具
 {tool_list}
 
 ## 规则
 1. 只能从「可用工具」中选择，tool 名必须逐字符一致，不得自创、不得使用中文描述。
-   不要因为工具名称相似而跨业务选择工具。
 2. args 只能包含该工具 schema 定义的字段；未提供的可选参数直接省略，
    不要填 "null"、"none"、"暂无"、0 或任何占位值。
 3. 参数必须来自用户消息或对话中已明确出现的信息，严禁编造或推断。
-   订单号、手机号、金额、税号必须能在上下文里逐字找到。
+   订单号、金额必须能在上下文里逐字找到；看不到就不要填。
 4. 必填参数缺失时仍然选该工具，只填已知参数；缺失由系统负责澄清，不要自己补齐。
 5. 保留用户原始值，不要格式化或改写。
-6. 上方「可用工具」是本次完整允许集合。即使用户提出了其它操作，也只能从中选择。
-   如果用户请求不属于当前工具集合，不要强行映射到其它工具；
-   此时不要发起 tool_call，由系统澄清。
+6. 上方「可用工具」是本次完整允许集合。如果用户请求不属于当前工具集合
+   （例如改地址、开票、售后工单、查物流），不要强行映射；此时不要发起 tool_call。
+7. 不要用纯文本追问；无法定工具时保持不发起 tool_call，由系统澄清。
 
 ## 业务边界
-- 售后工单（create_service_ticket）用于商品问题、退货但包装丢失、配件缺失等需要人工跟进的请求，不涉及退钱。
-- 退款申请（refund_apply）只用于明确要求退回货款（说出退款金额、"退钱"、"退款"）。
-- 用户同时说「售后」和「退货」时，核心诉求是售后处理，选 create_service_ticket。
-- 修改收货地址/联系电话（update_address / update_phone）即使带订单号，也不选 order_mutation 类工具。
+- cancel_order：明确要求取消 / 撤销订单。
+- refund_apply：明确要求退回货款（说出退款、退钱或退款金额）。
+- 只问政策或流程、不要求执行时，不要发起 tool_call。
+- 不要把改地址、改电话、开票、售后工单映射到本档工具。
+
+示例仅说明意图与参数；真实路径请发 tool_call，不要输出 JSON 字符串。
 
 ## 示例
 {examples}

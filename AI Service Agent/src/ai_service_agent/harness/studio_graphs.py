@@ -16,9 +16,9 @@
 from ai_service_agent.config import (
     get_settings,
     make_fallback_model,
+    make_high_risk_select_model,
     make_mutation_select_model,
     make_read_model,
-    make_select_model,
 )
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph.agents.read_agent import make_read_graph
@@ -29,7 +29,7 @@ from ai_service_agent.harness.tool_hooks import LoggingToolHook
 from ai_service_agent.tools import make_tool_registry
 
 _read_model = make_read_model()
-_select_model = make_select_model()
+_high_risk_select_model = make_high_risk_select_model()
 _mutation_select_model = make_mutation_select_model()
 _fallback_model = make_fallback_model()
 _repository = SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
@@ -42,7 +42,7 @@ mutation_graph = make_mutation_graph(
     order_repository=_repository,
 )
 high_risk_graph = make_high_risk_graph(
-    _select_model, _reg.for_risk_level("high_risk"), _reg, tool_hooks=_hooks,
+    _high_risk_select_model, _reg.for_risk_level("high_risk"), _reg, tool_hooks=_hooks,
     order_repository=_repository,
 )
 fallback_graph = make_fallback_graph(_fallback_model)
