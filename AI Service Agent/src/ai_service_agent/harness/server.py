@@ -46,7 +46,7 @@ from ai_service_agent.harness.chatwoot import (
     is_agent_message,
     verify_chatwoot_signature,
 )
-from ai_service_agent.harness.form_events import is_form_interrupt
+from ai_service_agent.harness.form_events import pending_form_value
 from ai_service_agent.harness.form_gate import (
     FormDecisionKind,
     FormInboundKind,
@@ -450,8 +450,10 @@ def create_app(
     async def _cancel_pending_form_interrupt(conv_id: str) -> bool:
         """Resume a pending Mutation Form with cancel. Caller holds the thread lock.
 
-        Approval and handoff interrupts are left alone. Raises if a form interrupt
-        is still pending after cancel, so Takeover does not flip mode first.
+        Hang source is the checkpointer interrupt (``pending_form_value``), not
+        parent execution status. Approval and handoff interrupts are left alone.
+        Raises if a form interrupt is still pending after cancel, so Takeover
+        does not flip mode first.
         """
         thread_id = status.get_thread_id(conv_id)
         if thread_id is None:
@@ -462,7 +464,7 @@ def create_app(
             )
             cfg = {"configurable": {"thread_id": thread_id}}
             st = await graph.aget_state(cfg)
-            if not st.interrupts or not is_form_interrupt(st.interrupts[0].value):
+            if pending_form_value(st.interrupts) is None:
                 return False
             await graph.ainvoke(
                 Command(resume={"action": "cancel"}),
@@ -470,7 +472,7 @@ def create_app(
                 context=_runtime_context(status.get_user_id(conv_id) or ""),
             )
             st_after = await graph.aget_state(cfg)
-            if st_after.interrupts and is_form_interrupt(st_after.interrupts[0].value):
+            if pending_form_value(st_after.interrupts) is not None:
                 raise RuntimeError(f"form interrupt still pending after cancel: {conv_id}")
         return True
 
@@ -817,7 +819,7 @@ def create_app(
                                 return
                         elif approval_state == "expired":
                             resume_payload = {"result": "expired"}   # HighRiskGraph 过期收尾
-                        elif is_form_interrupt(it):
+                        elif pending_form_value(st.interrupts) is not None:
                             # 与 AgentBot 同一决策点（harness/form_gate.py）：纯文本永不
                             # 构成 Form Resume，唯一策略是 Implicit Cancel（CONTEXT.md）。
                             decision = decide_form_inbound(it, kind=FormInboundKind.TEXT)
@@ -895,9 +897,11 @@ def create_app(
                 cfg = {"configurable": {"thread_id": thread_id}}
                 state = await graph.aget_state(cfg)
                 pending = state.interrupts[0].value if state.interrupts else None
-                if not isinstance(pending, dict) or (
-                    pending.get("type") != "confirmation_required" and not is_form_interrupt(pending)
-                ):
+                form_value = pending_form_value(state.interrupts)
+                legacy_confirm = (
+                    isinstance(pending, dict) and pending.get("type") == "confirmation_required"
+                )
+                if form_value is None and not legacy_confirm:
                     raise HTTPException(status_code=409, detail="no pending confirmation")
 
                 events: list[dict] = []
@@ -909,7 +913,9 @@ def create_app(
                 if body.order_id is not None:
                     fields["order_id"] = body.order_id
                 decision = decide_form_inbound(
-                    pending, kind=FormInboundKind.EXPLICIT, fields=fields
+                    form_value if form_value is not None else pending,
+                    kind=FormInboundKind.EXPLICIT,
+                    fields=fields,
                 )
                 resume_payload = decision.resume_payload
                 async for event in event_stream(

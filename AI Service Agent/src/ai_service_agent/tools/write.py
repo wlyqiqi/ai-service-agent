@@ -77,6 +77,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _direct_call_request_id(request_id: str) -> str:
+    """直接调用工具且 request_id 为空串时才新生成 uuid4。
+
+    失败安全网，不是 MutationGraph 主路径。select 与 Form Resume confirm 必须在
+    execute → tools 之前把 pending_tool.request_id 写成 uuid4。主路径若把空串留到
+    这里，同一次重试会换新键，(tool_name, request_id) 幂等失效。
+    """
+    return request_id or str(uuid4())
+
+
 def _run_db_mutation(tool_name: str, request_id: str, user_id: str, produce, validate_replay=None) -> dict:
     """复合幂等键 = (tool_name, request_id)，与业务写入同连接同事务提交。"""
     if not user_id:
@@ -150,7 +160,7 @@ def update_address(
             return {"error": "not_found", "user_id": user_id}
         conn.execute("UPDATE customers SET address=? WHERE customer_id=?", (address, user_id))
         return {"field": "update_address", "order_id": order_id, "address": address}
-    return _run_db_mutation("update_address", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("update_address", _direct_call_request_id(request_id), user_id, _produce)
 
 
 @tool
@@ -170,7 +180,7 @@ def update_phone(
             return {"error": "not_found", "user_id": user_id}
         conn.execute("UPDATE customers SET phone=? WHERE customer_id=?", (phone, user_id))
         return {"field": "update_phone", "phone": phone}
-    return _run_db_mutation("update_phone", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("update_phone", _direct_call_request_id(request_id), user_id, _produce)
 
 
 @tool
@@ -189,7 +199,7 @@ def update_order_note(
             return boundary
         conn.execute("UPDATE orders SET note=? WHERE order_id=?", (note, order_id))
         return {"field": "update_order_note", "order_id": order_id, "note": note}
-    return _run_db_mutation("update_order_note", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("update_order_note", _direct_call_request_id(request_id), user_id, _produce)
 
 
 @tool
@@ -217,7 +227,7 @@ def create_invoice(
             (invoice_id, user_id, order_id, amount, company, tax_no, "issued", _now()),
         )
         return {"field": "create_invoice", "invoice_id": invoice_id, "order_id": order_id, "amount": amount}
-    return _run_db_mutation("create_invoice", request_id or str(uuid4()), user_id, _produce_db)
+    return _run_db_mutation("create_invoice", _direct_call_request_id(request_id), user_id, _produce_db)
 
 
 @tool
@@ -241,7 +251,7 @@ def create_service_ticket(
             (ticket_id, user_id, order_id, reason, "open", _now()),
         )
         return {"field": "create_service_ticket", "ticket_id": ticket_id, "order_id": order_id, "reason": reason}
-    return _run_db_mutation("create_service_ticket", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("create_service_ticket", _direct_call_request_id(request_id), user_id, _produce)
 
 
 def make_cancel_order_tool(order_repository):

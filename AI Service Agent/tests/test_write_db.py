@@ -92,6 +92,37 @@ def test_seed_schema_supports_mutations(seed):
     assert {"invoices", "idempotency"} <= tables
 
 
+def test_empty_request_id_safety_net_mints_a_new_key_per_call(monkeypatch, tmp_path):
+    """write.py empty string → uuid4 is not idempotent. Orchestration must not use it."""
+    import uuid
+
+    module = _load_seed_module()
+    db_path = tmp_path / "safety-net.db"
+    module.build_database(str(db_path))
+    _use_db(monkeypatch, db_path)
+    first = write_mod.update_phone.invoke(
+        {"phone": "13800000001", "request_id": "", "user_id": "u1"}
+    )
+    second = write_mod.update_phone.invoke(
+        {"phone": "13800000002", "request_id": "", "user_id": "u1"}
+    )
+    assert first["replayed"] is False and second["replayed"] is False
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT request_id FROM idempotency WHERE tool_name='update_phone' ORDER BY created_at"
+        ).fetchall()
+        phone = conn.execute(
+            "SELECT phone FROM customers WHERE customer_id='u1'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]
+    assert all(uuid.UUID(row[0]).version == 4 for row in rows)
+    assert phone == "13800000002"
+
+
 def test_account_updates_write_db_and_replay(monkeypatch, seed):
     _, db_path = seed
     _use_db(monkeypatch, db_path)

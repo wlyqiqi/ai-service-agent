@@ -1,7 +1,9 @@
 """Inbound → Form Interrupt decision (single source of truth).
 
 This module owns *only* the decision for an inbound message while a Mutation
-Form Interrupt is pending: confirm / cancel / implicit cancel.
+Form Interrupt is pending: confirm / cancel / implicit cancel. Callers learn
+that a form is hanging from checkpointer interrupts (``pending_form_value``),
+then pass that payload here. Parent execution status is not an input.
 
 There is deliberately **one** policy. Plain text never resumes a form; it
 cancels the stale interrupt and the caller routes the message as a new turn

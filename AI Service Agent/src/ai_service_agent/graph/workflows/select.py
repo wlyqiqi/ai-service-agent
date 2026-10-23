@@ -8,7 +8,6 @@ HighRisk：有可操作订单但缺 order_id → pending_tool（Form Interrupt �
 
 import asyncio
 import json
-import uuid
 from collections.abc import Awaitable, Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -21,6 +20,7 @@ from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 
 from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
+from ai_service_agent.graph.workflows.form_resume import coerce_request_id
 from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_business_fields
 from ai_service_agent.tools.params import is_absent_sentinel
 from ai_service_agent.tools.registry import ToolRegistry
@@ -102,20 +102,13 @@ def _bind_json(model):
     return model.bind(response_format={"type": "json_object"})
 
 
-def _is_uuid4(value: str) -> bool:
-    try:
-        return uuid.UUID(value).version == 4
-    except (ValueError, AttributeError):
-        return False
-
-
 def _normalize_placeholder_args(args: dict, meta) -> dict:
     """将模型占位符归一为「未提供」，供 D1 缺参澄清（不把空参当 schema 拒绝）。
 
     - None / 空白字符串 / 缺省哨兵（"null" 等）→ 删除字段
     - int/float <= 0 → 删除字段（如 amount=0 的开票占位）
     真类型错误（如 amount=\"abc\"）保留，仍由 schema 走 invalid_args。
-    request_id 原样保留；非 UUID 在进入缺参表单前由 select 换成新的 uuid4。
+    request_id 原样保留；非 uuid4 在写 pending_tool 前由 coerce_request_id 换成新的 uuid4。
     """
     if meta is None or meta.schema is None:
         return dict(args)
@@ -266,7 +259,8 @@ def make_select_node(
         """Mutation Form prefills：保留已知 schema 字段 + request_id，不要求一次填齐。"""
         known = set(meta.schema.model_fields)
         partial = {key: value for key, value in args.items() if key in known}
-        partial.setdefault("request_id", str(uuid.uuid4()))
+        # setdefault 会留下空串 / "null"。表单 prefills 与完整 select 同一枚 uuid4。
+        partial["request_id"] = coerce_request_id(partial.get("request_id"))
         return partial
 
     def _pending_for_form(state: dict, tool_name: str, args: dict) -> dict:
@@ -339,6 +333,10 @@ def make_select_node(
                 # never invent one or silently choose from a candidate list.
                 args.pop("order_id", None)
 
+        # 幂等键在进 pending_tool 之前定下来（含 HighRisk 缺单号的 Form 早退）。
+        # 空串留到 write.py 会在重试时换新 uuid4，(tool_name, request_id) 对不上。
+        args["request_id"] = coerce_request_id(args.get("request_id"))
+
         if tool_name in ("cancel_order", "refund_apply") and not args.get("order_id"):
             repository = _order_repository(runtime, order_repository)
             candidates: list[dict] = []
@@ -366,9 +364,6 @@ def make_select_node(
                     "cancellation_candidates": candidates,
                 }
             }
-        existing = args.get("request_id")
-        if not isinstance(existing, str) or not _is_uuid4(existing):
-            args["request_id"] = str(uuid.uuid4())
         meta = registry.meta_for(tool_name) if isinstance(tool_name, str) else None
         if meta is None:
             return _reject(state, "unknown_tool")

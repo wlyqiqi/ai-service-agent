@@ -107,6 +107,8 @@
 - select：tool 已知即写 `pending_tool`（已知字段作 prefills）；真 schema 类型/未知字段错误仍 `safety_rejected`。写图 select 允许集档内严格（P5 B2b）：只读工具不可选；选中已注册低档工具 → `tier_clarify` → clarify（普通轮，`clarification_required` + `reason:"tier_mismatch"`）。
 - Form Resume Confirm 对应结构化字段 + `action:"confirm"`；Cancel 为 `action:"cancel"` 哨兵（schema 见 §3 / event-spec §2.2）。Cancel → 收尾不写库。
 - **Form Resume 后、执行前 recheck（D6 + Form Interrupt）**：校验 Form Resume 字段 + 业务预检；失败则同一 `form_session_id` 再次 Form Interrupt（`form_rejected`），不走 `safety_rejected` 收尾。确认结果写入 `context`（§9），不新增 State 字段。
+- **Form 挂起真相（P0）**：Transport / 入口判断「正在等用户确认表单」只认 checkpointer `__interrupt__`（`harness/form_events.pending_form_value`）以及 `harness/form_gate.decide_form_inbound` 的 resume 决策。**禁止**用父图 `execution_status == waiting_confirmation`：子图 `interrupt()` 未结束时该更新不并回父 checkpoint，父图常为 `routing`（`state-spec.md` §1）。Seat Takeover：若有未提交的 Form Interrupt，必须先 `Command(resume={"action":"cancel"})`（不写库），再切 `conversation_mode=human`（`handoff-spec.md` §1.2）。
+- **request_id（P0）**：`execute` → ToolNode 之前，`pending_tool.request_id` 与 `pending_tool.args.request_id` 必须是同一枚 uuid4。select 注入，Form Resume confirm 保留（recheck 再挂起后不得另铸）；`tools/write.py` 在空串时再 `uuid4()` 只是直接调用工具的安全网，编排不得依赖它。幂等键为 `(tool_name, request_id)`。
 
 ### 6.3 HighRiskGraph
 
@@ -162,7 +164,7 @@
 | select（high_risk） | `messages`、`context`（`clarify_count`、`cancellation_candidates`） | `context`（有候选缺参：`pending_tool` 供 Form；零候选：`clarify_missing`；或 `tier_clarify` / `cancellation_candidates`；完整 select 或进表单时清零 `clarify_count`） |
 | prepare_form / form_interrupt（high_risk） | `context`（`pending_tool`、`form_session_id`） | Form Interrupt（缺参收集）；Confirm 后写 `pending_tool.args` 再进安全预检/审批；Cancel / 零候选不进审批 |
 | clarify | `context`（`clarify_missing` / `tier_clarify`、`clarify_count`、`cancellation_candidates`） | `messages`（确定性模板文案）、`context`（`clarify_count` 自增）、`execution_status=clarifying`，并发出 `clarification_required`（HighRisk 零候选缺参 / 写图 `tier_mismatch`；有候选的 HighRisk 缺参与 Mutation 业务缺参不走此节点） |
-| prepare_form / form_interrupt（mutation） | `context`（`pending_tool`、`form_session_id`、`form_errors`） | Form Interrupt（对外权威）；子图内 `execution_status=waiting_confirmation`（不并回父图）；Confirm 后写 `pending_tool.args`（Form Resume 真源） |
+| prepare_form / form_interrupt（mutation） | `context`（`pending_tool`、`form_session_id`、`form_errors`） | Form Interrupt（对外权威 = checkpointer `__interrupt__`，不是父图 `waiting_confirmation`）；子图内 `execution_status=waiting_confirmation`（不并回父图）；Confirm 后写 `pending_tool.args` 与同一枚 uuid4 `request_id`（Form Resume 真源） |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
 | check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |

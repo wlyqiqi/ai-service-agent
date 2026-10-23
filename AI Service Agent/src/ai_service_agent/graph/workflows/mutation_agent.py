@@ -7,7 +7,8 @@ select（tool 已知即可，业务字段可不全）-> 安全预检（缺参时
 Confirm 后校验/业务预检失败：条件边回到 form_interrupt，同一 form_session_id
 再次 Form Interrupt（SSE 投影 form_rejected），不走 safety_rejected 收尾。
 Confirm 的写库参数来自 Form Resume 字段值（含 Order Picker 的 order_id），
-再加系统 request_id，由 execute 构造单次 tool_call，经 ToolNode 写一次。
+再加系统 request_id（uuid4，select 注入、confirm 保留），由 execute 抄进
+tool_call args，经 ToolNode 写一次。空串不得留到 write.py 的安全网。
 select 留下的 pending_tool.args 是 prefills，不是 Confirm 真源（Form-Only Write）。
 Cancel 哨兵不写库。确认结果写回 context（graph-spec §9），不新增 State 字段。
 
@@ -40,6 +41,7 @@ from ai_service_agent.graph.workflows.form_resume import (
     resume_action,
     resume_field_values,
     schema_field_args,
+    stamp_pending_tool_request_id,
 )
 from ai_service_agent.graph.workflows.copy import (
     completion_text,
@@ -159,20 +161,23 @@ def make_mutation_graph(
         if not accepted:
             next_ctx.pop("form_session_id", None)
             return {"context": next_ctx, "execution_status": "completed"}
-        request_id = pending.get("request_id") or str(uuid.uuid4())
-        next_ctx["pending_tool"] = {
+        # Confirm 注入点：保留 select 的 uuid4；空 args / 非 uuid 不新开一枚，
+        # 除非两边都没有合法 id。recheck 再挂起后第二次 confirm 读到同一枚。
+        next_ctx["pending_tool"] = stamp_pending_tool_request_id({
             "tool": pending["tool"],
-            "args": {
-                **schema_field_args(resume_field_values(resume), schema),
-                "request_id": request_id,
-            },
-            "request_id": request_id,
-        }
+            "request_id": pending.get("request_id") or (pending.get("args") or {}).get("request_id"),
+            "args": schema_field_args(resume_field_values(resume), schema),
+        })
         return {"context": next_ctx, "execution_status": "waiting_confirmation"}
 
     def execute(state: dict) -> dict:
-        pending = state["context"]["pending_tool"]
+        # execute → tools 之前 args.request_id 必须是已注入的 uuid4。
+        # 不在这里依赖 write.py 对空串再 uuid4()：那会让 ToolNode 重试换键。
+        ctx = dict(state.get("context") or {})
+        pending = stamp_pending_tool_request_id(ctx["pending_tool"])
+        ctx["pending_tool"] = pending
         return {
+            "context": ctx,
             "messages": [AIMessage(
                 content="",
                 tool_calls=[{
@@ -181,7 +186,7 @@ def make_mutation_graph(
                     "id": f"call-{pending['request_id']}",
                     "type": "tool_call",
                 }],
-            )]
+            )],
         }
 
     def finalize_ok(state: dict) -> dict:

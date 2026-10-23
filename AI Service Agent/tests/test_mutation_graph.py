@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import sqlite3
 import tempfile
+import uuid
 from unittest.mock import MagicMock
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from langgraph.types import Command
 from langchain_core.messages import HumanMessage
 
 from ai_service_agent.graph.builder import build_graph
+from ai_service_agent.graph.workflows.form_resume import stamp_pending_tool_request_id
 from ai_service_agent.graph.workflows import clarify as clarify_mod
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT, clarify_missing_text
 from ai_service_agent.graph.workflows.select import make_select_node
@@ -235,6 +237,127 @@ def test_mutation_incomplete_args_open_form_interrupt(seed, monkeypatch):
     assert out["execution_status"] == "routing"
     assert out["execution_status"] != "waiting_confirmation"
     assert any(item["order_id"] == "ORD-PAID-1" for item in pending[0].value["order_candidates"])
+
+
+def _checkpoint_request_id(graph, thread_id: str) -> str:
+    """uuid4 stored on pending_tool, including inside an interrupted subgraph."""
+    snapshot = graph.get_state(
+        {"configurable": {"thread_id": thread_id}},
+        subgraphs=True,
+    )
+
+    def walk(node) -> list[str]:
+        found: list[str] = []
+        values = getattr(node, "values", None) or {}
+        pending = (values.get("context") or {}).get("pending_tool") or {}
+        request_id = pending.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            found.append(request_id)
+        for task in getattr(node, "tasks", None) or []:
+            state = getattr(task, "state", None)
+            if state is not None:
+                found.extend(walk(state))
+        return found
+
+    ids = walk(snapshot)
+    assert ids, "pending_tool.request_id missing from checkpoint"
+    return ids[-1]
+
+
+def test_stamp_keeps_uuid_when_args_request_id_is_empty():
+    kept = "11111111-1111-4111-8111-111111111111"
+    stamped = stamp_pending_tool_request_id({
+        "tool": "update_address",
+        "request_id": kept,
+        "args": {"order_id": "ORD-1", "address": "x", "request_id": ""},
+    })
+    assert stamped["request_id"] == kept
+    assert stamped["args"]["request_id"] == kept
+    assert stamp_pending_tool_request_id(stamped)["request_id"] == kept
+
+
+def test_stamp_replaces_null_on_empty_args_and_second_stamp_is_stable():
+    once = stamp_pending_tool_request_id({
+        "tool": "update_order_note",
+        "request_id": "null",
+        "args": {},
+    })
+    twice = stamp_pending_tool_request_id(once)
+    assert uuid.UUID(once["request_id"]).version == 4
+    assert once["request_id"] != "null"
+    assert twice["request_id"] == once["request_id"]
+    assert twice["args"]["request_id"] == once["request_id"]
+
+
+def test_confirm_request_id_stable_through_recheck_and_replay(seed, monkeypatch):
+    """P0-2: confirm keeps select's uuid4; same (tool, request_id) does not double-write.
+
+    Empty select args and a non-uuid model request_id still become one uuid4.
+    A recheck failure re-interrupts without minting a second id. Retrying the
+    tool with that id replays; write.py's empty-string uuid4 is not this path.
+    Parent status stays off waiting_confirmation while the form is open.
+    """
+    _use_db(monkeypatch, seed[1])
+    model = ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_json_message("update_address", {"request_id": "null"}),
+    ])
+    graph = build_graph(model, tools=[kb_search], checkpointer=MemorySaver())
+    tid = "mt-request-id-stable"
+    paused = _invoke(graph, "我要改个地址", tid)
+    assert paused.get("__interrupt__")
+    assert paused["execution_status"] == "routing"
+    assert paused["execution_status"] != "waiting_confirmation"
+    selected = _checkpoint_request_id(graph, tid)
+    assert uuid.UUID(selected).version == 4
+    assert selected != "null"
+
+    rejected = _invoke(
+        graph,
+        "确认",
+        tid,
+        resume={"action": "confirm", "order_id": "ORD-CANCEL-1", "address": "不应写入"},
+    )
+    assert rejected.get("__interrupt__")
+    assert [m for m in rejected["messages"] if getattr(m, "type", "") == "tool"] == []
+    assert _checkpoint_request_id(graph, tid) == selected
+
+    address = "北京市朝阳区稳定幂等路 1 号"
+    done = _invoke(graph, "确认", tid, resume=_confirm_address("ORD-PAID-1", address))
+    assert done["execution_status"] == "completed"
+    call = next(
+        tool_call
+        for message in done["messages"]
+        if getattr(message, "tool_calls", None)
+        for tool_call in message.tool_calls
+        if tool_call.get("name") == "update_address"
+    )
+    assert call["args"]["request_id"] == selected
+    assert call["id"] == f"call-{selected}"
+    assert done["context"]["pending_tool"]["request_id"] == selected
+    assert done["context"]["pending_tool"]["args"]["request_id"] == selected
+
+    replay = write_mod.update_address.invoke({
+        "order_id": "ORD-PAID-1",
+        "address": "重试不应改成这条",
+        "request_id": selected,
+        "user_id": "u1",
+    })
+    assert replay["replayed"] is True
+    assert replay["result"]["address"] == address
+    conn = sqlite3.connect(seed[1])
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM idempotency WHERE tool_name='update_address' AND request_id=?",
+            (selected,),
+        ).fetchone()[0]
+        stored = conn.execute(
+            "SELECT address FROM customers WHERE customer_id='u1'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+    assert stored == address
 
 
 def test_mutation_incomplete_form_resume_confirm_executes(seed, monkeypatch):

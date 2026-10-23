@@ -1,5 +1,6 @@
 """Shared Form Resume helpers for MutationGraph and HighRiskGraph collection."""
 
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, create_model
@@ -61,3 +62,44 @@ def schema_field_args(values: dict, tool_schema: type[BaseModel] | None) -> dict
         return dict(values)
     allowed = {name for name in tool_schema.model_fields if name != "request_id"}
     return {key: value for key, value in values.items() if key in allowed}
+
+
+def _is_uuid4(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return uuid.UUID(value).version == 4
+    except ValueError:
+        return False
+
+
+def coerce_request_id(*candidates: object) -> str:
+    """First uuid4 among ``candidates``, otherwise a new uuid4.
+
+    Select and Form Resume confirm call this before execute → tools.
+    Empty string, the sentinel null, and any other non-uuid4 are not
+    idempotency keys. ``tools/write.py`` may still replace an empty string
+    with a fresh uuid4; that direct-call safety net is not the MutationGraph
+    path — a retry would miss the previous row.
+    """
+    for value in candidates:
+        if isinstance(value, str) and _is_uuid4(value):
+            return value
+    return str(uuid.uuid4())
+
+
+def stamp_pending_tool_request_id(pending: dict) -> dict:
+    """Copy one uuid4 onto ``pending_tool.request_id`` and ``args.request_id``.
+
+    An empty args dict, or an empty args request_id, must not reach ToolNode:
+    ``write.py`` would mint a new id on every call and break
+    ``(tool_name, request_id)`` replay. A uuid4 already stored by select or
+    confirm is kept, including across recheck → form re-entry.
+    """
+    args = dict(pending.get("args") or {})
+    request_id = coerce_request_id(pending.get("request_id"), args.get("request_id"))
+    args["request_id"] = request_id
+    stamped = dict(pending)
+    stamped["args"] = args
+    stamped["request_id"] = request_id
+    return stamped

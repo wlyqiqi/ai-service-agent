@@ -13,8 +13,8 @@ _Avoid_: 把 HighRisk 审批流称作 Mutation；Mutation 主路径用 create_re
 _Avoid_: 用表单做操作类型选择；自造与 interrupt 无关的第二套挂起语义
 
 **Form Interrupt**:
-Mutation 等人填表的官方挂起：节点内 `interrupt(value=..., response_schema=FormModel)` + checkpointer/`thread_id`。载荷供 UI 渲染；`response_schema`（langgraph≥1.2.12）描述确认提交的 JSON 形状。
-_Avoid_: 用「普通轮 END + Form Pending 假状态」代替 interrupt；图内再发明 confirmation_required 挂起
+Mutation 等人填表的官方挂起：节点内 `interrupt(value=..., response_schema=FormModel)` + checkpointer/`thread_id`。载荷供 UI 渲染；`response_schema`（langgraph≥1.2.12）描述确认提交的 JSON 形状。是否还挂着只看 checkpointer `__interrupt__`（入口用 `pending_form_value`，resume 决策用 `form_gate.decide_form_inbound`）。父图 `execution_status` 在挂起期间可以仍是 `routing`，不能拿 `waiting_confirmation` 当挂起信号。
+_Avoid_: 用「普通轮 END + Form Pending 假状态」代替 interrupt；图内再发明 confirmation_required 挂起；用父图 `execution_status == waiting_confirmation` 判断表单还挂着
 
 **Form Resume**:
 用户提交表单后，经 harness 转为 **`Command(resume=...)`** 续跑同一 thread；resume 值即 `interrupt()` 返回值。Confirm 常见形状含 `action=confirm` 与业务字段；显式 Cancel / Implicit Cancel 为 `action=cancel`（不写库）。对外可仍走 HTTP/SSE，对内必须是官方 resume，而不是再当新用户消息进 Router。
@@ -93,7 +93,7 @@ Seat Takeover 成功后由 Bot 发给客户的短提示（人工已接入）；�
 _Avoid_: 与 HANDOFF_NOTICE 旧「已转接请稍候」混用同一句在申请阶段停 AI
 
 **Seat Takeover**:
-坐席用 Chatwoot 官方 **Take over** 接手：status `open` 且能看到人工 assignee（`assignee_type=User` 或 self-assign）。此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。没有人工 assignee 的 `open`（Agent Bot 失败后系统自动打开）不是接手。若当时有未提交的 Mutation Form Interrupt，先 cancel（不写库）再进 human。
+坐席用 Chatwoot 官方 **Take over** 接手：status `open` 且能看到人工 assignee（`assignee_type=User` 或 self-assign）。此时才将 Handoff Request 转为接入中，并把 Conversation Mode 切为 `human`。无申请时坐席主动 Take over 同样切 `human`。没有人工 assignee 的 `open`（Agent Bot 失败后系统自动打开）不是接手。若当时有未提交的 Mutation Form Interrupt（checkpointer `__interrupt__`，不是父图 `waiting_confirmation`），先 `Command(resume={"action":"cancel"})`（不写库）再进 human。
 _Avoid_: 自定义「同意」卡当作主路径；把系统 bot-error 自动 open 当成人工接入；Bot 或客户路径 `toggle_status(open)`；接管后仍让迟到的表单提交写库
 
 **Handoff Resolve**:

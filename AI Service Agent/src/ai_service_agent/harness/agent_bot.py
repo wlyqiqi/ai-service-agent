@@ -25,7 +25,7 @@ from ai_service_agent.harness.approval_side_channel import (
     parse_approval_form_submission,
     send_approval_form,
 )
-from ai_service_agent.harness.form_events import is_form_interrupt
+from ai_service_agent.harness.form_events import pending_form_value
 from ai_service_agent.harness.form_gate import (
     FormDecisionKind,
     FormInboundKind,
@@ -561,7 +561,7 @@ async def _handle_locked_agent_bot_message(
                     return None
                 if approval_state == "expired":
                     resume_payload = {"result": "expired"}
-                elif is_form_interrupt(interrupt_value):
+                elif pending_form_value(state.interrupts) is not None:
                     # Single decision point (harness/form_gate.py). Executing the
                     # decision — resume + two-phase Implicit Cancel — stays here.
                     decision = decide_form_inbound(
@@ -626,7 +626,7 @@ async def _handle_locked_agent_bot_message(
                 and getattr(graph, "checkpointer", None)
             ):
                 fresh = await graph.aget_state(config)
-                if not fresh.interrupts or not is_form_interrupt(fresh.interrupts[0].value):
+                if pending_form_value(fresh.interrupts) is None:
                     return
             if implicit_cancel:
                 # Phase 1: official cancel resume only — drain events; do not project

@@ -2,6 +2,11 @@
 
 Waiting on a Mutation Form is the checkpoint interrupt. ``form_required`` and
 ``form_rejected`` are derived from that interrupt for clients.
+
+Transport hang checks use ``pending_form_value`` on ``aget_state().interrupts``
+(or the ``__interrupt__`` tuple). Parent ``execution_status`` is not a hang
+signal: the subgraph update often does not merge, so the parent stays
+``routing`` while the form is open (graph-spec §6.2 / state-spec §1).
 """
 
 from __future__ import annotations
@@ -16,6 +21,22 @@ def is_form_interrupt(value) -> bool:
     if value.get("type") in _OTHER_INTERRUPT_TYPES:
         return False
     return isinstance(value.get("tool"), str) and isinstance(value.get("order_candidates"), list)
+
+
+def pending_form_value(interrupts) -> dict | None:
+    """Unsubmitted Form Interrupt, or None.
+
+    Single hang signal for Transport / entry (including Seat Takeover).
+    Pass checkpointer interrupts only — never parent execution status.
+    Resume policy for that payload stays in ``form_gate.decide_form_inbound``.
+    """
+    if not interrupts:
+        return None
+    first = interrupts[0]
+    value = getattr(first, "value", first)
+    if is_form_interrupt(value):
+        return value
+    return None
 
 
 def project_form_interrupt(interrupt) -> dict | None:
