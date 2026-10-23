@@ -5,6 +5,7 @@ from ai_service_agent.config import (
     get_settings,
     make_fallback_model,
     make_model,
+    make_mutation_select_model,
     make_router_fallback_model,
     make_router_model,
     make_select_model,
@@ -45,6 +46,7 @@ def make_ai_graph(model, checkpointer, registry=None, order_repository=None):
         router_model=make_router_model() if use_profiles else model,
         router_fallback_model=make_router_fallback_model() if use_profiles else None,
         select_model=make_select_model() if use_profiles else model,
+        mutation_select_model=make_mutation_select_model() if use_profiles else model,
         fallback_model=make_fallback_model() if use_profiles else model,
     )
 

@@ -47,7 +47,7 @@ def test_build_graph_compiles_async_llm_timeout_policies(monkeypatch):
 
         mutation_graph = graph.nodes["mutation_graph"].bound
         assert_async_timeout(
-            mutation_graph.nodes["select_llm"],
+            mutation_graph.nodes["mutation_select_llm"],
             TimeoutPolicy(run_timeout=settings.llm_node_timeout_seconds),
         )
 

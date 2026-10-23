@@ -56,7 +56,7 @@ from ai_service_agent.graph.workflows.safety import (
     make_safety_check_node,
     safety_final,
 )
-from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
 
@@ -206,7 +206,7 @@ def make_mutation_graph(
             return "precheck_fetch"
         if ctx.get("precheck_reason"):
             return "safety_final"
-        # ADR 0004: Operation Clarify (and max-turn fallback) finished inside select_llm.
+        # ADR 0004: Operation Clarify (and max-turn fallback) finished inside mutation_select_llm.
         if state.get("execution_status") in ("clarifying", "completed"):
             return "end"
         return "safety_final"
@@ -231,8 +231,8 @@ def make_mutation_graph(
         error_handler=make_subgraph_error_handler("finalize_failed"),
     )
     builder.add_node(
-        "select_llm",
-        make_select_node(model, "mutation", tools, registry),
+        "mutation_select_llm",
+        make_mutation_select_node(model, tools, registry),
         retry_policy=RETRY_LLM,
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
@@ -262,9 +262,9 @@ def make_mutation_graph(
     builder.add_node("finalize_ok", finalize_ok)
     builder.add_node("finalize_rejected", finalize_rejected)
     builder.add_node("finalize_failed", finalize_failed)
-    builder.add_edge(START, "select_llm")
+    builder.add_edge(START, "mutation_select_llm")
     builder.add_conditional_edges(
-        "select_llm",
+        "mutation_select_llm",
         _select_target,
         {
             "precheck_fetch": "precheck_fetch",

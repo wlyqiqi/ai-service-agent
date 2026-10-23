@@ -13,7 +13,7 @@ from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph.builder import build_graph
 from ai_service_agent.graph.workflows.copy import clarify_missing_text
 from ai_service_agent.graph.workflows.copy import clarify_fallback_text
-from ai_service_agent.graph.workflows.select import make_select_node
+from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
 from ai_service_agent.harness.streaming import event_stream
 from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
@@ -83,7 +83,9 @@ def test_config_clarify_max_turns_default():
 async def test_select_incomplete_mutation_sets_pending_tool_for_form():
     """T7: mutation select 缺参 -> pending_tool（供 Form Interrupt），不再 clarify_missing。"""
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {})])
-    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    node = make_mutation_select_node(
+        model, DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
     out = await node({"messages": [HumanMessage(content="改一下收货地址")], "context": {"clarify_count": 1}})
     assert "clarify_missing" not in out["context"]
     pending = out["context"]["pending_tool"]
@@ -99,7 +101,9 @@ async def test_select_invoice_placeholders_mutation_pending_not_invalid_args():
         "create_invoice",
         {"order_id": "", "amount": 0, "company": "", "tax_no": ""},
     )])
-    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    node = make_mutation_select_node(
+        model, DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
     out = await node({"messages": [HumanMessage(content="我要开发票")], "context": {}})
     assert "clarify_missing" not in out["context"]
     assert out["context"]["pending_tool"]["tool"] == "create_invoice"
@@ -118,7 +122,9 @@ async def test_select_invoice_non_positive_amount_mutation_keeps_other_prefills(
             "tax_no": "91110108MA01AB12CD",
         },
     )])
-    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    node = make_mutation_select_node(
+        model, DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
     out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
     assert "clarify_missing" not in out["context"]
     args = out["context"]["pending_tool"]["args"]
@@ -140,7 +146,9 @@ async def test_select_invoice_bad_amount_type_still_invalid_args():
             "tax_no": "91110108MA01AB12CD",
         },
     )])
-    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    node = make_mutation_select_node(
+        model, DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
     out = await node({"messages": [HumanMessage(content="帮我开票")], "context": {}})
     assert out["context"].get("precheck_reason") == "invalid_args"
     assert "clarify_missing" not in out["context"]
@@ -149,7 +157,9 @@ async def test_select_invoice_bad_amount_type_still_invalid_args():
 @pytest.mark.asyncio
 async def test_select_complete_resets_clarify_count():
     model = ToolCallingFakeModel(responses=[select_json_message("update_address", {"order_id": "ORD-PAID-1", "address": "北京市朝阳区"})])
-    node = make_select_node(model, "mutation", DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY)
+    node = make_mutation_select_node(
+        model, DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"), DEFAULT_TOOL_REGISTRY
+    )
     out = await node({"messages": [HumanMessage(content="改地址")], "context": {"clarify_count": 1}})
     assert out["context"]["clarify_count"] == 0  # 完整 select 清零（D1）
     assert out["context"]["pending_tool"]["tool"] == "update_address"
