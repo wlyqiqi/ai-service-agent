@@ -378,6 +378,22 @@
       });
       // Identity must land before the thread opens; otherwise AgentBot sees nil identifier.
       await new Promise((resolve) => window.setTimeout(resolve, 500));
+
+      // Chatwoot #15933: setUser can switch contact_inbox while ActionCable stays on the
+      // old pubsub_token — seat/dashboard sees bot replies, Widget never gets them until
+      // the host page reloads and the iframe resubscribes. One reload per bound user.
+      const syncKey = `cw_pubsub_sync_${websiteToken}_${userId}`;
+      try {
+        if (window.sessionStorage.getItem(syncKey) !== "1") {
+          window.sessionStorage.setItem(syncKey, "1");
+          updateServiceStatus("正在同步客服通道…");
+          window.location.reload();
+          return false;
+        }
+      } catch (error) {
+        /* sessionStorage may be unavailable */
+      }
+
       window.$chatwoot.toggleBubbleVisibility("show");
       window.$chatwoot.toggle("open");
       updateServiceStatus("客服已开启", "ready");
