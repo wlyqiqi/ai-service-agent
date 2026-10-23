@@ -14,8 +14,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler, make_timeout_policy
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
 from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
-from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.testing import ToolCallingFakeModel, select_json_message
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.registry import ToolMeta, ToolRegistry
@@ -337,7 +337,7 @@ def test_select_real_model_no_tool_call_high_risk_routes_to_tier_clarify():
         ToolMeta(name="cancel_order", description="取消订单", min_risk_level="high_risk"),
         tool,
     )
-    node = make_select_node(model, "high_risk", [tool], registry)
+    node = make_high_risk_select_node(model, [tool], registry)
 
     output = _select_result(node({
         "messages": [HumanMessage(content="帮我处理一下")],

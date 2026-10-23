@@ -107,7 +107,7 @@ def build_graph(
     order_repository: OrderRepository | None = None,
     router_model=None,
     router_fallback_model=None,
-    select_model=None,
+    high_risk_select_model=None,
     mutation_select_model=None,
     fallback_model=None,
 ):
@@ -115,15 +115,17 @@ def build_graph(
 
     registry 参数：按档注入 mutation / high_risk 子图工具（tool-spec §1 分层注入，Task 4/5 消费）。
     model：ReadGraph 模型（向后兼容测试单一 Fake）。
-    router_model / router_fallback_model / select_model / mutation_select_model / fallback_model：
-    缺省回落为 model（Fake 单测零改动；router_fallback_model 缺省为 None，不启用二段 Router 调用）。
-    mutation_select_model 缺省回落 select_model 再回落 model（Mutation Select 与 HighRisk select 可分实例）。
+    router_model / router_fallback_model / high_risk_select_model / mutation_select_model /
+    fallback_model：缺省回落为 model（Fake 单测零改动；router_fallback_model 缺省为 None，
+    不启用二段 Router 调用）。Mutation Select 与 HighRisk Select 分实例（ADR 0005）。
     """
     repository = order_repository or SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
     reg = registry if registry is not None else make_tool_registry(repository)
-    select = select_model if select_model is not None else model
+    high_risk_select = (
+        high_risk_select_model if high_risk_select_model is not None else model
+    )
     mutation_select = (
-        mutation_select_model if mutation_select_model is not None else select
+        mutation_select_model if mutation_select_model is not None else model
     )
     fallback = fallback_model if fallback_model is not None else model
     guard = make_guard_node()
@@ -137,7 +139,7 @@ def build_graph(
         order_repository=repository,
     )
     high_risk_graph = make_high_risk_graph(
-        select,
+        high_risk_select,
         reg.for_risk_level("high_risk"),
         reg,
         tool_hooks=tool_hooks,

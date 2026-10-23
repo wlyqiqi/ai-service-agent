@@ -148,7 +148,8 @@ def test_mutation_graph_node_is_mutation_select_llm():
     assert "mutation_select_llm" in mutation_graph.nodes
     assert "select_llm" not in mutation_graph.nodes
     high_risk_graph = graph.nodes["high_risk_graph"].bound
-    assert "select_llm" in high_risk_graph.nodes
+    assert "high_risk_select_llm" in high_risk_graph.nodes
+    assert "select_llm" not in high_risk_graph.nodes
     assert "mutation_select_llm" not in high_risk_graph.nodes
 
 

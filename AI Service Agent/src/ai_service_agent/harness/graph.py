@@ -4,11 +4,11 @@ from langchain_openai import ChatOpenAI
 from ai_service_agent.config import (
     get_settings,
     make_fallback_model,
+    make_high_risk_select_model,
     make_model,
     make_mutation_select_model,
     make_router_fallback_model,
     make_router_model,
-    make_select_model,
 )
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph.builder import build_graph
@@ -27,8 +27,9 @@ def make_ai_graph(model, checkpointer, registry=None, order_repository=None):
     缺省 registry 经 make_tool_registry(order_repository) 构建，high-risk 写工具委托
     OrderRepository（ADR 2026-10-10）。
 
-    Fake / 非 ChatOpenAI：四档共用传入 model（单测零改动）。
-    生产 ChatOpenAI：router / select / fallback 走对应工厂；model 作 read。
+    Fake / 非 ChatOpenAI：各档共用传入 model（单测零改动）。
+    生产 ChatOpenAI：router / high_risk_select / mutation_select / fallback 走对应工厂；
+    model 作 read。
     """
     repository = order_repository or SQLiteOrderRepository(get_settings().mock_ecommerce_db_path)
     reg = registry if registry is not None else make_tool_registry(repository)
@@ -45,7 +46,7 @@ def make_ai_graph(model, checkpointer, registry=None, order_repository=None):
         order_repository=repository,
         router_model=make_router_model() if use_profiles else model,
         router_fallback_model=make_router_fallback_model() if use_profiles else None,
-        select_model=make_select_model() if use_profiles else model,
+        high_risk_select_model=make_high_risk_select_model() if use_profiles else model,
         mutation_select_model=make_mutation_select_model() if use_profiles else model,
         fallback_model=make_fallback_model() if use_profiles else model,
     )
