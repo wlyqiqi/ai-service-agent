@@ -38,6 +38,7 @@ class ToolMeta:
 - 工具函数签名：参数带类型注解与描述；通过 `InjectedState` / `InjectedStore` / `ToolRuntime` 访问会话/记忆/运行时。
 - 返回值必须是 JSON 可序列化结构；工具内部异常由 `handle_tool_errors` 归一化，不得裸抛到图外。
 - 写工具必须支持幂等键（`idempotent=True` + 参数带 `request_id`），防重放。
+- **`request_id` 注入时机（2026-10-23）**：`request_id` 由图层在 execute **之前**确定——`select` 生成并校验 uuid、Form Interrupt 以 Form Resume 字段值重写时保留、`recheck` 检查缺失（`missing_request_id`）。工具层的兜底生成（`tools/params.py::ensure_request_id`）**仅作防御**，命中即记 warning，不得当作主流程：兜底补出的号跨不了请求，无法承接客户端重试。
 - 工具自身不承载横切逻辑（事件、观测、审计、限流等）：由 harness hook 在工具执行前后统一挂接（见 `architecture.md` §8.1）。
 - **订单边界（2026-10-10）**：订单读写工具不直接打开数据库连接；实现通过 `OrderRepository` 访问订单事实与命令。高风险写工具由 `make_cancel_order_tool(order_repository)` / `make_refund_apply_tool(order_repository)` 工厂构造；SQLite 只保留在 `SQLiteOrderRepository` adapter 内，后续可替换为 Postgres / HTTP / ERP adapter。
 

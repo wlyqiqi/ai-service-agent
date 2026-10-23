@@ -13,6 +13,7 @@ from pydantic import Field
 from pydantic import BaseModel, ConfigDict
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.tools.params import ensure_request_id
 
 
 class UpdateAddressArgs(BaseModel):
@@ -78,9 +79,13 @@ def _now() -> str:
 
 
 def _run_db_mutation(tool_name: str, request_id: str, user_id: str, produce, validate_replay=None) -> dict:
-    """复合幂等键 = (tool_name, request_id)，与业务写入同连接同事务提交。"""
+    """复合幂等键 = (tool_name, request_id)，与业务写入同连接同事务提交。
+
+    request_id 兜底生成统一收口在此（未登录先返回，不白生成也不误报）。
+    """
     if not user_id:
         return {"error": "not_logged_in"}
+    request_id = ensure_request_id(request_id, tool_name=tool_name)
     try:
         conn = _write_connect()
     except (sqlite3.Error, OSError):
@@ -150,7 +155,7 @@ def update_address(
             return {"error": "not_found", "user_id": user_id}
         conn.execute("UPDATE customers SET address=? WHERE customer_id=?", (address, user_id))
         return {"field": "update_address", "order_id": order_id, "address": address}
-    return _run_db_mutation("update_address", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("update_address", request_id, user_id, _produce)
 
 
 @tool
@@ -170,7 +175,7 @@ def update_phone(
             return {"error": "not_found", "user_id": user_id}
         conn.execute("UPDATE customers SET phone=? WHERE customer_id=?", (phone, user_id))
         return {"field": "update_phone", "phone": phone}
-    return _run_db_mutation("update_phone", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("update_phone", request_id, user_id, _produce)
 
 
 @tool
@@ -189,7 +194,7 @@ def update_order_note(
             return boundary
         conn.execute("UPDATE orders SET note=? WHERE order_id=?", (note, order_id))
         return {"field": "update_order_note", "order_id": order_id, "note": note}
-    return _run_db_mutation("update_order_note", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("update_order_note", request_id, user_id, _produce)
 
 
 @tool
@@ -217,7 +222,7 @@ def create_invoice(
             (invoice_id, user_id, order_id, amount, company, tax_no, "issued", _now()),
         )
         return {"field": "create_invoice", "invoice_id": invoice_id, "order_id": order_id, "amount": amount}
-    return _run_db_mutation("create_invoice", request_id or str(uuid4()), user_id, _produce_db)
+    return _run_db_mutation("create_invoice", request_id, user_id, _produce_db)
 
 
 @tool
@@ -241,7 +246,7 @@ def create_service_ticket(
             (ticket_id, user_id, order_id, reason, "open", _now()),
         )
         return {"field": "create_service_ticket", "ticket_id": ticket_id, "order_id": order_id, "reason": reason}
-    return _run_db_mutation("create_service_ticket", request_id or str(uuid4()), user_id, _produce)
+    return _run_db_mutation("create_service_ticket", request_id, user_id, _produce)
 
 
 def make_cancel_order_tool(order_repository):
@@ -256,7 +261,10 @@ def make_cancel_order_tool(order_repository):
         """取消本人订单；需人工审批。
         参数：order_id（必填）；reason 可选。
         """
-        return order_repository.cancel_order(order_id, user_id, reason, request_id)
+        return order_repository.cancel_order(
+            order_id, user_id, reason,
+            ensure_request_id(request_id, tool_name="cancel_order"),
+        )
 
     return cancel_order
 
@@ -274,6 +282,9 @@ def make_refund_apply_tool(order_repository):
         """申请订单退款；需人工审批。售后咨询用 create_service_ticket。
         参数：order_id（必填）；amount、reason 可选。
         """
-        return order_repository.refund_apply(order_id, user_id, amount, reason, request_id)
+        return order_repository.refund_apply(
+            order_id, user_id, amount, reason,
+            ensure_request_id(request_id, tool_name="refund_apply"),
+        )
 
     return refund_apply
