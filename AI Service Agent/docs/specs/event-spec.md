@@ -24,7 +24,7 @@
 | `safety_rejected` | `{rule, reason}` | 安全预检拒绝（见 safety-spec.md） |
 | `approval_required` | `{approval_id, summary, expires_at}` | HighRisk interrupt（见 approval-spec.md） |
 | `approval_updated` | `{approval_id, status}` | 审批状态变更 |
-| `clarification_required` | `{missing: [...], reason?: "tier_mismatch" \| "operation_unclear", candidates?: [...]}` | **HighRisk** select 参数不完整 / 低档工具档不匹配 / 无 tool_call（tier_mismatch）→ clarify（普通轮，见 graph-spec.md §6.3）；**Operation Clarify**（mutation tool 未定：入口层 Hybrid Tool Resolution，或 Mutation select 在 `tool_choice=auto` 下未发起 tool_call 的逃逸，`reason:"operation_unclear"`，不发 `form_required`）；Mutation **档不匹配** `tier_mismatch` 仍可发。Mutation 业务字段缺参**不再**走本事件（改由 Mutation Form / `form_required`）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
+| `clarification_required` | `{missing: [...], reason?: "tier_mismatch" \| "operation_unclear", candidates?: [...]}` | **HighRisk** select 参数不完整 / 低档工具档不匹配 / 无 tool_call（tier_mismatch）→ clarify（普通轮，见 graph-spec.md §6.3）；**Operation Clarify**（Mutation `select_llm` 在 `tool_choice=auto` 下未发起 tool_call，同一次调用用响应 content 追问，`reason:"operation_unclear"`，不发 `form_required`；见 ADR 0004）。Mutation 不再发 `tier_mismatch`。Mutation 业务字段缺参**不再**走本事件（改由 Mutation Form / `form_required`）。`candidates` 仅用于 cancel-order 缺单号选择，含最多最新 10 个可取消已付款订单（空数组表示没有可取消已付款订单）；其他 clarify 事件不应携带该字段 |
 | `confirmation_required` | `{summary}` | **已弃用（Mutation 主路径）**：旧聊天确认 interrupt。Mutation 写路径现用 Form Interrupt → `form_required` / `form_rejected`（§2.2）。保留类型仅为兼容旧客户端 / harness 映射；新实现不得再从 MutationGraph 发出 |
 | `confirmation_updated` | `{action}` | 旧 Mutation 确认结果（confirm / cancel）；主路径由 Form Resume 取代，不再作为 Mutation happy path 事件 |
 | `form_required` | 见 §2.2 | Mutation **Form Interrupt** 首次挂起的 SSE 投影（权威挂起态仍是 checkpointer `__interrupt__`，见 `mutation-form-interrupt-spec.md` / `CONTEXT.md`） |
@@ -70,7 +70,7 @@
 
 | 字段 | 来源 | 说明 |
 |---|---|---|
-| `tool` | `value.tool` | 已确定的 mutation tool 名（Operation Clarify 完成后才进子图） |
+| `tool` | `value.tool` | 已确定的 mutation tool 名（Operation Clarify 问清 tool 后才 Form Interrupt） |
 | `order_candidates` | `value.order_candidates` | Order Picker 候选项（始终展示；不得因仅一笔而省略） |
 | `fields` / `prefills` | `value.fields` / `value.prefills` | 字段定义与聊天已收集预填（具体键由后续 Mutation Form 实现票定稿） |
 | `errors` | `value.errors` | **仅 `form_rejected` 必填/非空**：字段级或业务级错误列表/映射，供同一表单展示 |
@@ -97,7 +97,7 @@
       # 静默；不重推旧 form；新 turn 按路由发 token/tool_*/form_*/done 等
 ```
 
-Mutation happy path **不再**经过聊天 `clarification_required`（缺业务字段）或 `confirmation_required`。tool 未定时的 Operation Clarify 仍可在进图前发 `clarification_required`（`reason:"operation_unclear"`）。
+Mutation happy path **不再**经过聊天 `clarification_required`（缺业务字段）或 `confirmation_required`。tool 未定时的 Operation Clarify 由 Mutation `select_llm` 发 `clarification_required`（`reason:"operation_unclear"`）。
 
 ## 3. 事件流时序（示例：HighRisk turn）
 

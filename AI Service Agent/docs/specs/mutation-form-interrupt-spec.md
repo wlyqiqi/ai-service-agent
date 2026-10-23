@@ -56,7 +56,7 @@ For **`update_address`**, product UX is locked to four outbound states (AgentBot
 
 - Prefer LangGraph official HITL: Form Interrupt = `interrupt(value=..., response_schema=...)`; Form Resume = `Command(resume=...)` with checkpointer and `thread_id`.
 - Do not maintain a parallel “Form Pending” session flag as source of truth; checkpoint interrupts are authoritative. SSE `form_required` / `form_rejected` are projections only.
-- Operation Clarify (vague “modify order”) stays in the entry/intent layer before MutationGraph. MutationGraph assumes tool is already known (Hybrid Tool Resolution: high confidence map to tool; low confidence chat clarify first).
+- Operation Clarify (vague “modify order”) lives in MutationGraph `select_llm` (ADR 0004): one LLM call either emits a tool_call or natural-language clarify; next user turn re-enters the top-level graph. Field collection after tool identity is known still uses Form Interrupt.
 - Closed MutationGraph: no internal handoff to Read/HighRisk/Fallback for business routing. Handoff remains the existing unified handoff interrupt if ever needed.
 - Mutation tools only (address/phone/note/invoice/service ticket). HighRisk cancel/refund unchanged.
 - Confirm = clicking Confirm / primary submit emits Form Resume with field values; no second confirmation interrupt and no separate confirmed flag gate beyond “resume happened with submit payload”.
@@ -78,7 +78,7 @@ For **`update_address`**, product UX is locked to four outbound states (AgentBot
 - MutationGraph workflow rebuild around Form Interrupt / Form Resume / ToolNode.
 - Conversation Runtime / AgentBot entry: if thread has pending Form Interrupt, handle Form Resume (confirm/cancel) or Implicit Cancel (cancel resume then new turn); do not tip+re-push as the main pending-text path; do not re-Router a Form Resume into a competing path.
 - Event protocol: form_required / form_rejected shapes for clients; Implicit Cancel then new-turn events per `event-spec.md` §2.2.
-- Select/intent layer: only ensure tool identity before entering Mutation; stop owning multi-turn field clarification for mutation main path.
+- Select inside MutationGraph: ensure tool identity (or Operation Clarify in the same call); stop owning multi-turn field clarification for mutation main path.
 - Frontend / Chatwoot form rendering: drive from interrupt value + response_schema; Confirm/Cancel → resume API already used for approvals/confirmations where possible; Adapter owns four-state projection for `update_address`.
 - Order repository remains the fact source for candidates and precheck; no new dual write model.
 
@@ -87,7 +87,7 @@ For **`update_address`**, product UX is locked to four outbound states (AgentBot
 - Single source of truth for waiting-on-form: graph interrupt.
 - Entry-layer resume scheduling remains generic over interrupt types (no in-graph ResumeHandler node; see `graph-spec.md` §3).
 - Form field schema derived from tool/graph, not duplicated as a second registry in the server.
-- Subgraph does not absorb Operation Clarify.
+- Subgraph absorbs Operation Clarify only inside Mutation `select_llm` (no second clarify LLM node; no entry Hybrid).
 
 ## Testing Decisions
 

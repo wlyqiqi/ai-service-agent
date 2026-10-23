@@ -25,16 +25,12 @@ Mutation Form 中订单字段一律以下拉选择（含仅一笔可操作订单
 _Avoid_: 单笔自动填 order_id；聊天里口述选单后再出表单
 
 **Operation Clarify**:
-tool 未定时用**聊天**问清要做什么；问清后再进 MutationGraph 发 Form Interrupt。发生在进子图之前。
-_Avoid_: 低置信时强制表单点选操作类型；在 MutationGraph 内聊天选 tool
+Mutation 内 tool 未定（专用 `select_llm` 未发出 tool_call）时，由**同一次** select 响应的自然语言追问问清要办哪种写操作；本轮普通 END，用户下一句从总图再进。问清并选出 tool 后才 Form Interrupt。Mutation 不设 `tier_clarify` 固定澄清；未绑定工具走拒绝。
+_Avoid_: 用表单做操作类型菜单；入口层 Hybrid / 子图外专用澄清节点；再挂第二个 LLM 只为生成追问；Mutation 固定模板澄清（含 tier_clarify）；与 HighRisk 共用同一套 select 提示词作为长期形态
 
 **Form-Only Write**:
 Mutation 写库只接受 Form Resume `action=confirm` 成功路径上的结构化值；Form Interrupt 挂起期间纯文本不得写库。挂起中的非 Form 提交可由 Transport 走 Implicit Cancel 清 interrupt 后再按新 turn 路由，仍不得把该纯文本当写库真源。
 _Avoid_: 文本降级 clarify 写库；把挂起期间的纯文本当表单字段写入
-
-**Hybrid Tool Resolution**:
-高置信：确定性映射到唯一 tool 后 Form Interrupt；低置信：Operation Clarify（聊天）。
-_Avoid_: 写路径 ReAct
 
 **Closed MutationGraph**:
 子图不内跳 Read/HighRisk/Fallback；校验/预检失败则**同一节点再次 interrupt**（或回 ensure_form 再 interrupt）以原地更新同一表单会话；新意图在取消或完成后下一 turn 重走总图 Router。

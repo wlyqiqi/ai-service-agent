@@ -1,9 +1,10 @@
 """MutationGraph（graph-spec §6.2）：显式 workflow，非 ReAct。
 
-select（tool 已知即可，业务字段可不全）-> 安全预检（缺参时放行至表单）
+select（tool 已知即可，业务字段可不全；无 tool_call 则内联 Operation Clarify）
+-> 安全预检（缺参时放行至表单）
 -> prepare_form -> Form Interrupt -> Form Resume(confirm/cancel)
 -> recheck -> execute(写工具) / 取消收尾。
-不再走聊天 clarification_required（缺业务字段）或 confirmation_required。
+业务字段缺参不再走聊天 clarification_required / confirmation_required。
 Confirm 后校验/业务预检失败：条件边回到 form_interrupt，同一 form_session_id
 再次 Form Interrupt（SSE 投影 form_rejected），不走 safety_rejected 收尾。
 Confirm 的写库参数来自 Form Resume 字段值（含 Order Picker 的 order_id），
@@ -55,7 +56,6 @@ from ai_service_agent.graph.workflows.safety import (
     make_safety_check_node,
     safety_final,
 )
-from ai_service_agent.graph.workflows.clarify import make_clarify_node
 from ai_service_agent.graph.workflows.select import make_select_node
 from ai_service_agent.tools.registry import ToolRegistry
 
@@ -202,14 +202,13 @@ def make_mutation_graph(
 
     def _select_target(state: dict) -> str:
         ctx = state.get("context", {})
-        if (
-            "clarify_missing" in ctx
-            or ctx.get("tier_clarify")
-            or ctx.get("operation_clarify")
-        ):
-            return "clarify"
         if "pending_tool" in ctx:
             return "precheck_fetch"
+        if ctx.get("precheck_reason"):
+            return "safety_final"
+        # ADR 0004: Operation Clarify (and max-turn fallback) finished inside select_llm.
+        if state.get("execution_status") in ("clarifying", "completed"):
+            return "end"
         return "safety_final"
 
     def _safety_target(state: dict) -> str:
@@ -237,7 +236,6 @@ def make_mutation_graph(
         retry_policy=RETRY_LLM,
         timeout=make_timeout_policy(get_settings().llm_node_timeout_seconds),
     )
-    builder.add_node("clarify", make_clarify_node())
     builder.add_node("precheck_fetch", make_precheck_fetch_node(order_repository))
     builder.add_node("safety_check", make_safety_check_node("mutation", registry))
     builder.add_node("safety_final", safety_final)
@@ -266,10 +264,14 @@ def make_mutation_graph(
     builder.add_node("finalize_failed", finalize_failed)
     builder.add_edge(START, "select_llm")
     builder.add_conditional_edges(
-        "select_llm", _select_target,
-        {"clarify": "clarify", "precheck_fetch": "precheck_fetch", "safety_final": "safety_final"},
+        "select_llm",
+        _select_target,
+        {
+            "precheck_fetch": "precheck_fetch",
+            "safety_final": "safety_final",
+            "end": END,
+        },
     )
-    builder.add_edge("clarify", END)
     builder.add_edge("precheck_fetch", "safety_check")
     builder.add_conditional_edges(
         "safety_check", _safety_target, {"prepare_form": "prepare_form", "safety_final": "safety_final"}

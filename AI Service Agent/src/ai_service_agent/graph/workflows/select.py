@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.tools import BaseTool
 from langchain_core.runnables import RunnableConfig
@@ -21,11 +21,16 @@ from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 
 from ai_service_agent.domain.orders import OrderRepository, OrderRepositoryUnavailable
+from ai_service_agent.graph.workflows.copy import clarify_fallback_text, operation_clarify_text
 from ai_service_agent.graph.workflows.safety import RISK_ORDER, incomplete_business_fields
 from ai_service_agent.tools.params import is_absent_sentinel
 from ai_service_agent.tools.registry import ToolRegistry
 from ai_service_agent.graph.runtime_context import GraphContext
-from ai_service_agent.prompts import SELECT_BINDTOOLS_TEMPLATE, SELECT_SYSTEM_TEMPLATE
+from ai_service_agent.prompts import (
+    MUTATION_SELECT_BINDTOOLS_TEMPLATE,
+    SELECT_BINDTOOLS_TEMPLATE,
+    SELECT_SYSTEM_TEMPLATE,
+)
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.context.builders import build_recent_visible_context
 from ai_service_agent.graph.context.policy import make_select_policy
@@ -241,25 +246,55 @@ def make_select_node(
         return {"context": {**state.get("context", {}), "clarify_missing": missing}}
 
     def _tier_clarify(state: dict, tool_name: str) -> dict:
-        # B2b：已注册低档工具在写图内被选中 = 意图与风险档不匹配 -> 澄清（普通轮）。
-        # 不 reject（工具真实存在）、不进闸门、不执行。
+        # HighRisk B2b：已注册低档工具在写图内被选中 = 意图与风险档不匹配 -> 澄清（普通轮）。
+        # Mutation（ADR 0004）不再走此支路，见下方 unknown_tool。
         return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
 
-    def _no_tool_clarify(state: dict) -> dict:
-        """tool_choice=auto 且模型未发起 tool_call：聊天澄清，不 reject。
-
-        Mutation → Operation Clarify（tool 未定）；HighRisk → tier clarify。
-        """
+    def _operation_clarify_inline(state: dict, content: str) -> dict:
+        """Mutation ADR 0004：无 tool_call 时同一次 select 用 content 追问并 END。"""
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("pending_tool", None)
-        if tier == "high_risk":
-            ctx.pop("operation_clarify", None)
-            # Truthy marker only; clarify does not use the value as a tool name.
-            ctx["tier_clarify"] = True
-            return {"context": ctx}
         ctx.pop("tier_clarify", None)
-        ctx["operation_clarify"] = True
+        ctx.pop("operation_clarify", None)
+        ctx.pop("cancellation_candidates", None)
+        count = int(ctx.get("clarify_count", 0))
+        max_turns = get_settings().clarify_max_turns
+        if count >= max_turns:
+            return {
+                "messages": [AIMessage(content=clarify_fallback_text())],
+                "context": {**ctx, "clarify_count": count + 1},
+                "execution_status": "completed",
+            }
+        text = (content or "").strip() or operation_clarify_text()
+        try:
+            get_stream_writer()(
+                {
+                    "type": "clarification_required",
+                    "data": {"missing": [], "reason": "operation_unclear"},
+                }
+            )
+        except RuntimeError:
+            pass
+        return {
+            "messages": [AIMessage(content=text)],
+            "context": {**ctx, "clarify_count": count + 1},
+            "execution_status": "clarifying",
+        }
+
+    def _no_tool_clarify(state: dict, content: str = "") -> dict:
+        """tool_choice=auto 且模型未发起 tool_call：聊天澄清，不 reject。
+
+        Mutation → 同一次 select 内联 Operation Clarify；HighRisk → tier clarify 节点。
+        """
+        if tier == "mutation":
+            return _operation_clarify_inline(state, content)
+        ctx = {**state.get("context", {})}
+        ctx.pop("clarify_missing", None)
+        ctx.pop("pending_tool", None)
+        ctx.pop("operation_clarify", None)
+        # Truthy marker only; clarify does not use the value as a tool name.
+        ctx["tier_clarify"] = True
         return {"context": ctx}
 
     def _partial_args_for_form(args: dict, meta) -> dict:
@@ -301,6 +336,11 @@ def make_select_node(
         allowed = {t.name for t in selected_tools}
         tool_list = "\n".join(lines_by_name[t.name] for t in selected_tools)
         examples = _build_examples(selected_tools, registry)
+        bindtools_template = (
+            MUTATION_SELECT_BINDTOOLS_TEMPLATE
+            if tier == "mutation"
+            else SELECT_BINDTOOLS_TEMPLATE
+        )
         if is_fake:
             messages = _budgeted_select_messages(
                 state,
@@ -313,7 +353,11 @@ def make_select_node(
             resp = await bound.ainvoke(messages, config=config)
             try:
                 payload = json.loads(resp.content)
-                tool_name = payload["tool"]
+                tool_name = payload.get("tool")
+                if not tool_name:
+                    return _no_tool_clarify(
+                        state, str(payload.get("content") or payload.get("clarify") or "")
+                    )
                 args = dict(payload.get("args") or {})
             except Exception:
                 return _reject(state, "select_parse_failed")
@@ -321,14 +365,14 @@ def make_select_node(
             messages = _budgeted_select_messages(
                 state,
                 selected_tools,
-                SystemMessage(content=SELECT_BINDTOOLS_TEMPLATE.format(
+                SystemMessage(content=bindtools_template.format(
                     tool_list=tool_list,
                     examples=examples,
                 )),
             )
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
-                return _no_tool_clarify(state)
+                return _no_tool_clarify(state, str(result.content or ""))
             tool_call = result.tool_calls[0]
             tool_name = tool_call["name"]
             args = dict(tool_call.get("args") or {})
@@ -376,7 +420,8 @@ def make_select_node(
         if route_allowed is not None and tool_name not in route_allowed:
             return _reject(state, "tool_not_allowed")
         if tool_name not in allowed:
-            if RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
+            # Mutation ADR 0004: no tier_clarify fixed-copy path — reject unbound tools.
+            if tier == "high_risk" and RISK_ORDER[meta.min_risk_level] < RISK_ORDER[tier]:
                 return _tier_clarify(state, tool_name)
             return _reject(state, "unknown_tool")
         if meta.schema is not None:

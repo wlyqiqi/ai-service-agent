@@ -165,8 +165,8 @@ def test_select_json_tool_list_uses_short_meta_description():
     assert "需退款走 refund_apply" not in model.seen_system
 
 
-def test_select_bindtools_system_states_ticket_versus_refund_boundary():
-    """真模型 Select 与 fake 同规则语义：工单跟进 ≠ 资金退回；输出仍为 tool_call。"""
+def test_select_mutation_bindtools_prompt_allows_inline_clarify():
+    """ADR 0004: Mutation bind_tools prompt asks for tool_call or natural-language clarify."""
     bound_model = AsyncMock()
     bound_model.ainvoke.return_value = AIMessage(
         content="",
@@ -183,9 +183,10 @@ def test_select_bindtools_system_states_ticket_versus_refund_boundary():
 
     assert model.bind_tools.call_args == call([tool], tool_choice="auto")
     system = bound_model.ainvoke.await_args.args[0][0].content
+    assert "写操作选择器" in system
+    assert "不要发起 tool_call" in system
+    assert "追问" in system
     assert "create_service_ticket" in system
-    assert "refund_apply" in system
-    assert "售后" in system and "退款" in system
     assert "最接近" not in system
     assert "只输出 JSON" not in system
 
@@ -253,10 +254,20 @@ def _real_model_node(model, *, tier: str = "mutation") -> tuple[Callable[[dict],
     return make_select_node(model, tier, [tool], registry), tool
 
 
-def test_select_real_model_no_tool_call_routes_to_operation_clarify():
-    """#110: tool_choice=auto 且无 tool_call → Operation Clarify，不是 select_parse_failed。"""
+def test_select_real_model_no_tool_call_mutation_clarifies_inline(monkeypatch):
+    """ADR 0004: Mutation no tool_call → inline Operation Clarify (LLM content), not flag/clarify node."""
+    from ai_service_agent.graph.workflows.copy import operation_clarify_text
+
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.select.get_stream_writer",
+        lambda: events.append,
+    )
     bound_model = AsyncMock()
-    bound_model.ainvoke.return_value = AIMessage(content="", tool_calls=[])
+    bound_model.ainvoke.return_value = AIMessage(
+        content="请问您是要改地址、开票，还是加备注？",
+        tool_calls=[],
+    )
     model = MagicMock()
     model.bind_tools.return_value = bound_model
     node, _ = _real_model_node(model)
@@ -267,10 +278,46 @@ def test_select_real_model_no_tool_call_routes_to_operation_clarify():
         "context": {},
     }))
 
-    assert output["context"].get("operation_clarify") is True
-    assert "precheck_reason" not in output["context"]
+    assert output["execution_status"] == "clarifying"
+    assert output["messages"][-1].content == "请问您是要改地址、开票，还是加备注？"
+    assert output["context"].get("clarify_count") == 1
+    assert "operation_clarify" not in output["context"]
     assert "pending_tool" not in output["context"]
-    assert output.get("execution_status") != "completed"
+    assert "precheck_reason" not in output["context"]
+    assert events == [
+        {"type": "clarification_required", "data": {"missing": [], "reason": "operation_unclear"}}
+    ]
+
+    bound_model.ainvoke.return_value = AIMessage(content="", tool_calls=[])
+    empty = _select_result(node({
+        "messages": [HumanMessage(content="帮我弄一下订单")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    assert empty["messages"][-1].content == operation_clarify_text()
+
+
+def test_select_mutation_low_tier_tool_rejects_unknown_tool():
+    """ADR 0004: Mutation unbound / lower-tier tool → unknown_tool, not tier_clarify."""
+    model = ToolCallingFakeModel(responses=[
+        select_json_message("order_lookup", {"order_id": "ORD-1"}),
+    ])
+    node = make_select_node(
+        model,
+        "mutation",
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation")
+        + DEFAULT_TOOL_REGISTRY.for_risk_level("read"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    # No route allowlist: lower-tier registered tool hits tier gate.
+    output = _select_result(node({
+        "messages": [HumanMessage(content="查一下订单")],
+        "user_id": "u1",
+        "context": {},
+    }))
+    assert output["context"].get("precheck_reason") == "unknown_tool"
+    assert "tier_clarify" not in output["context"]
+    assert "pending_tool" not in output["context"]
 
 
 def test_select_real_model_no_tool_call_high_risk_routes_to_tier_clarify():
