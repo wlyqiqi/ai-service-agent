@@ -334,3 +334,69 @@ def test_bind_tools_examples_describe_tool_calls_without_json_payloads():
     assert "refund_apply" not in system
     assert "cancel_order" not in system
     assert "request_id" not in examples
+
+
+def test_inline_clarify_fallback_follows_current_allowlist():
+    """模型没给话术时，兜底文案只列当前白名单能力。
+
+    account_profile_update 的白名单只有改地址/改电话；旧兜底会提到开票和售后，
+    等于告知用户系统此刻不会做的事。
+    """
+    from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    model = ToolCallingFakeModel(
+        responses=[AIMessage(content='{"tool": null, "content": ""}')]
+    )
+    node = make_mutation_select_node(
+        model,
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    output = _select_result(
+        node(
+            {
+                "messages": [HumanMessage(content="帮我弄一下订单")],
+                "allowed_tools": ["update_address", "update_phone"],
+                "context": {},
+            }
+        )
+    )
+    text = output["messages"][-1].content
+    assert output["execution_status"] == "clarifying"
+    assert "改收货地址" in text and "改联系电话" in text
+    assert "开发票" not in text
+    assert "售后" not in text
+    assert "备注" not in text
+
+
+def test_inline_clarify_drops_json_payload_in_content():
+    """模型误把 JSON 载荷当 content 返回时丢弃，改走模板文案。"""
+    from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    model = ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content='{"tool": null, "content": "{\\"tool\\": \\"update_phone\\", \\"args\\": {}}"}'
+            )
+        ]
+    )
+    node = make_mutation_select_node(
+        model,
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    output = _select_result(
+        node(
+            {
+                "messages": [HumanMessage(content="帮我弄一下订单")],
+                "allowed_tools": ["update_phone"],
+                "context": {},
+            }
+        )
+    )
+    text = output["messages"][-1].content
+    assert '"tool"' not in text
+    assert "update_phone" not in text
+    assert "改联系电话" in text

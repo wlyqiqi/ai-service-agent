@@ -15,7 +15,12 @@ from langgraph.config import get_stream_writer
 from pydantic import ValidationError
 
 from ai_service_agent.config import get_settings
-from ai_service_agent.graph.workflows.copy import clarify_fallback_text, operation_clarify_text
+from ai_service_agent.graph.workflows.copy import (
+    CAPABILITY_LABELS,
+    clarify_fallback_text,
+    join_cn,
+    operation_clarify_text,
+)
 from ai_service_agent.graph.workflows.safety import incomplete_business_fields
 from ai_service_agent.graph.workflows.select import (
     _bind_json,
@@ -76,14 +81,6 @@ _MUTATION_MISSING_USER_TEXTS = {
     "create_service_ticket": "我要申请售后",
 }
 
-_CAPABILITY_LABELS = {
-    "update_address": "改收货地址",
-    "update_phone": "改联系电话",
-    "update_order_note": "加订单备注",
-    "create_invoice": "开发票",
-    "create_service_ticket": "申请售后",
-}
-
 _PROFILE_MISSING_PRIORITY = ("update_address", "update_phone")
 _ORDER_MISSING_PRIORITY = ("update_order_note", "create_invoice", "create_service_ticket")
 
@@ -131,23 +128,13 @@ def _fmt_tool_call(name: str, args: dict) -> str:
 def _labels_for(tools: list, registry: ToolRegistry) -> list[str]:
     labels = []
     for tool in tools:
-        label = _CAPABILITY_LABELS.get(tool.name)
+        label = CAPABILITY_LABELS.get(tool.name)
         if not label:
             meta = registry.meta_for(tool.name)
             desc = (meta.description if meta is not None else "") or tool.name
             label = desc.strip().rstrip("。")
         labels.append(label)
     return labels
-
-
-def _join_or(labels: list[str]) -> str:
-    if not labels:
-        return "当前允许的写操作"
-    if len(labels) == 1:
-        return labels[0]
-    if len(labels) == 2:
-        return f"{labels[0]}或{labels[1]}"
-    return "、".join(labels[:-1]) + f"或{labels[-1]}"
 
 
 def _vague_content(labels: list[str]) -> str:
@@ -163,8 +150,26 @@ def _vague_content(labels: list[str]) -> str:
 def _refund_content(labels: list[str]) -> str:
     return (
         "退款不在当前能办的范围内。目前可以帮您"
-        f"{_join_or(labels)}，请直接说要办哪一项。"
+        f"{join_cn(labels)}，请直接说要办哪一项。"
     )
+
+
+def _usable_clarify_text(content: str) -> str:
+    """模型给的追问话术可用则用；若它误把 JSON 载荷当 content 返回，丢弃走模板。
+
+    提示词已不向真模型注入 JSON few-shot，但这是软约束——模型仍可能自己吐
+    ``{"tool": ...}``。这段内容会直接进 ``messages`` 给用户，必须挡在这里。
+    """
+    text = (content or "").strip()
+    if not text.startswith("{"):
+        return text
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if isinstance(payload, dict) and "tool" in payload:
+        return ""
+    return text
 
 
 def _render_pair(user: str, json_body: str, real_body: str, mode: str) -> str:
@@ -250,8 +255,8 @@ def _build_mutation_examples(tier_tools: list, registry: ToolRegistry, mode: str
 
     if "update_address" in names and "update_phone" in names:
         contact = (
-            f"您是要{_CAPABILITY_LABELS['update_address']}，"
-            f"还是{_CAPABILITY_LABELS['update_phone']}？"
+            f"您是要{CAPABILITY_LABELS['update_address']}，"
+            f"还是{CAPABILITY_LABELS['update_phone']}？"
         )
         parts.append(
             _render_pair(
@@ -263,8 +268,8 @@ def _build_mutation_examples(tier_tools: list, registry: ToolRegistry, mode: str
         )
     if "create_invoice" in names and "update_order_note" in names:
         mixed = (
-            f"您是要{_CAPABILITY_LABELS['create_invoice']}，"
-            f"还是{_CAPABILITY_LABELS['update_order_note']}？请说一下先办哪一项。"
+            f"您是要{CAPABILITY_LABELS['create_invoice']}，"
+            f"还是{CAPABILITY_LABELS['update_order_note']}？请说一下先办哪一项。"
         )
         parts.append(
             _render_pair(
@@ -318,7 +323,9 @@ def make_mutation_select_node(
             "execution_status": "completed",
         }
 
-    def _operation_clarify_inline(state: dict, content: str) -> dict:
+    def _operation_clarify_inline(
+        state: dict, content: str, tool_names: list[str]
+    ) -> dict:
         ctx = {**state.get("context", {})}
         ctx.pop("clarify_missing", None)
         ctx.pop("pending_tool", None)
@@ -333,7 +340,7 @@ def make_mutation_select_node(
                 "context": {**ctx, "clarify_count": count + 1},
                 "execution_status": "completed",
             }
-        text = (content or "").strip() or operation_clarify_text()
+        text = _usable_clarify_text(content) or operation_clarify_text(tool_names)
         try:
             get_stream_writer()(
                 {
@@ -407,7 +414,9 @@ def make_mutation_select_node(
                 tool_name = payload.get("tool")
                 if not tool_name:
                     return _operation_clarify_inline(
-                        state, str(payload.get("content") or payload.get("clarify") or "")
+                        state,
+                        str(payload.get("content") or payload.get("clarify") or ""),
+                        [t.name for t in selected_tools],
                     )
                 args = dict(payload.get("args") or {})
             except Exception:
@@ -425,7 +434,9 @@ def make_mutation_select_node(
             )
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
-                return _operation_clarify_inline(state, str(result.content or ""))
+                return _operation_clarify_inline(
+                    state, str(result.content or ""), [t.name for t in selected_tools]
+                )
             tool_call = result.tool_calls[0]
             tool_name = tool_call["name"]
             args = dict(tool_call.get("args") or {})

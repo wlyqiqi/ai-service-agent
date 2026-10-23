@@ -51,6 +51,29 @@ def test_clarify_fixed_texts_have_cs_tone():
     assert "表单" not in op
 
 
+def test_operation_clarify_text_only_lists_allowlisted_capabilities():
+    """兜底追问必须跟着当前白名单，不能提系统此刻不会做的事。"""
+    profile = operation_clarify_text(["update_address", "update_phone"])
+    assert "改收货地址" in profile and "改联系电话" in profile
+    assert "开发票" not in profile
+    assert "售后" not in profile
+    assert "备注" not in profile
+
+    single = operation_clarify_text(["update_phone"])
+    assert "改联系电话" in single
+    assert "改收货地址" not in single
+
+    # 未知工具名不参与列举，避免把内部 id 漏给用户
+    unknown = operation_clarify_text(["not_a_tool"])
+    assert "not_a_tool" not in unknown
+
+
+def test_operation_clarify_text_without_tools_keeps_full_list():
+    """无白名单信息时退回完整列举（兼容旧调用）。"""
+    op = operation_clarify_text()
+    assert "收货地址" in op and "开发票" in op and "售后" in op
+
+
 def test_confirmation_summary_keeps_facts():
     summary = confirmation_summary("update_address", {"order_id": "ORD-1", "address": "北京"})
     assert "update_address" in summary or "收货地址" in summary
