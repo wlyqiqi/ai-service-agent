@@ -1,6 +1,7 @@
 """Mutation 工具落模拟电商库测试：真实写入、复合幂等、数据边界与开票金额规则。"""
 
 import importlib.util
+import logging
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -538,3 +539,60 @@ def test_refund_cross_user_blocked_without_pollution(monkeypatch, seed):
     assert after_order == before_order
     assert after_refunds == before_refunds
     assert after_idem == before_idem
+
+
+def _update_address_idem_count(db_path: Path) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM idempotency WHERE tool_name='update_address'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_missing_request_id_warns_but_still_writes(monkeypatch, seed, caplog):
+    """兜底生成是防御：命中即记 warning，写入照常成功。
+
+    同时锁定一个反面事实：兜底补出来的号拿不回来，两次不带 request_id 的
+    调用会生成两个不同幂等键、写两次。它救不了重试，只掩盖上游漏传。
+    """
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+    before = _update_address_idem_count(db_path)
+
+    with caplog.at_level(logging.WARNING, logger="ai_service_agent"):
+        first = write_mod.update_address.invoke(
+            {"order_id": "ORD-REFUND-1", "address": "兜底号地址一", "user_id": "u1"}
+        )
+        second = write_mod.update_address.invoke(
+            {"order_id": "ORD-REFUND-1", "address": "兜底号地址二", "user_id": "u1"}
+        )
+
+    assert first["replayed"] is False and second["replayed"] is False
+    assert "request_id missing at write entry (tool=update_address)" in caplog.text
+    # 两次都没带号 -> 两条幂等记录，正是兜底无法去重的证明
+    assert _update_address_idem_count(db_path) == before + 2
+
+    conn = sqlite3.connect(db_path)
+    try:
+        address = conn.execute(
+            "SELECT address FROM customers WHERE customer_id='u1'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert address == "兜底号地址二"
+
+
+def test_supplied_request_id_emits_no_warning(monkeypatch, seed, caplog):
+    """上游正常注入时不产生 warning —— 这条日志为空才说明主流程没漏。"""
+    _, db_path = seed
+    _use_db(monkeypatch, db_path)
+
+    with caplog.at_level(logging.WARNING, logger="ai_service_agent"):
+        result = write_mod.update_phone.invoke(
+            {"phone": "+65-80000009", "request_id": "warn-check-1", "user_id": "u1"}
+        )
+
+    assert result["replayed"] is False
+    assert "request_id missing" not in caplog.text
