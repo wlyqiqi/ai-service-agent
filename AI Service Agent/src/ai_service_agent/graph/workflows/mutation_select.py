@@ -1,7 +1,9 @@
 """Mutation Select：MutationGraph 专属写操作选择节点（CONTEXT.md / ADR 0004 follow-on）。
 
 一次调用要么发出本档 tool_call → pending_tool（缺字段交 Form），要么自然语言
-Operation Clarify。不与 HighRisk select 共享节点工厂、提示词或模型实例。
+Operation Clarify。模型没发出 tool_call 时，本轮用户句若能唯一映射到当前白名单
+工具，仍写入 pending_tool（高置信强制 Form），不把槽位追问留给用户。
+不与 HighRisk select 共享节点工厂、提示词或模型实例。
 """
 
 from collections.abc import Awaitable, Callable
@@ -15,11 +17,16 @@ from langgraph.config import get_stream_writer
 from pydantic import ValidationError
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.messages import message_text
 from ai_service_agent.graph.workflows.copy import (
     CAPABILITY_LABELS,
     clarify_fallback_text,
     join_cn,
     operation_clarify_text,
+)
+from ai_service_agent.graph.workflows.mutation_force_form import (
+    partial_args_from_utterance,
+    unique_mutation_tool,
 )
 from ai_service_agent.graph.workflows.safety import incomplete_business_fields
 from ai_service_agent.graph.workflows.select import (
@@ -377,6 +384,35 @@ def make_mutation_select_node(
         }
         return {"context": ctx}
 
+    def _latest_user_text(state: dict) -> str:
+        for message in reversed(state.get("messages") or []):
+            if isinstance(message, dict):
+                role = message.get("type", message.get("role", ""))
+            else:
+                role = getattr(message, "type", "")
+            if role in ("human", "user"):
+                return message_text(message)
+        return ""
+
+    def _clarify_or_force(state: dict, content: str, tool_names: list[str]) -> dict:
+        """No tool this turn. A unique allowlisted phrase becomes pending_tool.
+
+        The model path that already returned a tool_call never reaches here.
+        A hit drops the clarify text. No hit keeps Operation Clarify unchanged.
+        """
+        user_text = _latest_user_text(state)
+        tool_name = unique_mutation_tool(user_text, tool_names)
+        if tool_name is None:
+            return _operation_clarify_inline(state, content, tool_names)
+        meta = registry.meta_for(tool_name)
+        if meta is None or meta.schema is None:
+            return _operation_clarify_inline(state, content, tool_names)
+        partial = _normalize_placeholder_args(
+            partial_args_from_utterance(tool_name, user_text),
+            meta,
+        )
+        return _pending_for_form(state, tool_name, _partial_args_for_form(partial, meta))
+
     async def select(
         state: dict,
         config: RunnableConfig | None = None,
@@ -414,7 +450,7 @@ def make_mutation_select_node(
                 payload = json.loads(resp.content)
                 tool_name = payload.get("tool")
                 if not tool_name:
-                    return _operation_clarify_inline(
+                    return _clarify_or_force(
                         state,
                         str(payload.get("content") or payload.get("clarify") or ""),
                         [t.name for t in selected_tools],
@@ -435,7 +471,7 @@ def make_mutation_select_node(
             )
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
-                return _operation_clarify_inline(
+                return _clarify_or_force(
                     state, str(result.content or ""), [t.name for t in selected_tools]
                 )
             tool_call = result.tool_calls[0]

@@ -279,7 +279,11 @@ def _mutation_operation_clarify_model():
 
 
 def test_highrisk_clarify_then_mutation_route_resets_clarify_count():
-    """同 thread：HighRisk 澄清烧满上限后切到 Mutation 改址，Operation Clarify 从 0 重新发出。"""
+    """同 thread：HighRisk 澄清烧满上限后切到 Mutation，模糊说法的 Operation Clarify 从 0 重新发出。
+
+    跟进句用「帮我改一下订单」，路由夹具仍是 account_profile_update。
+    「我要改收货地址」会唯一绑定 update_address 并走 Form，不再发出 clarification_required。
+    """
     saver = MemorySaver()
     thread = "route-reset-mutation"
     user_id = "user-with-no-paid-order"
@@ -295,7 +299,7 @@ def test_highrisk_clarify_then_mutation_route_resets_clarify_count():
     events = asyncio.run(_acollect(event_stream(
         graph,
         {"configurable": {"thread_id": thread}},
-        [HumanMessage(content="我要改收货地址")],
+        [HumanMessage(content="帮我改一下订单")],
         extra_state={"user_id": user_id, "session_id": thread},
     )))
     clarify = next(e for e in events if e["type"] == "clarification_required")

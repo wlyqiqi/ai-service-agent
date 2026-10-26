@@ -401,3 +401,238 @@ def test_inline_clarify_drops_json_payload_in_content():
     assert '"tool"' not in text
     assert "update_phone" not in text
     assert "改联系电话" in text
+
+
+_SLOT_ASK = "请问订单号是多少？新的收货地址是什么？"
+_PROFILE_TOOLS = ["update_address", "update_phone"]
+
+
+def _bind_tools_clarify_node(content: str, tool_calls=None):
+    """Real path: bind_tools model that does not emit a tool_call."""
+    from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
+
+    bound_model = AsyncMock()
+    bound_model.ainvoke.return_value = AIMessage(
+        content=content,
+        tool_calls=[] if tool_calls is None else tool_calls,
+    )
+    model = MagicMock()
+    model.bind_tools.return_value = bound_model
+    node = make_mutation_select_node(
+        model,
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    return node, bound_model
+
+
+def _force_state(text: str, allowed_tools=None, context=None) -> dict:
+    return {
+        "messages": [HumanMessage(content=text)],
+        "allowed_tools": list(allowed_tools or _PROFILE_TOOLS),
+        "user_id": "u1",
+        "context": context
+        if context is not None
+        else {"operation_clarify": {"stale": True}, "clarify_count": 2},
+    }
+
+
+@pytest.mark.parametrize("text", ["我要改收货地址", "我要改个地址"])
+def test_force_form_address_when_real_model_omits_tool_call(text, monkeypatch):
+    """#830: unique address wording must pending_tool even when the model asks in prose."""
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
+        lambda: events.append,
+    )
+    node, bound_model = _bind_tools_clarify_node(_SLOT_ASK)
+    output = _select_result(node(_force_state(text)))
+
+    assert bound_model.ainvoke.await_count == 1
+    pending = output["context"]["pending_tool"]
+    assert pending["tool"] == "update_address"
+    assert pending["request_id"]
+    assert pending["args"].keys() == {"request_id"}
+    assert "messages" not in output
+    assert output.get("execution_status") != "clarifying"
+    assert "operation_clarify" not in output["context"]
+    assert output["context"]["clarify_count"] == 0
+    assert _SLOT_ASK not in str(output)
+    assert "订单号是多少" not in str(output)
+    assert "新的收货地址是什么" not in str(output)
+    assert events == []
+
+
+def test_fake_null_tool_unique_address_still_pending(monkeypatch):
+    """JSON select path shares the same gate: tool=null does not win over a unique phrase."""
+    from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel, select_clarify_message
+
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
+        lambda: events.append,
+    )
+    model = ToolCallingFakeModel(responses=[select_clarify_message(_SLOT_ASK)])
+    node = make_mutation_select_node(
+        model,
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    output = _select_result(node(_force_state("我要改收货地址")))
+    pending = output["context"]["pending_tool"]
+    assert pending["tool"] == "update_address"
+    assert pending["args"].keys() == {"request_id"}
+    assert "messages" not in output
+    assert events == []
+
+
+def test_vague_order_edit_stays_operation_clarify(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
+        lambda: events.append,
+    )
+    node, _bound = _bind_tools_clarify_node("您是要改收货地址，还是改联系电话？")
+    output = _select_result(node(_force_state("帮我改一下订单")))
+
+    assert output["execution_status"] == "clarifying"
+    assert "pending_tool" not in output["context"]
+    assert "operation_clarify" not in output["context"]
+    assert output["messages"][-1].content == "您是要改收货地址，还是改联系电话？"
+    assert events == [
+        {"type": "clarification_required", "data": {"missing": [], "reason": "operation_unclear"}}
+    ]
+
+
+def test_contact_method_ambiguity_is_not_forced():
+    node, _bound = _bind_tools_clarify_node("您是要改收货地址，还是改联系电话？")
+    output = _select_result(node(_force_state("改联系方式")))
+
+    assert output["execution_status"] == "clarifying"
+    assert "pending_tool" not in output["context"]
+    assert output["messages"][-1].content == "您是要改收货地址，还是改联系电话？"
+
+
+def test_force_form_carries_order_id_and_address_from_utterance():
+    node, _bound = _bind_tools_clarify_node(_SLOT_ASK)
+    output = _select_result(
+        node(
+            _force_state("订单 ORD-10086 收货地址改成北京市朝阳区望京SOHO")
+        )
+    )
+    args = output["context"]["pending_tool"]["args"]
+    assert output["context"]["pending_tool"]["tool"] == "update_address"
+    assert args["order_id"] == "ORD-10086"
+    assert args["address"] == "北京市朝阳区望京SOHO"
+    assert set(args) == {"request_id", "order_id", "address"}
+    assert "messages" not in output
+
+
+def test_existing_tool_call_is_not_replaced_by_force_form():
+    """A real tool_call stays as the model emitted it, even if the phrase maps elsewhere."""
+    node, _bound = _bind_tools_clarify_node(
+        "",
+        tool_calls=[
+            {
+                "name": "update_phone",
+                "args": {"phone": "13800138000"},
+                "id": "call_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    output = _select_result(node(_force_state("我要改收货地址")))
+    assert output["context"]["pending_tool"]["tool"] == "update_phone"
+    assert output["context"]["pending_tool"]["args"]["phone"] == "13800138000"
+
+
+def test_address_phrase_outside_allowlist_stays_clarify():
+    node, _bound = _bind_tools_clarify_node("目前可以帮您改联系电话。")
+    output = _select_result(
+        node(_force_state("我要改收货地址", allowed_tools=["update_phone"]))
+    )
+    assert output["execution_status"] == "clarifying"
+    assert "pending_tool" not in output["context"]
+
+
+def test_mixed_invoice_and_note_stays_clarify():
+    node, _bound = _bind_tools_clarify_node("您是要开发票，还是加订单备注？")
+    output = _select_result(
+        node(
+            _force_state(
+                "订单 ORD-10086 既要开票又要加备注",
+                allowed_tools=["update_order_note", "create_invoice", "create_service_ticket"],
+            )
+        )
+    )
+    assert output["execution_status"] == "clarifying"
+    assert "pending_tool" not in output["context"]
+
+
+def test_real_select_without_tool_call_opens_address_form(monkeypatch, tmp_path):
+    """Select omits tool_call; the gate still reaches Form Interrupt, not slot text."""
+    import importlib.util
+    from pathlib import Path
+
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from ai_service_agent.domain.orders import SQLiteOrderRepository
+    from ai_service_agent.graph import builder as builder_mod
+    from ai_service_agent.graph.messages import message_text
+    from ai_service_agent.testing import ToolCallingFakeModel, router_json_message
+    from ai_service_agent.tools import orders as orders_mod
+    from ai_service_agent.tools import write as write_mod
+    from ai_service_agent.tools.kb import kb_search
+    from conftest import ainvoke_graph
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "seed_mock_db_force_form", root / "scripts" / "seed_mock_db.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    db_path = tmp_path / "force_form.db"
+    module.build_database(str(db_path))
+
+    class _Settings:
+        mock_ecommerce_db_path = str(db_path)
+
+    monkeypatch.setattr(orders_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(write_mod, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        builder_mod,
+        "SQLiteOrderRepository",
+        lambda path: SQLiteOrderRepository(str(db_path)),
+    )
+
+    bound_model = AsyncMock()
+    bound_model.ainvoke.return_value = AIMessage(content=_SLOT_ASK, tool_calls=[])
+    select_model = MagicMock()
+    select_model.bind_tools.return_value = bound_model
+    graph = build_graph(
+        ToolCallingFakeModel(
+            responses=[router_json_message("account_profile_update", 0.9)]
+        ),
+        tools=[kb_search],
+        checkpointer=MemorySaver(),
+        mutation_select_model=select_model,
+    )
+    output = ainvoke_graph(
+        graph,
+        {
+            "messages": [HumanMessage(content="我要改收货地址")],
+            "user_id": "u1",
+            "session_id": "force-form",
+            "context": {},
+        },
+        {"configurable": {"thread_id": "force-form"}},
+    )
+
+    assert output.get("__interrupt__")
+    assert output["__interrupt__"][0].value.get("tool") == "update_address"
+    assert output.get("execution_status") != "clarifying"
+    visible = "\n".join(message_text(message) for message in output.get("messages") or [])
+    assert "订单号是多少" not in visible
+    assert "新的收货地址是什么" not in visible
+    assert "新地址是什么" not in visible
