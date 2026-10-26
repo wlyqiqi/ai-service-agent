@@ -10,8 +10,8 @@ class CustomerServiceState(TypedDict):
     user_id: str
     session_id: str
     route_intent: str              # Router 唯一语义输出：稳定路由意图（不是 tool_name / target_graph）
-    target_graph: Literal["read_graph", "mutation_graph", "high_risk_graph", "fallback"]
-    execution_class: Literal["read_only", "standard_write", "high_risk"]
+    target_graph: Literal["read_graph", "mutation_graph", "high_risk_graph", "complaint_graph", "fallback"]
+    execution_class: Literal["read_only", "standard_write", "high_risk", "complaint"]
     allowed_tools: list[str]       # Policy 派生的候选工具边界
     requires_approval: bool        # Policy 派生的高风险审批标记
     confidence: float
@@ -41,6 +41,7 @@ class CustomerServiceState(TypedDict):
 - `context` 业务键（P4/P5 登记，D1/D3/B2b）：`clarify_missing`（**HighRisk** 本轮缺失字段列表；Mutation 业务缺参不再写此键）、`clarify_count`（澄清轮次。Policy Gate 在本轮落盘的 `route_intent` 或 `target_graph` 相对上一轮变化时置 0；完整成功 select 亦清零。clarify / Mutation 内联 Operation Clarify 自增，超过 `clarify_max_turns`（默认 3）转 fallback。上一轮落盘路由记在 `clarify_route_intent` / `clarify_target_graph`）、`fallback_count`（同一会话 fallback 回复次数；最多 N=4 次，第 N+1 次 fallback 由 check_handoff 确定性转人工，触发后清零）、`precheck_data`（预检事实快照：订单状态，仅事实、无裁决）、`tier_clarify`（**HighRisk** HighRisk Select（`high_risk_select_llm`）选中已注册低档工具或无 tool_call 时的档不匹配标记；由 clarify 节点消费，完整 select 时清除。Mutation 不再写此键）、`cancellation_candidates`（cancel-order 缺单号时的可取消已付款订单候选，由当次 HighRisk Select 写入、clarify 消费；select 每次进入结果分支前清除，仅 cancel-order 澄清路径重新写入）、`form_session_id`（Mutation Form 同一表单会话标识，随 Form Interrupt `value` 投影；Cancel/成功写库后清除）、`form_errors`（校验/业务预检失败后供同一节点再次 Form Interrupt 的 `errors`；成功 Confirm 或 Cancel 时清除。权威挂起态仍是 checkpoint interrupt，不是「Form Pending」旁路）。（已移除 `operation_clarify` 上下文标记：Mutation Operation Clarify 由 Mutation Select（`mutation_select_llm`）内联发事件并写 messages，见 ADR 0004 / `CONTEXT.md`。）
 - 子图抛出 `handoff_request` 后 `execution_status` **必须**置 `waiting_handoff`，**不得**置 `completed` 或 `failed`；人工 Resolve 回切 `conversation_mode=ai` 后由服务端主动 resume 完成被中断子图，最终由 `final` 节点置 `completed`（`running` 为 resume 执行中的中间态，不落最终态；见 `graph-spec.md` §3、§6.5）。
 - **P0（2026-09-18）入口层显式转人工**：命中入口层 `detect_handoff_intent` 时不进入 LangGraph，该 turn 不产生图内 checkpoint，故 `execution_status` 不被置位（无图执行，`final` 节点不参与）；仅入口层 `conversation_status` 记 `conversation_mode=human`。图内动态转人工（子图抛 `handoff_request`）仍按上一段语义置 `waiting_handoff`，并由 resolve 主动 resume 至 `completed`。
+- **投诉 offer（PR-A）** context 键：`complaint_offer_pending`（已安抚并询问是否转人工；下轮入口仍先跑 `detect_handoff_intent`；为真时禁止情绪规则自动 `handoff_request`）、`complaint_summary`（原投诉句，同意后作 handoff summary）、`complaint_offer_reconfirmed`（裸「要」已再确认）、`complaint_handoff_accept`（本轮明确同意；harness 复用 `request_handoff`，图内不另起 interrupt）、`complaint_offer_decision`（本轮 Policy 临时标记 `reconfirm` / `accept`，投诉节点消费后清除）。投诉硬闸不写 `conversation_mode`。
 - `conversation_mode` **不在此 State 中**：它属于入口层轻量 `conversation_status` 存储（`handoff-spec.md` §2），图内不维护；`handoff` 字段是图内转人工信号标记，与 `conversation_mode` 分层。
 - `route_intent` 是 Router 的唯一语义输出（外加 `confidence` 与观测/控制字段）；`target_graph`、`execution_class`、`allowed_tools`、`requires_approval` 必须由 Policy Gate 确定性派生。
 - `allowed_tools` 是候选工具边界，不是最终工具选择；最终工具调用仍由子图完成。

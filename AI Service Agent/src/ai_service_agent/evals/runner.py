@@ -10,6 +10,7 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.domain.orders import SQLiteOrderRepository
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.route_policy import resolve_route_policy
+from ai_service_agent.graph.workflows.copy import complaint_empathy_text
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.harness.form_events import is_form_interrupt
@@ -40,7 +41,14 @@ DENY_TOOL_SCRIPT = {
 }
 
 # policy 维度主键（D3）：expected_policy -> 确定性 Policy 目标
-POLICY_EXPECTED = {"allow": "read", "fallback": "fallback", "confirm": "mutation", "approval": "high_risk", "clarify": "high_risk"}
+POLICY_EXPECTED = {
+    "allow": "read",
+    "fallback": "fallback",
+    "confirm": "mutation",
+    "approval": "high_risk",
+    "clarify": "high_risk",
+    "complaint": "complaint",
+}
 # clarify（D8/OQ-3）：策略门仍路由 high_risk 图，澄清发生在图内 select 层（graph-spec §6.2）
 POLICY_SKIP = {"deny", "guard_reject", "handoff"}
 
@@ -74,6 +82,8 @@ def route_intent_for_case(case: dict) -> str:
     if case.get("expected_route_intent"):
         return case["expected_route_intent"]
     ep = case["expected_policy"]
+    if ep == "complaint":
+        return "complaint"
     if ep in ("fallback", "handoff", "guard_reject"):
         return "unknown"
     input_text = case["input"]
@@ -147,6 +157,9 @@ def _scripted_responses(case: dict) -> list:
         return [router_json_message(route_intent_for_case(case), 0.9), AIMessage(content=READ_MARKER)]
     if ep == "fallback":
         return [router_json_message("unknown", 0.2), AIMessage(content=FALLBACK_MARKER)]
+    if ep == "complaint":
+        # 故意给写入类错标：硬闸必须覆盖，且本轮不得进入 Mutation。
+        return [router_json_message("order_mutation", 0.95)]
     if ep == "confirm":
         return [router_json_message(route_intent_for_case(case), 0.9),
                 select_json_message("update_phone", {"phone": "13800000000"})]
@@ -239,6 +252,20 @@ def evaluate_routing(cases: list[dict]) -> list[dict]:
             ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == READ_MARKER
         elif ep == "fallback":
             ok = r["state"].get("execution_status") == "completed" and _last_ai_text(r["state"]) == FALLBACK_MARKER
+        elif ep == "complaint":
+            # PR-A：投诉短语进薄投诉面。本轮安抚并询问转人工，不 interrupt、不烧 fallback。
+            ctx = r["state"].get("context") or {}
+            ok = (
+                r["state"].get("execution_status") == "completed"
+                and r["state"].get("target_graph") == "complaint_graph"
+                and r["state"].get("route_intent") == "complaint"
+                and not r["state"].get("requires_approval")
+                and not r["interrupts"]
+                and not r["tool_calls"]
+                and ctx.get("complaint_offer_pending") is True
+                and not ctx.get("complaint_handoff_accept")
+                and _last_ai_text(r["state"]) == complaint_empathy_text(case["input"])
+            )
         elif ep == "confirm":
             ok = any(
                 i.get("type") == "confirmation_required" or is_form_interrupt(i)

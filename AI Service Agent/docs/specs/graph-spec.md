@@ -31,7 +31,7 @@
   |                 +---(fail)------------> 安全收尾（丢弃 Router 并行结果）
   |                                                     |
   |                                                     v
-  |                                         Read / Mutation / HighRisk / Fallback
+  |                                         Read / Mutation / HighRisk / Complaint / Fallback
   |                                                      |
   |                    +---------------------------------+  任意子图检测到转人工信号
   |                    v
@@ -84,7 +84,7 @@
 - Policy Gate 始终使用 `route_intent -> PolicyDecision`（唯一路径）。
 - `PolicyDecision` 派生：
   - `target_graph`
-  - `execution_class`（`read_only` / `standard_write` / `high_risk`）
+  - `execution_class`（`read_only` / `standard_write` / `high_risk` / `complaint`）
   - `allowed_tools`
   - `requires_approval`
 - `allowed_tools` 是候选工具边界；子图 LLM 只能在该边界内选择最终工具。
@@ -92,6 +92,8 @@
 - 高风险操作继续保留安全预检与人工审批。
 - Policy Gate 允许一个极窄归一化：LLM 输出为 `order_mutation` 且当前 turn 用户文本明确表达修改收货地址、联系电话或手机号时，Policy Gate 将 `route_intent` 修正为 `account_profile_update`。
 - 该归一化不得 rescue `unsupported_action` 或 `unknown`，不得调用 LLM，不得扩大 `allowed_tools`。
+- **投诉硬闸（PR-A）**：查表前若当前用户句命中 `detect_complaint_intent` 且**未**命中 `detect_handoff_intent`，强制 `route_intent=complaint`、`confidence=1.0`，覆盖错误的 LLM 标签。不切 `conversation_mode`，不挂 `fallback`。
+- **投诉询问待答**：`context["complaint_offer_pending"]` 为真时，先解释本句。窄肯定（转人工 / 要人工 / 帮我转）标 `complaint_offer_decision=accept`（图内不 `interrupt`；入口或 harness 复用既有 `request_handoff`，reason=`complaint`）。裸「要」标 `reconfirm`，仍进 `complaint_graph`。拒绝或改提业务则清 pending，再按本轮 Router 查表。显式转人工仍由入口 `detect_handoff_intent` 先于本解释。
 - 路由落盘后、进入子图前：若本轮 `route_intent` 或 `target_graph` 相对 checkpoint 上一轮发生变化，将 `context["clarify_count"]` 置 `0`。上一轮落盘路由记在 `context["clarify_route_intent"]` / `context["clarify_target_graph"]`（Router 本轮已覆盖 State 上的 `route_intent`，不能拿它当上一轮值）。尚无这两键的旧 checkpoint 只比较上一轮 `target_graph`。没有上一轮路由时不清零。同一 `route_intent` 且同一 `target_graph` 的连续澄清仍累计，超过 `clarify_max_turns`（默认 3）由 clarify / Mutation Operation Clarify 转 fallback。
 
 ## 6. 子图
@@ -140,6 +142,14 @@
 - 外层（Conversation Runtime 或等价的入口逻辑）统一负责：接收该信号 → 创建 Handoff Record → 原子切换 `conversation_mode` → 发出 `handoff_created` 事件。子图自身不直接调用 Handoff 相关的任何 API。
 - 抛出后 `execution_status` 置 `waiting_handoff`（见 `state-spec.md` §1），不得置 `completed` / `failed`。
 - 触发信号来源为 `check_handoff` 等确定性规则（见 `safety-spec.md` §2）；LLM 无权临时决定转人工。
+- 投诉询问的同意**不**走这条 interrupt：复用入口 `request_handoff`（见 §6.6）。`complaint_offer_pending` 期间情绪规则不得自动抛 `handoff_request`。
+
+### 6.6 ComplaintGraph（薄节点，PR-A）
+
+- 父图节点 `complaint_graph`（确定性模板，无 `_llm`）。Policy `target_graph=complaint_graph`，`allowed_tools=()`，`requires_approval=False`，`execution_class=complaint`（阈值 0.80，**不**进 high_risk 审批写路径）。
+- **不挂 `fallback`**，因此不增加 `fallback_count`，也不走 Concierge `explain_llm`。
+- 本轮：固定澄元安抚（致歉 + 承认感受）并询问是否转人工；写 `context["complaint_offer_pending"]` 与 `complaint_summary`。正常结束：无 `interrupt(handoff_request)`，无 `awaiting_seat`。
+- 下一用户句重新进入主图。入口仍先跑 `detect_handoff_intent`。待答期间裸「要」只再确认（转人工还是继续办业务）；拒绝或改提业务清 pending 后走 Router。明确同意复用入口 `request_handoff`（reason=`complaint`），不另起 interrupt 系统。若该句已进入主图，节点只置 `complaint_handoff_accept`，由 harness 调用同一个 `request_handoff`。
 
 ## 7. 节点级工程参数（横切，见 architecture.md §5）
 
@@ -156,7 +166,8 @@
 |---|---|---|
 | GuardNode | `messages`（原始输入）、`user_id` | `guard_status`、`guard_reason` |
 | Router | `messages`、`user_id` | `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control` |
-| Policy Gate | `route_intent`、`messages`（地址/电话归一化）、`context`（`clarify_count`、`clarify_route_intent`、`clarify_target_graph`）、上一轮 `target_graph` | `route_intent`、`target_graph`、`execution_class`、`allowed_tools`、`requires_approval`、`context`（路由变化时 `clarify_count=0`；写入本轮 `clarify_route_intent` / `clarify_target_graph`） |
+| Policy Gate | `route_intent`、`messages`（地址/电话归一化、投诉硬闸、投诉询问回复）、`context`（`clarify_count`、`clarify_route_intent`、`clarify_target_graph`、`complaint_offer_pending`）、上一轮 `target_graph` | `route_intent`、`confidence`（硬闸时 1.0）、`target_graph`、`execution_class`、`allowed_tools`、`requires_approval`、`context`（路由变化时 `clarify_count=0`；写入本轮 `clarify_route_intent` / `clarify_target_graph`；询问回复写 `complaint_offer_decision` 或清 pending） |
+| complaint_graph | `messages`、`context`（`complaint_offer_decision`、`complaint_summary`） | `messages`（安抚或再确认）、`context`（`complaint_offer_pending`、`complaint_summary`、`complaint_handoff_accept`）、`execution_status=completed`；本节点不抛 interrupt |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context`、`user_id`、`allowed_tools` | `messages`、`execution_status` |
 | MutationGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class` | `messages`、`context`（Form / pending_tool 等）、`execution_status` |
@@ -168,7 +179,7 @@
 | prepare_form / form_interrupt（mutation） | `context`（`pending_tool`、`form_session_id`、`form_errors`） | Form Interrupt（对外权威）；子图内 `execution_status=waiting_confirmation`（不并回父图）；Confirm 后写 `pending_tool.args`（Form Resume 真源） |
 | precheck_fetch（mutation/high_risk） | `context`（`pending_tool`） | `context`（`precheck_data`：仅事实，订单状态快照；不做授权/裁决） |
 | Fallback / Concierge | `messages`、`context` | `messages` |
-| check_handoff | `context`（工具失败计数）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)` |
+| check_handoff | `context`（工具失败计数、`complaint_offer_pending`）、`messages` | `handoff`（置位）、`execution_status=waiting_handoff`，并抛出 `interrupt(handoff_request)`。`complaint_offer_pending` 期间情绪规则不得置位 |
 
 - `execution_status` 由入口与图内节点按 turn 阶段维护（取值见 `state-spec.md` §1）；子图抛出 `handoff_request` 时置 `waiting_handoff`，不得置 `completed` / `failed`。
 

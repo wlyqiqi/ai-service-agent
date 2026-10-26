@@ -18,10 +18,10 @@ class CustomerServiceState(TypedDict):
     session_id: str
     route_intent: str
     target_graph: Literal[
-        "read_graph", "mutation_graph", "high_risk_graph", "fallback"
+        "read_graph", "mutation_graph", "high_risk_graph", "complaint_graph", "fallback"
     ]
     execution_class: Literal[
-        "read_only", "standard_write", "high_risk"
+        "read_only", "standard_write", "high_risk", "complaint"
     ]
     allowed_tools: list[str]
     requires_approval: bool

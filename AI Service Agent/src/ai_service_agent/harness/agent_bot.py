@@ -24,8 +24,18 @@ from ai_service_agent.harness.form_gate import (
     decide_form_inbound,
     normalize_submitted_values,
 )
+from ai_service_agent.harness.complaint_offer import (
+    clear_complaint_offer_flags,
+    complaint_handoff_accept,
+    read_complaint_offer,
+)
 from ai_service_agent.harness.handoff import handoff_request_tip
-from ai_service_agent.harness.handoff_entry import EntryDecision, decide_entry, is_human_lane
+from ai_service_agent.harness.handoff_entry import (
+    EntryDecision,
+    decide_entry,
+    entry_handoff_reason,
+    is_human_lane,
+)
 from ai_service_agent.harness.mutation_form_projection import (
     order_picker_options,
     send_mutation_form,
@@ -266,11 +276,21 @@ async def _handle_locked_agent_bot_message(
 
     # Seat-gated entry (handoff-spec §2): 与 /chat 共用 harness/handoff_entry.py 的
     # 同一策略；表单提交不是文本入站，不参与入口判定（form_gate 的职责）。
+    thread_config = {"configurable": {"thread_id": thread_id}}
+    offer_pending, offer_summary = False, ""
+    if (
+        handoff is not None
+        and submitted_values is None
+        and graph is not None
+        and not is_human_lane(mode)
+    ):
+        offer_pending, offer_summary = await read_complaint_offer(graph, thread_config)
     if handoff is not None and submitted_values is None:
         decision = decide_entry(
             mode=mode,
             awaiting=handoff.get_awaiting(conversation_id) is not None,
             text=content,
+            complaint_offer_pending=offer_pending,
         )
         if decision is EntryDecision.CANCEL:
             handoff.cancel_handoff_request(conversation_id)
@@ -284,7 +304,14 @@ async def _handle_locked_agent_bot_message(
                 "response": tip,
             }
         if decision is EntryDecision.REQUEST:
-            ev = handoff.request_handoff(conversation_id, "用户显式请求转人工", content[:80])
+            reason = entry_handoff_reason(
+                text=content, complaint_offer_pending=offer_pending
+            )
+            ev = handoff.request_handoff(
+                conversation_id, reason, (offer_summary or content)[:80]
+            )
+            if offer_pending and graph is not None:
+                await clear_complaint_offer_flags(graph, thread_config)
             # created 是唯一判据（handoff-spec §2）：挂起期间重复申请只发短 tip。
             created = bool(ev.get("created", True))
             tip = handoff_request_tip(created=created)
@@ -434,6 +461,39 @@ async def _handle_locked_agent_bot_message(
                 await run_graph()
         else:
             await run_graph()
+
+        if handoff is not None and getattr(graph, "checkpointer", None):
+            accepted = complaint_handoff_accept(
+                (await graph.aget_state(thread_config)).values
+            )
+            if accepted is not None:
+                ev = handoff.request_handoff(
+                    conversation_id, "complaint", accepted or content[:80]
+                )
+                await clear_complaint_offer_flags(graph, thread_config)
+                created = bool(ev.get("created", True))
+                tip = handoff_request_tip(created=created)
+                if on_handoff_requested is not None:
+                    await on_handoff_requested(ev)
+                else:
+                    if messages_store is not None:
+                        messages_store.append(conversation_id, "assistant", tip)
+                    await chatwoot.send_bot_message(conversation_id, tip)
+                    if created:
+                        try:
+                            await chatwoot.prompt_handoff_request(
+                                conversation_id,
+                                handoff_request_private_note_text(
+                                    (ev.get("data") or {}).get("summary") or ""
+                                ),
+                            )
+                        except Exception:
+                            pass
+                return {
+                    "conversation_id": conversation_id,
+                    "chatwoot_conversation_id": cw_conv_id,
+                    "response": tip,
+                }
 
     if aborted_for_human:
         await _clear_agent_typing(chatwoot, conversation_id)

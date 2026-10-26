@@ -16,6 +16,7 @@ RouteIntent = Literal[
     "order_mutation",
     "cancel_order_execute",
     "refund_apply_execute",
+    "complaint",
     "unsupported_action",
     "unknown",
 ]
@@ -24,6 +25,7 @@ TargetGraph = Literal[
     "read_graph",
     "mutation_graph",
     "high_risk_graph",
+    "complaint_graph",
     "fallback",
 ]
 
@@ -31,6 +33,7 @@ ExecutionClass = Literal[
     "read_only",
     "standard_write",
     "high_risk",
+    "complaint",
 ]
 
 
@@ -90,6 +93,12 @@ ROUTE_POLICY: dict[str, RoutePolicy] = {
         allowed_tools=("refund_apply",),
         requires_approval=True,
     ),
+    "complaint": RoutePolicy(
+        target_graph="complaint_graph",
+        execution_class="complaint",
+        allowed_tools=(),
+        requires_approval=False,
+    ),
     "unsupported_action": RoutePolicy(
         target_graph="fallback",
         execution_class="read_only",
@@ -107,6 +116,8 @@ EXECUTION_CLASS_THRESHOLDS: dict[str, float] = {
     "read_only": 0.60,
     "standard_write": 0.70,
     "high_risk": 0.80,
+    # 数值可与 high_risk 同为 0.80，但是独立档：不走审批写路径。
+    "complaint": 0.80,
 }
 
 
