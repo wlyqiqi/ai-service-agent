@@ -670,7 +670,9 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
 
 def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
     """#44 AC: Chatwoot items can be derived from interrupt ``fields`` + prefills."""
-    from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
+    from ai_service_agent.harness.mutation_form_projection import (
+        mutation_form_items_from_form_data,
+    )
 
     items = mutation_form_items_from_form_data(
         {
@@ -701,7 +703,9 @@ def test_mutation_form_items_prefer_explicit_fields_over_response_schema():
 
 def test_order_picker_option_labels_are_order_id_only():
     """Every order select shows the order number only — no product or status."""
-    from ai_service_agent.harness.agent_bot import mutation_form_items_from_form_data
+    from ai_service_agent.harness.mutation_form_projection import (
+        mutation_form_items_from_form_data,
+    )
 
     invoice_items = mutation_form_items_from_form_data(
         {
@@ -742,7 +746,7 @@ def test_order_picker_option_labels_are_order_id_only():
 
 def test_mutation_form_projects_form_rejected_errors_into_chatwoot_copy():
     """#47: form_rejected errors appear in Chatwoot title/items (no native error field)."""
-    from ai_service_agent.harness.agent_bot import (
+    from ai_service_agent.harness.mutation_form_projection import (
         mutation_form_items_from_form_data,
         mutation_form_title_from_form_data,
     )

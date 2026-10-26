@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_service_agent.harness.agent_bot import (
-    handle_agent_bot_message,
+from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.harness.mutation_form_projection import (
     mutation_form_items_from_form_data,
     mutation_form_title_from_form_data,
     send_mutation_form,
