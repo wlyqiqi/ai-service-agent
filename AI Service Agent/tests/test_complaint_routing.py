@@ -127,11 +127,38 @@ def test_complaint_policy_is_not_an_approval_write_path():
 
 def test_detect_complaint_intent_phrases_and_weak_emotion(enabled):
     assert detect_complaint_intent(COMPLAINT) is True
+    assert detect_complaint_intent("我要投诉你们，服务太差了") is True
     assert detect_complaint_intent("态度太差，我要找消协") is True
+    assert detect_complaint_intent("我要找媒体曝光你们") is True
+    assert detect_complaint_intent("我要曝光你们") is True
     assert detect_complaint_intent("有点不满意") is False
     assert detect_complaint_intent(INVOICE) is False
     assert detect_complaint_intent(TICKET) is False
     assert detect_complaint_intent("") is False
+    phrases = get_settings().complaint_phrases
+    assert "媒体" not in phrases
+    assert "曝光" not in phrases
+    assert "媒体曝光" in phrases
+    assert "找媒体" in phrases
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["这个音箱支持媒体播放吗", "多媒体音箱有货吗", "这款相机的曝光参数是多少"],
+)
+def test_product_talk_does_not_enter_complaint_surface(enabled, seeded_graph, text):
+    assert detect_complaint_intent(text) is False
+    assert complaint_gate_applies(text) is False
+    graph = seeded_graph(
+        [
+            route_intent_json_message("faq", 0.91),
+            AIMessage(content="可以，这是产品说明。"),
+        ]
+    )
+    out = _turn(graph, text, "media-fp", context={})
+    assert out["route_intent"] == "faq"
+    assert out["target_graph"] == "read_graph"
+    assert out["context"].get("complaint_offer_pending") is not True
 
 
 def test_same_utterance_handoff_beats_complaint(enabled):
