@@ -92,6 +92,7 @@
 - 高风险操作继续保留安全预检与人工审批。
 - Policy Gate 允许一个极窄归一化：LLM 输出为 `order_mutation` 且当前 turn 用户文本明确表达修改收货地址、联系电话或手机号时，Policy Gate 将 `route_intent` 修正为 `account_profile_update`。
 - 该归一化不得 rescue `unsupported_action` 或 `unknown`，不得调用 LLM，不得扩大 `allowed_tools`。
+- 路由落盘后、进入子图前：若本轮 `route_intent` 或 `target_graph` 相对 checkpoint 上一轮发生变化，将 `context["clarify_count"]` 置 `0`。上一轮落盘路由记在 `context["clarify_route_intent"]` / `context["clarify_target_graph"]`（Router 本轮已覆盖 State 上的 `route_intent`，不能拿它当上一轮值）。尚无这两键的旧 checkpoint 只比较上一轮 `target_graph`。没有上一轮路由时不清零。同一 `route_intent` 且同一 `target_graph` 的连续澄清仍累计，超过 `clarify_max_turns`（默认 3）由 clarify / Mutation Operation Clarify 转 fallback。
 
 ## 6. 子图
 
@@ -111,7 +112,7 @@
 
 ### 6.3 HighRiskGraph
 
-- **select（参数完备性）** → 必填未齐且名下**有**可操作订单：与 Mutation 同一 **Form Interrupt**（Chatwoot `form`：Order Picker + 字段 + 确认/取消；不自动选中唯一订单）→ Form Resume Confirm 后进入安全预检与人工审批；Cancel 不写库、不进审批。**零**可操作订单仍 **clarify（普通轮，非 interrupt）**：确定性模板文案 + `execution_status=clarifying` + `clarification_required`；`context["clarify_count"]` 自增，超过 N=2 → fallback。字段已齐 → 不插表单，直接 **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。审批通过且写工具成功时，Chatwoot 出站用与 Mutation 相同的成功 `cards`（`MutationSuccessCardSpec`）加短跟进气泡；拒绝、过期、执行失败仍是纯文本气泡。
+- **select（参数完备性）** → 必填未齐且名下**有**可操作订单：与 Mutation 同一 **Form Interrupt**（Chatwoot `form`：Order Picker + 字段 + 确认/取消；不自动选中唯一订单）→ Form Resume Confirm 后进入安全预检与人工审批；Cancel 不写库、不进审批。**零**可操作订单仍 **clarify（普通轮，非 interrupt）**：确定性模板文案 + `execution_status=clarifying` + `clarification_required`；`context["clarify_count"]` 自增，超过 `clarify_max_turns`（默认 3）→ fallback（换 `route_intent` 或 `target_graph` 时 Policy Gate 已先清零）。字段已齐 → 不插表单，直接 **安全预检**（含业务规则，D3）→ `interrupt()` 发起人工审批（见 `approval-spec.md`）→ 人工 approve/reject 后 `Command(resume=...)` 恢复 → 执行/拒绝收尾。审批通过且写工具成功时，Chatwoot 出站用与 Mutation 相同的成功 `cards`（`MutationSuccessCardSpec`）加短跟进气泡；拒绝、过期、执行失败仍是纯文本气泡。
 - **档内严格（P5 B2b）**：写图 select 只允许 `min_risk_level == tier` 的写工具；只读工具不可选，
   选中已注册低档工具 → tier_mismatch 澄清（`clarification_required` + `reason:"tier_mismatch"`）。
 - **显式 `order_id`（2026-10-10，2026-10-16 收集改表单）**：`cancel_order` / `refund_apply` 必须由当前用户输入、可见上下文或 Form Resume 给出 `order_id`；即使名下只有一笔可操作订单也不自动选中。有候选时用 Form Order Picker 收集，零笔仍 `clarification_required` 说明无可操作订单，均不直接进入审批。
@@ -155,6 +156,7 @@
 |---|---|---|
 | GuardNode | `messages`（原始输入）、`user_id` | `guard_status`、`guard_reason` |
 | Router | `messages`、`user_id` | `route_intent`、`confidence`、`execution_status`、`routing_backend`、`routing_fallback`、`route_control` |
+| Policy Gate | `route_intent`、`messages`（地址/电话归一化）、`context`（`clarify_count`、`clarify_route_intent`、`clarify_target_graph`）、上一轮 `target_graph` | `route_intent`、`target_graph`、`execution_class`、`allowed_tools`、`requires_approval`、`context`（路由变化时 `clarify_count=0`；写入本轮 `clarify_route_intent` / `clarify_target_graph`） |
 | 入口 resume 调度（harness） | checkpointer `__interrupt__`（`aget_state`）、`messages` | 以 `Command(resume=..., update={messages})` 发起，不写业务字段 |
 | ReadGraph | `messages`、`context`、`user_id`、`allowed_tools` | `messages`、`execution_status` |
 | MutationGraph | `messages`、`context`、`user_id`、`allowed_tools`、`execution_class` | `messages`、`context`（Form / pending_tool 等）、`execution_status` |

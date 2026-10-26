@@ -63,6 +63,31 @@ def _guard_aware_target(state: dict) -> str:
     return _route_target(state)
 
 
+def _clarify_context_for_route(state: dict, route_intent: str, target_graph: str) -> dict | None:
+    """清零 clarify_count，当本轮落盘路由相对上一轮 checkpoint 发生变化。
+
+    Router 在本轮已经覆盖 ``route_intent``；``state["target_graph"]`` 仍是上一轮落盘值。
+    上一轮 Policy Gate 写入的 ``clarify_route_intent`` / ``clarify_target_graph`` 才是
+    可比的落盘路由。尚无这两键的旧 checkpoint 只比较 ``target_graph``。
+    没有上一轮路由时不清零（首轮或调用方注入的 clarify_count 仍受上限约束）。
+    """
+    ctx = dict(state.get("context") or {})
+    prev_intent = ctx.get("clarify_route_intent")
+    prev_graph = ctx.get("clarify_target_graph")
+    if prev_intent is not None or prev_graph is not None:
+        route_changed = prev_intent != route_intent or prev_graph != target_graph
+    else:
+        previous_graph = state.get("target_graph")
+        route_changed = previous_graph not in (None, "") and previous_graph != target_graph
+    if route_changed:
+        ctx["clarify_count"] = 0
+    ctx["clarify_route_intent"] = route_intent
+    ctx["clarify_target_graph"] = target_graph
+    if ctx == dict(state.get("context") or {}):
+        return None
+    return ctx
+
+
 def _policy_gate(state: dict) -> dict:
     """Router/Guard join. Deterministically derives route policy from route_intent."""
     route_intent = state.get("route_intent", "unknown")
@@ -73,13 +98,17 @@ def _policy_gate(state: dict) -> dict:
         route_intent = "account_profile_update"
 
     policy = resolve_route_policy(route_intent)
-    return {
+    update = {
         "route_intent": route_intent,
         "target_graph": policy.target_graph,
         "execution_class": policy.execution_class,
         "allowed_tools": list(policy.allowed_tools),
         "requires_approval": policy.requires_approval,
     }
+    context = _clarify_context_for_route(state, route_intent, policy.target_graph)
+    if context is not None:
+        update["context"] = context
+    return update
 
 
 def _safety_final(state: dict) -> dict:

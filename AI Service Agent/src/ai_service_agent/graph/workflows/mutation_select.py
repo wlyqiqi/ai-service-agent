@@ -332,6 +332,7 @@ def make_mutation_select_node(
         ctx.pop("tier_clarify", None)
         ctx.pop("operation_clarify", None)
         ctx.pop("cancellation_candidates", None)
+        # 跨 route_intent / target_graph 的清零在 Policy Gate（进子图前）。
         count = int(ctx.get("clarify_count", 0))
         max_turns = get_settings().clarify_max_turns
         if count >= max_turns:

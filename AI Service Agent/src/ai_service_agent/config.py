@@ -133,8 +133,9 @@ class Settings(BaseSettings):
     cancel_keywords: list[str] = ["取消", "算了", "不用了", "不要", "否"]
     approval_expires_minutes: int = 30
     simulate_approval: bool = False
-    # P4（D1）：Clarify 最大澄清轮次，超限转 fallback
-    clarify_max_turns: int = 2
+    # P4（D1）：Clarify 最大澄清轮次，超限转 fallback。
+    # 换 route_intent / target_graph 时 Policy Gate 会把 clarify_count 清零，本上限只约束同一路由的连续澄清。
+    clarify_max_turns: int = 3
     # 同一会话最多 fallback 回复次数；第 fallback_max_turns + 1 次触发转人工。
     # 默认 4：最多 4 次兜底回复，第 5 次进入 Fallback 时确定性转人工。
     fallback_max_turns: int = 4
