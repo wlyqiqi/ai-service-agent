@@ -52,6 +52,11 @@ from ai_service_agent.harness.form_gate import (
     FormInboundKind,
     decide_form_inbound,
 )
+from ai_service_agent.harness.complaint_offer import (
+    clear_complaint_offer_flags,
+    complaint_handoff_accept,
+    complaint_offer_from_checkpoint,
+)
 from ai_service_agent.harness.graph import make_ai_graph
 from ai_service_agent.harness.handoff import (
     HANDOFF_JOINED_NOTICE,
@@ -60,7 +65,12 @@ from ai_service_agent.harness.handoff import (
     HandoffService,
     handoff_request_tip,
 )
-from ai_service_agent.harness.handoff_entry import EntryDecision, decide_entry
+from ai_service_agent.harness.handoff_entry import (
+    EntryDecision,
+    decide_entry,
+    entry_handoff_reason,
+    is_human_lane,
+)
 from ai_service_agent.harness.handoff_signal import human_takeover_signal, is_bot_error_signal
 from ai_service_agent.harness.messages import MessageStore
 from ai_service_agent.harness.resume import (
@@ -722,6 +732,27 @@ def create_app(
         info = status.create_session(body.user_id)
         return {"session_id": info["conversation_id"], "mode": info["mode"]}
 
+    async def _peek_complaint_offer(thread_id: str) -> tuple[bool, str]:
+        # 只读 checkpoint，不编译图。AI 回合仍只经一次 make_ai_graph。
+        try:
+            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                tup = await saver.aget_tuple({"configurable": {"thread_id": thread_id}})
+        except Exception:
+            logger.exception("read complaint offer failed: thread=%s", thread_id)
+            return False, ""
+        if tup is None:
+            return False, ""
+        return complaint_offer_from_checkpoint(tup.checkpoint)
+
+    async def _clear_complaint_offer(thread_id: str) -> None:
+        async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+            graph = make_ai_graph(
+                _resolve_model(model), saver, order_repository=resolved_order_repository
+            )
+            await clear_complaint_offer_flags(
+                graph, {"configurable": {"thread_id": thread_id}}
+            )
+
     @app.post("/chat")
     async def chat(body: ChatBody, _: None = Depends(_chat_ownership)):
         conv_id = body.session_id
@@ -735,10 +766,16 @@ def create_app(
             return _sse_response(unknown_stream())
 
         # 入口策略单点在 harness/handoff_entry.py（与 AgentBot 共用）。
+        # detect_handoff 仍先于投诉询问肯定集；pending 来自上一轮 checkpoint。
+        mode_now = status.get_mode(conv_id)
+        offer_pending, offer_summary = False, ""
+        if not is_human_lane(mode_now):
+            offer_pending, offer_summary = await _peek_complaint_offer(thread_id)
         decision = decide_entry(
-            mode=status.get_mode(conv_id),
+            mode=mode_now,
             awaiting=handoff.get_awaiting(conv_id) is not None,
             text=body.message,
+            complaint_offer_pending=offer_pending,
         )
 
         if decision is EntryDecision.HUMAN_LANE:
@@ -770,9 +807,15 @@ def create_app(
             return _sse_response(cancel_stream())
 
         if decision is EntryDecision.REQUEST:
-            # Seat-gated：显式转人工 → Handoff Request 挂起（mode 仍 ai），本 turn 只回确认。
+            # Seat-gated：显式转人工或投诉询问上的窄肯定 → 同一 Handoff Request 路径。
             messages_store.append(conv_id, "user", body.message)
-            ev = handoff.request_handoff(conv_id, "用户显式请求转人工", body.message[:80])
+            reason = entry_handoff_reason(
+                text=body.message, complaint_offer_pending=offer_pending
+            )
+            summary = (offer_summary or body.message)[:80]
+            ev = handoff.request_handoff(conv_id, reason, summary)
+            if offer_pending:
+                await _clear_complaint_offer(thread_id)
             tip = handoff_request_tip(created=bool(ev.get("created", True)))
 
             async def explicit_handoff_stream():
@@ -857,6 +900,26 @@ def create_app(
                             except Exception:
                                 logger.exception("chatwoot approval form project failed: conv=%s", conv_id)
                         if ev["type"] == "done":
+                            accepted = complaint_handoff_accept(
+                                (await graph.aget_state(cfg)).values
+                            )
+                            if accepted is not None:
+                                evh = handoff.request_handoff(
+                                    conv_id, "complaint", accepted or body.message[:80]
+                                )
+                                await clear_complaint_offer_flags(graph, cfg)
+                                async for out in _emit_handoff_requested(conv_id, evh):
+                                    yield out
+                                yield {
+                                    "type": "done",
+                                    "data": {
+                                        "final": handoff_request_tip(
+                                            created=bool(evh.get("created", True))
+                                        ),
+                                        "message_id": None,
+                                    },
+                                }
+                                return
                             # 发送前实时复检：已被切走则整轮作废（handoff-spec §1.4）
                             delivery = decide_delivery(
                                 mode=status.get_mode(conv_id),

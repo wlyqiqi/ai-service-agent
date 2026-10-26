@@ -85,6 +85,7 @@ def _jev_route_payload(route_intent: str, confidence: float) -> dict:
         "order_mutation",
         "cancel_order_execute",
         "refund_apply_execute",
+        "complaint",
         "unsupported_action",
         "unknown",
     )}

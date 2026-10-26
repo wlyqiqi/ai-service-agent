@@ -11,6 +11,11 @@ from ai_service_agent.config import get_settings, make_router_fallback_model, ma
 from ai_service_agent.domain.orders import OrderRepository, SQLiteOrderRepository
 from ai_service_agent.graph.agents.read_agent import make_read_graph
 from ai_service_agent.graph.messages import message_text
+from ai_service_agent.graph.complaint_rules import (
+    COMPLAINT_GATE_CONFIDENCE,
+    classify_complaint_offer_reply,
+    complaint_gate_applies,
+)
 from ai_service_agent.graph.route_policy import resolve_route_policy
 from ai_service_agent.graph.fault_tolerance import (
     RETRY_DEEPSEEK_ROUTER,
@@ -24,6 +29,7 @@ from ai_service_agent.graph.router import (
 )
 from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.graph.state import CustomerServiceState
+from ai_service_agent.graph.workflows.complaint import complaint_respond
 from ai_service_agent.graph.workflows.fallback import make_fallback_graph
 from ai_service_agent.graph.workflows.guard import GUARD_REJECT_TEXT, make_guard_node
 from ai_service_agent.graph.workflows.high_risk_agent import make_high_risk_graph
@@ -89,11 +95,42 @@ def _clarify_context_for_route(state: dict, route_intent: str, target_graph: str
 
 
 def _policy_gate(state: dict) -> dict:
-    """Router/Guard join. Deterministically derives route policy from route_intent."""
+    """Router/Guard join. Deterministically derives route policy from route_intent.
+
+    投诉硬闸在查表前覆盖 LLM 标签（不切 human 车道）。同句显式转人工不覆盖。
+    ``complaint_offer_pending`` 时先解释询问回复：同意 / 再确认留在投诉面，
+    拒绝或改提业务则清标记后走本轮 Router。
+    """
     route_intent = state.get("route_intent", "unknown")
-    if (
-        route_intent == "order_mutation"
-        and _PROFILE_UPDATE_PATTERN.search(_latest_user_text(state))
+    text = _latest_user_text(state)
+    base_ctx = dict(state.get("context") or {})
+    stale_accept = bool(base_ctx.pop("complaint_handoff_accept", None))
+    base_ctx.pop("complaint_offer_decision", None)
+    offer_decision = None
+    confidence_override = None
+
+    if base_ctx.get("complaint_offer_pending"):
+        kind = classify_complaint_offer_reply(text)
+        if kind == "agree":
+            offer_decision = "accept"
+            route_intent = "complaint"
+            confidence_override = COMPLAINT_GATE_CONFIDENCE
+        elif kind == "reconfirm":
+            offer_decision = "reconfirm"
+            route_intent = "complaint"
+            confidence_override = COMPLAINT_GATE_CONFIDENCE
+        else:
+            base_ctx["complaint_offer_pending"] = False
+            base_ctx.pop("complaint_summary", None)
+            base_ctx.pop("complaint_offer_reconfirmed", None)
+
+    if offer_decision is None and complaint_gate_applies(text):
+        route_intent = "complaint"
+        confidence_override = COMPLAINT_GATE_CONFIDENCE
+    elif (
+        offer_decision is None
+        and route_intent == "order_mutation"
+        and _PROFILE_UPDATE_PATTERN.search(text)
     ):
         route_intent = "account_profile_update"
 
@@ -105,8 +142,20 @@ def _policy_gate(state: dict) -> dict:
         "allowed_tools": list(policy.allowed_tools),
         "requires_approval": policy.requires_approval,
     }
-    context = _clarify_context_for_route(state, route_intent, policy.target_graph)
-    if context is not None:
+    if confidence_override is not None:
+        update["confidence"] = confidence_override
+    state_for_clarify = {**state, "context": base_ctx}
+    context = _clarify_context_for_route(
+        state_for_clarify, route_intent, policy.target_graph
+    )
+    if context is None:
+        context = dict(base_ctx)
+    else:
+        context = dict(context)
+    if offer_decision is not None:
+        context["complaint_offer_decision"] = offer_decision
+    original = dict(state.get("context") or {})
+    if context != original or stale_accept or offer_decision is not None:
         update["context"] = context
     return update
 
@@ -228,6 +277,7 @@ def build_graph(
     builder.add_node("mutation_graph", mutation_graph)
     builder.add_node("high_risk_graph", high_risk_graph)
     builder.add_node("fallback", fallback_graph)
+    builder.add_node("complaint_graph", complaint_respond)
     builder.add_node("final", finalize)
     builder.add_edge(START, "guard")
     if use_jev:
@@ -254,12 +304,14 @@ def build_graph(
             "fallback": "fallback",
             "mutation_graph": "mutation_graph",
             "high_risk_graph": "high_risk_graph",
+            "complaint_graph": "complaint_graph",
         },
     )
     builder.add_edge("read_graph", "final")
     builder.add_edge("mutation_graph", "final")
     builder.add_edge("high_risk_graph", "final")
     builder.add_edge("fallback", "final")
+    builder.add_edge("complaint_graph", "final")
     builder.add_edge("safety_final", "final")
     builder.add_edge("final", END)
     return builder.compile(checkpointer=checkpointer)

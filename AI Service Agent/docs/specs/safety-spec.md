@@ -83,6 +83,8 @@
 | 策略上限 | 单会话时长 / token / turn 数超限 | 阈值 |
 
 > P0（2026-09-18）：**显式请求由入口层 `detect_handoff_intent` 优先判定**——在进入 LangGraph 之前命中即直接走人工车道（不触发 Router / Guard / Graph）；动态信号（连续失败 / 情绪 / 审批被拒后坚持等）仍由图内 `check_handoff` 判定（决策见 `docs/plans/2026-09-18-handoff-intent-gate.md`）。
+>
+> PR-A（2026-10-26）：`context["complaint_offer_pending"]` 为真时，**禁止情绪规则自动 `handoff_request`**。此期间只有入口层 `detect_handoff_intent`，或用户对投诉询问的窄肯定（复用同一 `request_handoff`，reason=`complaint`），才可挂起。投诉硬闸只强制图内 `route_intent=complaint`，不切 `conversation_mode`。
 
 ### 2.2 流程
 

@@ -35,6 +35,18 @@ ROUTE_INTENT_INSTRUCTIONS = (
     "取消订单和申请退款必须分别归 cancel_order_execute、refund_apply_execute；"
     "只询问政策或流程时选 faq。"
     "不要根据权限、订单状态、工具状态或审批状态判断能否执行，只判断 route_intent。"
+    "五家族：查询类、写入类、高风险类、投诉类、兜底类，每次只选一个细意图。"
+    "同句明确转人工优先于投诉。"
+    "complaint 优先于 order_mutation、unsupported_action、cancel_order_execute 和 refund_apply_execute。"
+)
+
+ROUTE_INTENT_FEW_SHOTS = (
+    ("我要投诉你们，服务太差", "complaint", "0.96"),
+    ("有点不满意服务态度", "complaint", "0.86"),
+    ("态度太差，找消协", "complaint", "0.95"),
+    ("商品缺配件，帮我开个售后", "order_mutation", "0.93"),
+    ("开个发票吧", "order_mutation", "0.94"),
+    ("发票怎么开，只问政策", "faq", "0.90"),
 )
 
 ROUTE_INTENT_CRITERIA = {
@@ -72,6 +84,13 @@ ROUTE_INTENT_CRITERIA = {
         "系统会在路由后澄清参数。"
         "如果只是询问发票政策、售后流程或规则，应归 faq。"
         "不包括取消订单或退款申请。"
+        "服务或态度投诉归 complaint，不要归 order_mutation。"
+        "缺配件、开售后工单仍归本意图。"
+    ),
+    "complaint": (
+        "抱怨服务或态度，含投诉、曝光、消协，以及较弱的有点不满意。"
+        "不要归 order_mutation、取消、退款或 unsupported_action。"
+        "缺配件、开售后工单、开发票、改地址不是 complaint；只问政策归 faq。"
     ),
     "cancel_order_execute": (
         "用户明确要求取消或撤销某个订单，并希望执行取消操作。"
@@ -87,6 +106,7 @@ ROUTE_INTENT_CRITERIA = {
         "例如取消预约、清空订单历史、转移订单所有权，"
         "或修改用户名、邮箱等当前未支持资料。"
         "这类请求应归 unsupported_action，不归 unknown。"
+        "投诉归 complaint，不要归 unsupported_action。"
     ),
     "unknown": (
         "无法确定用户当前想做什么，即使结合 recent_context 仍无法确定意图。"
@@ -108,6 +128,12 @@ _ROUTE_INTENT_CRITERIA_TEXT = "\n".join(
     f"- {name}：{description}" for name, description in ROUTE_INTENT_CRITERIA.items()
 )
 
+_ROUTE_INTENT_FEW_SHOT_TEXT = "\n".join(
+    f"用户：{user}\n"
+    '{"route_intent":"' + intent + '","confidence":' + confidence + "}"
+    for user, intent, confidence in ROUTE_INTENT_FEW_SHOTS
+)
+
 ROUTE_INTENT_SYSTEM = f"""你是客服路由意图分类器。
 
 {_ROUTE_INTENT_CRITERIA_TEXT}
@@ -117,6 +143,9 @@ ROUTE_INTENT_SYSTEM = f"""你是客服路由意图分类器。
 
 输出格式：
 {{"route_intent":"unknown","confidence":0.20}}
+
+示例：
+{_ROUTE_INTENT_FEW_SHOT_TEXT}
 """
 
 # HighRisk Select fake/JSON：仅 {"tool","args"}；空 tool / 无匹配由节点写 tier_clarify（ADR 0005）。

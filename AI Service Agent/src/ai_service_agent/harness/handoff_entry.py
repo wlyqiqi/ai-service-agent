@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from enum import Enum
 
+from ai_service_agent.graph.complaint_rules import classify_complaint_offer_reply
 from ai_service_agent.graph.handoff_rules import detect_handoff_cancel, detect_handoff_intent
+
+EXPLICIT_HANDOFF_REASON = "用户显式请求转人工"
+COMPLAINT_HANDOFF_REASON = "complaint"
 
 HUMAN_MODE = "human"
 
@@ -33,12 +37,19 @@ def is_human_lane(mode: str) -> bool:
     return mode == HUMAN_MODE
 
 
-def decide_entry(*, mode: str, awaiting: bool, text: str) -> EntryDecision:
+def decide_entry(
+    *,
+    mode: str,
+    awaiting: bool,
+    text: str,
+    complaint_offer_pending: bool = False,
+) -> EntryDecision:
     """决定一条文本入站的去向。确定性、无 I/O，输入相同结果恒定。
 
     顺序即策略：mode 门控先于任何检测；`CANCEL` 只在有挂起申请时成立（§2）；
-    其余命中显式转人工措辞的走 `REQUEST`。取消措辞先于请求措辞判定，因为
-    「取消转人工」同时命两者，语义上必须是取消。
+    ``detect_handoff_intent`` 先于投诉询问肯定集。投诉硬闸不在这里切车道。
+    仅当上一轮留下 ``complaint_offer_pending`` 且本句是窄肯定时，复用 `REQUEST`
+    （与显式转人工同一条入口路径，不另起 interrupt）。
     """
     if is_human_lane(mode):
         return EntryDecision.HUMAN_LANE
@@ -46,4 +57,15 @@ def decide_entry(*, mode: str, awaiting: bool, text: str) -> EntryDecision:
         return EntryDecision.CANCEL
     if detect_handoff_intent(text):
         return EntryDecision.REQUEST
+    if complaint_offer_pending and classify_complaint_offer_reply(text) == "agree":
+        return EntryDecision.REQUEST
     return EntryDecision.AI
+
+
+def entry_handoff_reason(*, text: str, complaint_offer_pending: bool) -> str:
+    """显式转人工沿用原 reason；投诉询问上的同意（含待答期间的「转人工」）用 complaint。"""
+    if complaint_offer_pending and (
+        detect_handoff_intent(text) or classify_complaint_offer_reply(text) == "agree"
+    ):
+        return COMPLAINT_HANDOFF_REASON
+    return EXPLICIT_HANDOFF_REASON

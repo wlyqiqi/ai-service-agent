@@ -451,6 +451,33 @@ def handoff_cancel_confirm_text() -> str:
     return "好的，已取消转人工申请。有需要随时告诉我。"
 
 
+# 投诉面固定安抚（PR-A）：1–2 句，致歉 + 承认感受，并询问是否转人工。
+# 禁止在这些模板里列举开票 / 备注 / 售后能力。
+_COMPLAINT_EMPATHY = (
+    "非常抱歉给您带来不好的体验，我已经听到您的不满。\n"
+    "如果需要，我可以帮您转接人工客服优先跟进，您要转人工吗？",
+    "对不起，这次让您这么不舒服，我们会认真对待。\n"
+    "需要的话我可以现在帮您转接人工，您要转人工吗？",
+)
+
+
+def complaint_empathy_templates() -> tuple[str, ...]:
+    return _COMPLAINT_EMPATHY
+
+
+def complaint_empathy_text(seed: str = "") -> str:
+    """按原句稳定选一条安抚，便于同一投诉重复进入时文案不变。"""
+    if not seed:
+        return _COMPLAINT_EMPATHY[0]
+    index = sum(ord(ch) for ch in seed) % len(_COMPLAINT_EMPATHY)
+    return _COMPLAINT_EMPATHY[index]
+
+
+def complaint_reconfirm_text() -> str:
+    """裸「要」等模糊短句：再确认是转人工还是继续办业务。不列举业务能力。"""
+    return "想确认一下：您是要转人工，还是继续办理现在的业务？"
+
+
 def handoff_request_idempotent_tip_text() -> str:
     """挂起期间重复转人工：仅短 tip，不再发强提示。"""
     return "已收到您的转人工申请，请稍候，人工客服接入前我仍会继续为您服务。"

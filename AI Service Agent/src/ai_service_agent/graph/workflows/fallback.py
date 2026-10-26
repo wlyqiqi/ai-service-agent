@@ -13,6 +13,7 @@ from ai_service_agent.graph.fault_tolerance import (
     make_timeout_policy,
 )
 from ai_service_agent.graph.workflows.copy import RUNTIME_ERROR_TEXT
+from ai_service_agent.graph.complaint_rules import emotion_auto_handoff_allowed
 from ai_service_agent.graph.handoff_rules import detect_handoff_intent
 from ai_service_agent.graph.state import CustomerServiceState
 from ai_service_agent.prompts import FALLBACK_SYSTEM_PROMPT
@@ -24,6 +25,21 @@ def _last_user_content(state: dict) -> str:
         if isinstance(m, HumanMessage):
             return m.content if isinstance(m.content, str) else str(m.content)
     return ""
+
+
+def _emotion_signal(text: str) -> bool:
+    """情绪自动转人工检测器。PR-A 不启用；测试可替换以锁待答禁令。"""
+    del text
+    return False
+
+
+def emotion_handoff_reason(state: dict) -> str | None:
+    """情绪规则出口。``complaint_offer_pending`` 期间必须返回 None。"""
+    if not emotion_auto_handoff_allowed(state.get("context")):
+        return None
+    if _emotion_signal(_last_user_content(state)):
+        return "情绪信号"
+    return None
 
 
 def check_handoff(state: dict) -> dict | Command:
@@ -49,6 +65,16 @@ def check_handoff(state: dict) -> dict | Command:
             update={
                 "handoff": True,
                 "handoff_reason": "用户显式请求转人工",
+                "execution_status": "waiting_handoff",
+            },
+            goto="pause",
+        )
+    emotion_reason = emotion_handoff_reason(state)
+    if emotion_reason:
+        return Command(
+            update={
+                "handoff": True,
+                "handoff_reason": emotion_reason,
                 "execution_status": "waiting_handoff",
             },
             goto="pause",

@@ -126,12 +126,12 @@ def test_cli_runs_on_real_control_dataset(tmp_path):
     assert proc.returncode == 0, proc.stderr
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["case_count"] == 101
-    assert report["dimensions"]["policy"]["summary"]["pass"] == 77
+    assert report["dimensions"]["policy"]["summary"]["pass"] == 78
     assert report["dimensions"]["guard"]["summary"]["pass"] == 101
-    # HighRisk approval/deny 与 Form + 可见 order_id 契约对齐后，routing 端到端应全绿（仅 handoff 动态信号 skip）
-    assert report["dimensions"]["routing"]["summary"]["pass"] == 93
+    # CTRL-0063/0100 改为 complaint 面（本轮不自动 handoff）。其余动态转人工信号仍 skip。
+    assert report["dimensions"]["routing"]["summary"]["pass"] == 94
     assert report["dimensions"]["routing"]["summary"]["fail"] == 0
-    assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 8}  # 动态信号保持 skip
+    assert report["dimensions"]["routing"]["summary"]["skip"] == {"handoff_rule_pending": 7}
 
 
 def test_policy_dimension_clarify_maps_high_risk(tmp_path):
