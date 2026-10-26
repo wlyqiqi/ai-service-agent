@@ -125,6 +125,73 @@ def test_policy_gate_empty_messages_no_correction(enabled):
     assert update["route_intent"] == "order_mutation"
     assert update["allowed_tools"] == ["update_order_note", "create_invoice", "create_service_ticket"]
 
+def test_policy_gate_resets_clarify_count_when_route_changes(enabled):
+    update = _policy_gate({
+        "route_intent": "account_profile_update",
+        "target_graph": "high_risk_graph",
+        "context": {
+            "clarify_count": 2,
+            "clarify_route_intent": "refund_apply_execute",
+            "clarify_target_graph": "high_risk_graph",
+            "fallback_count": 1,
+        },
+    })
+    assert update["target_graph"] == "mutation_graph"
+    assert update["context"]["clarify_count"] == 0
+    assert update["context"]["fallback_count"] == 1
+    assert update["context"]["clarify_route_intent"] == "account_profile_update"
+    assert update["context"]["clarify_target_graph"] == "mutation_graph"
+
+
+def test_policy_gate_resets_clarify_count_when_intent_changes_inside_graph(enabled):
+    update = _policy_gate({
+        "route_intent": "cancel_order_execute",
+        "target_graph": "high_risk_graph",
+        "context": {
+            "clarify_count": 3,
+            "clarify_route_intent": "refund_apply_execute",
+            "clarify_target_graph": "high_risk_graph",
+        },
+    })
+    assert update["target_graph"] == "high_risk_graph"
+    assert update["context"]["clarify_count"] == 0
+    assert update["context"]["clarify_route_intent"] == "cancel_order_execute"
+
+
+def test_policy_gate_keeps_clarify_count_when_route_unchanged(enabled):
+    update = _policy_gate({
+        "route_intent": "refund_apply_execute",
+        "target_graph": "high_risk_graph",
+        "context": {
+            "clarify_count": 2,
+            "clarify_route_intent": "refund_apply_execute",
+            "clarify_target_graph": "high_risk_graph",
+        },
+    })
+    assert "context" not in update
+
+
+def test_policy_gate_does_not_reset_injected_count_without_previous_route(enabled):
+    update = _policy_gate({
+        "route_intent": "refund_apply_execute",
+        "context": {"clarify_count": 3},
+    })
+    assert update["context"]["clarify_count"] == 3
+    assert update["context"]["clarify_route_intent"] == "refund_apply_execute"
+    assert update["context"]["clarify_target_graph"] == "high_risk_graph"
+
+
+def test_policy_gate_legacy_checkpoint_resets_when_target_graph_changes(enabled):
+    update = _policy_gate({
+        "route_intent": "account_profile_update",
+        "target_graph": "high_risk_graph",
+        "context": {"clarify_count": 2, "fallback_count": 1},
+    })
+    assert update["context"]["clarify_count"] == 0
+    assert update["context"]["fallback_count"] == 1
+    assert update["context"]["clarify_target_graph"] == "mutation_graph"
+
+
 def test_policy_gate_uses_current_turn_only(enabled):
     state = {
         "route_intent": "order_mutation",

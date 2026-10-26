@@ -15,7 +15,12 @@ from ai_service_agent.graph.workflows.copy import clarify_missing_text
 from ai_service_agent.graph.workflows.copy import clarify_fallback_text
 from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
 from ai_service_agent.harness.streaming import event_stream
-from ai_service_agent.testing import ToolCallingFakeModel, router_json_message, select_json_message
+from ai_service_agent.testing import (
+    ToolCallingFakeModel,
+    router_json_message,
+    select_clarify_message,
+    select_json_message,
+)
 from ai_service_agent.tools import DEFAULT_TOOL_REGISTRY
 from ai_service_agent.tools.kb import kb_search
 from conftest import ainvoke_graph
@@ -76,7 +81,7 @@ def test_clarify_text_maps_labels():
 
 
 def test_config_clarify_max_turns_default():
-    assert get_settings().clarify_max_turns == 2
+    assert get_settings().clarify_max_turns == 3
 
 
 @pytest.mark.asyncio
@@ -195,7 +200,7 @@ def test_mutation_empty_args_opens_form_interrupt():
 
 
 def test_clarify_over_limit_falls_back():
-    out = _invoke(_graph(_highrisk_model({})), "退了吧", "c4", user_id="user-with-no-paid-order", context={"clarify_count": 2})
+    out = _invoke(_graph(_highrisk_model({})), "退了吧", "c4", user_id="user-with-no-paid-order", context={"clarify_count": 3})
     assert out["execution_status"] == "completed"
     assert clarify_fallback_text() in out["messages"][-1].content
 
@@ -252,16 +257,56 @@ def test_multi_turn_form_then_confirm_enters_highrisk():
 
 
 def test_multi_turn_clarify_over_limit_falls_back():
-    """0076 跨 turn：连续 3 轮不补齐 -> 超过 clarify_max_turns=2 -> 确定性 fallback，绝不默认执行。"""
+    """同一 route_intent / target_graph 连续澄清仍受 clarify_max_turns=3 限制；第 4 轮 fallback。"""
     saver = MemorySaver()
     r1 = _turn(_build(_highrisk_model({}), saver), "退了吧", "c8", user_id="user-with-no-paid-order")
     assert r1["execution_status"] == "clarifying" and r1["context"]["clarify_count"] == 1
     r2 = _turn(_build(_highrisk_model({}), saver), "还是没有订单号", "c8", user_id="user-with-no-paid-order")
     assert r2["execution_status"] == "clarifying" and r2["context"]["clarify_count"] == 2
-    r3 = _turn(_build(_highrisk_model({}), saver), "那就这样吧", "c8", user_id="user-with-no-paid-order")
-    assert r3["execution_status"] == "completed"
-    assert clarify_fallback_text() in r3["messages"][-1].content
-    assert not r3.get("__interrupt__")
+    r3 = _turn(_build(_highrisk_model({}), saver), "订单号还是没有", "c8", user_id="user-with-no-paid-order")
+    assert r3["execution_status"] == "clarifying" and r3["context"]["clarify_count"] == 3
+    r4 = _turn(_build(_highrisk_model({}), saver), "那就这样吧", "c8", user_id="user-with-no-paid-order")
+    assert r4["execution_status"] == "completed"
+    assert clarify_fallback_text() in r4["messages"][-1].content
+    assert not r4.get("__interrupt__")
+
+
+def _mutation_operation_clarify_model():
+    return ToolCallingFakeModel(responses=[
+        router_json_message("account_profile_update", 0.9),
+        select_clarify_message("请问是要改收货地址，还是改联系电话？"),
+    ])
+
+
+def test_highrisk_clarify_then_mutation_route_resets_clarify_count():
+    """同 thread：HighRisk 澄清烧满上限后切到 Mutation 改址，Operation Clarify 从 0 重新发出。"""
+    saver = MemorySaver()
+    thread = "route-reset-mutation"
+    user_id = "user-with-no-paid-order"
+    burned = None
+    for text in ("退了吧", "还是没有订单号", "订单号还是没有"):
+        burned = _turn(_build(_highrisk_model({}), saver), text, thread, user_id=user_id)
+    assert burned["execution_status"] == "clarifying"
+    assert burned["context"]["clarify_count"] == 3
+    assert burned["route_intent"] == "refund_apply_execute"
+    assert burned["target_graph"] == "high_risk_graph"
+
+    graph = _build(_mutation_operation_clarify_model(), saver)
+    events = asyncio.run(_acollect(event_stream(
+        graph,
+        {"configurable": {"thread_id": thread}},
+        [HumanMessage(content="我要改收货地址")],
+        extra_state={"user_id": user_id, "session_id": thread},
+    )))
+    clarify = next(e for e in events if e["type"] == "clarification_required")
+    assert clarify["data"] == {"missing": [], "reason": "operation_unclear"}
+    state = asyncio.run(graph.aget_state({"configurable": {"thread_id": thread}}))
+    assert state.values["route_intent"] == "account_profile_update"
+    assert state.values["target_graph"] == "mutation_graph"
+    assert state.values["execution_status"] == "clarifying"
+    assert state.values["context"]["clarify_count"] == 1
+    assert "请问是要改收货地址，还是改联系电话？" in state.values["messages"][-1].content
+    assert clarify_fallback_text() not in state.values["messages"][-1].content
 
 
 def _tier_model(tool_name, risk):

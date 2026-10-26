@@ -7,7 +7,8 @@
 Mutation Operation Clarify 由 mutation_select_llm 内联完成（ADR 0004），不再经本节点。
 HighRisk 无 tool_call / 档不匹配仍经本节点（ADR 0005 P0 不内联 Operation Clarify）。
 解析失败/未知工具/schema 错误仍走 select 的 _reject（safety_rejected）。
-轮次计数存 context["clarify_count"]，完整成功 select 清零，
+轮次计数存 context["clarify_count"]。换 route_intent / target_graph 时由 Policy Gate
+在进入子图前清零；完整成功 select 亦清零。
 超过 Settings.clarify_max_turns -> 确定性 fallback 文案 + completed（不再澄清）。
 """
 
@@ -29,6 +30,7 @@ from ai_service_agent.graph.workflows.copy import (
 def make_clarify_node() -> Callable[[dict], dict]:
     def clarify(state: dict) -> dict:
         ctx = state.get("context", {})
+        # 跨 route_intent / target_graph 的清零在 Policy Gate（进子图前）。
         count = int(ctx.get("clarify_count", 0))
         max_turns = get_settings().clarify_max_turns
         if count >= max_turns:
