@@ -203,8 +203,21 @@ _UPDATE_ADDRESS_PLACEHOLDER = "省市区 + 街道门牌，例如：山东省青�
 _UPDATE_ADDRESS_CURRENT_EMPTY = "暂无"
 
 
-def update_address_form_intro_text() -> str:
-    return _UPDATE_ADDRESS_FORM_INTRO
+def update_address_form_intro_text(current_address: str | None = None) -> str:
+    """引导句。``current_address`` 非 None 时把「当前地址 + 脚注」并进引导句。
+
+    Z2 减噪：这两项原本是 form items（只读展示），会被 Widget 当提交值回显；
+    移出 items 后由引导句承载，访客仍能看到同样信息。
+    """
+    if current_address is None:
+        return _UPDATE_ADDRESS_FORM_INTRO
+    return "\n".join(
+        [
+            _UPDATE_ADDRESS_FORM_INTRO,
+            f"当前收货地址：{update_address_current_address_display(current_address)}",
+            _UPDATE_ADDRESS_FORM_FOOTNOTE,
+        ]
+    )
 
 
 def update_address_form_title_text() -> str:
@@ -399,6 +412,93 @@ def build_mutation_success_card(
         lines=tuple(lines),
         followup=mutation_success_followup_text(tool),
     )
+
+
+# Failure card: symmetric with the success card. Only one action — 「重新填写」.
+# The postback is a no-op in the Adapter; the real refill is the re-pushed form.
+_FAILURE_CARD_TITLES = {
+    "update_address": "地址未能修改",
+    "update_phone": "手机号未能修改",
+    "update_order_note": "订单备注未能更新",
+    "create_invoice": "发票未能开具",
+    "create_service_ticket": "售后工单未能创建",
+    "cancel_order": "订单未能取消",
+    "refund_apply": "退款申请未能提交",
+}
+
+_FAILURE_STATUS_LABEL = "状态"
+_FAILURE_STATUS_VALUE = "未完成"
+_FAILURE_RETRY_BUTTON = "重新填写"
+_FAILURE_REASON_FALLBACK = "提交的信息未通过校验，请核对后重新填写。"
+
+# 写库失败码 → 访客可读的原因（不把 error code 直接抛给用户）。
+_TOOL_FAILURE_REASONS = {
+    "data_source_unavailable": "订单系统暂时不可用，请稍后再试",
+    "not_logged_in": "登录状态已失效，请重新进入会话",
+    "data_boundary": "该订单不属于当前账号",
+    "not_found": "没有查询到该订单",
+    "invoice_already_exists": "该订单已经开过发票",
+    "write_conflict": "同一笔操作正在处理中，请稍后重试",
+    "invalid_args": "提交的信息格式不正确",
+    "write_failed": "本次操作未能完成",
+}
+
+FAILURE_CARD_KINDS = ("form_rejected", "tool_failed")
+
+# Failure facts: only identity fields; the reason line already carries the cause.
+_FAILURE_FACT_KEYS = ("order_id", "address", "phone", "note", "company", "tax_no", "amount")
+
+
+def mutation_failure_retry_payload(tool: str) -> str:
+    return f"{tool}_failure_retry"
+
+
+def mutation_failure_reason(error: str | None) -> str:
+    """写库失败码 → 一句访客可读的原因。未知码用中性兜底，不回显 code。"""
+    return _TOOL_FAILURE_REASONS.get(
+        str(error or "").strip(), _TOOL_FAILURE_REASONS["write_failed"]
+    )
+
+
+def build_mutation_failure_card(
+    tool: str,
+    reason: str | None = None,
+    *,
+    kind: str = "form_rejected",
+    facts: dict | None = None,
+) -> dict | None:
+    """Build the shared failure card for a write tool. Unknown tools return None.
+
+    ``kind`` 只做留痕（``form_rejected`` 后接重推 form；``tool_failed`` 后接短 text），
+    卡片形状与文案来源对两条路径完全一致——Adapter 不得再拼第二套标题/按钮。
+    """
+    if kind not in FAILURE_CARD_KINDS:
+        raise ValueError(f"unknown failure card kind: {kind!r}")
+    title = _FAILURE_CARD_TITLES.get(tool)
+    if title is None:
+        return None
+    text = (reason or "").strip() or _FAILURE_REASON_FALLBACK
+    lines: list[tuple[str, str]] = [
+        (_FAILURE_STATUS_LABEL, _FAILURE_STATUS_VALUE),
+        ("原因", text),
+    ]
+    for key in _FAILURE_FACT_KEYS:
+        value = _format_card_value((facts or {}).get(key))
+        if value:
+            lines.append((FIELD_LABELS.get(key, key), value))
+    return {
+        "tool": tool,
+        "kind": kind,
+        "title": title,
+        "description": format_success_card_description(lines),
+        "actions": [
+            {
+                "type": "postback",
+                "text": _FAILURE_RETRY_BUTTON,
+                "payload": mutation_failure_retry_payload(tool),
+            }
+        ],
+    }
 
 
 def update_address_success_status_text() -> str:

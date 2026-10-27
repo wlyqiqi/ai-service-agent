@@ -377,6 +377,15 @@ async def test_form_rejected_does_not_send_success_card(monkeypatch, tmp_path):
         for call in chatwoot.send_interactive_message.await_args_list
         if len(call.args) > 2 and call.args[2] == "cards"
     ]
-    assert card_calls == []
-    chatwoot.send_interactive_message.assert_awaited_once()
+    # 失败路径只发失败卡：标题不是成功文案，按钮只有「重新填写」。
+    assert len(card_calls) == 1
+    card = card_calls[0].args[3]["items"][0]
+    assert card["title"] == "地址未能修改"
+    assert [action["text"] for action in card["actions"]] == ["重新填写"]
+    assert card["actions"][0]["payload"] == "update_address_failure_retry"
+    # 失败卡 + 重推 form，顺序固定。
+    assert chatwoot.send_interactive_message.await_count == 2
     assert chatwoot.send_interactive_message.await_args.args[2] == "form"
+    # 长 done.final（假成功文案）不得出站。
+    for call in chatwoot.send_bot_message.await_args_list:
+        assert "已修改成功" not in str(call.args[1])

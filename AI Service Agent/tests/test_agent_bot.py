@@ -647,12 +647,8 @@ async def test_form_required_projects_chatwoot_native_form_from_interrupt(monkey
     assert "修改收货地址" in args[1]
     assert args[2] == "form"
     items = args[3]["items"]
-    assert [item["name"] for item in items] == [
-        "current_address",
-        "order_id",
-        "address",
-        "abandon_footnote",
-    ]
+    # Z2 减噪：items 只留业务可提交字段（当前地址/脚注进引导句）。
+    assert [item["name"] for item in items] == ["order_id", "address"]
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["type"] == "select"
     assert order_picker["options"] == [
@@ -919,12 +915,8 @@ async def test_fake_graph_form_interrupt_projects_chatwoot_form(tmp_path, monkey
     args = chatwoot.send_interactive_message.await_args.args
     assert args[2] == "form"
     items = args[3]["items"]
-    assert [item["name"] for item in items] == [
-        "current_address",
-        "order_id",
-        "address",
-        "abandon_footnote",
-    ]
+    # Z2 减噪：items 只留业务可提交字段（当前地址/脚注进引导句）。
+    assert [item["name"] for item in items] == ["order_id", "address"]
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["type"] == "select"
     assert any(opt["value"] == "ORD-PAID-1" for opt in order_picker["options"])
@@ -1175,8 +1167,19 @@ async def test_form_rejected_repushes_same_session_with_errors_then_fix_writes_o
     assert rejected_form["form_session_id"] == form_session_id
     assert rejected_form["tool"] == "update_address"
     assert rejected_form.get("errors")
-    chatwoot.send_interactive_message.assert_awaited_once()
-    reject_args = chatwoot.send_interactive_message.await_args.args
+    # 失败卡 → 重推 form（两次 interactive，顺序固定）。
+    assert chatwoot.send_interactive_message.await_count == 2
+    failure_call, reject_call = chatwoot.send_interactive_message.await_args_list
+    assert failure_call.args[2] == "cards"
+    failure_items = failure_call.args[3]["items"]
+    assert failure_items[0]["title"] == "地址未能修改"
+    assert [action["text"] for action in failure_items[0]["actions"]] == ["重新填写"]
+    assert failure_items[0]["actions"][0]["payload"] == "update_address_failure_retry"
+    assert any(
+        str(msg) in failure_items[0]["description"]
+        for msg in rejected_form["errors"].values()
+    )
+    reject_args = reject_call.args
     assert reject_args[2] == "form"
     reject_title = reject_args[1]
     reject_items = reject_args[3]["items"]

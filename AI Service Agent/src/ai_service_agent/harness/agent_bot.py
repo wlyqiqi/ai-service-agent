@@ -10,6 +10,7 @@ from ai_service_agent.graph.runtime_context import GraphContext
 from ai_service_agent.harness.chatwoot import ChatwootClient, chatwoot_message_id
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
+    build_mutation_failure_card,
     handoff_cancel_confirm_text,
     handoff_request_private_note_text,
 )
@@ -37,11 +38,14 @@ from ai_service_agent.harness.handoff_entry import (
     is_human_lane,
 )
 from ai_service_agent.harness.mutation_form_projection import (
+    form_rejection_reason,
     order_picker_options,
     send_mutation_form,
 )
 from ai_service_agent.harness.mutation_projection import (
+    WriteFailureCapture,
     WriteSuccessCapture,
+    send_mutation_failure_card,
     send_mutation_success_card,
 )
 from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
@@ -339,6 +343,8 @@ async def _handle_locked_agent_bot_message(
     approval_form_data = None
     final_message_id = None
     write_success = WriteSuccessCapture()
+    write_failure = WriteFailureCapture()
+    form_rejected = False
     aborted_for_human = False
 
     if graph is None:
@@ -391,6 +397,7 @@ async def _handle_locked_agent_bot_message(
 
         async def _consume_graph_events(*, messages, resume):
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
+            nonlocal form_rejected
             async for event in event_stream(
                 graph,
                 config,
@@ -401,6 +408,7 @@ async def _handle_locked_agent_bot_message(
                 context=context,
             ):
                 write_success.observe(event)
+                write_failure.observe(event)
                 if event.get("type") == "done":
                     final_text = event.get("data", {}).get("final")
                     final_message_id = event.get("data", {}).get("message_id")
@@ -408,6 +416,7 @@ async def _handle_locked_agent_bot_message(
                     # form_rejected: same Form Interrupt session with errors
                     # (Closed MutationGraph); Adapter only projects Transport.
                     mutation_form_data = event.get("data") or {}
+                    form_rejected = event.get("type") == "form_rejected"
                 elif event.get("type") == "approval_required":
                     # Seat Approver side-channel card (#64); private form, not Widget.
                     approval_form_data = event.get("data") or {}
@@ -419,7 +428,7 @@ async def _handle_locked_agent_bot_message(
 
         async def run_graph():
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
-            nonlocal aborted_for_human
+            nonlocal aborted_for_human, form_rejected
             if status is not None and status.get_mode(conversation_id) != "ai":
                 # Takeover cancelled the form under this lock: do not Form Resume
                 # and do not send a bot bubble.
@@ -503,27 +512,51 @@ async def _handle_locked_agent_bot_message(
             "response": None,
         }
 
-    # Confirm write ok + no new form/approval card → shared success cards (+ short bubble).
-    # Failures stay on the plain done bubble (no failure cards).
+    # 卡片优先于长 done.final：成功 → 成功卡 + 短 followup；
+    # form_rejected → 失败卡 + 重推 form；写库失败 → 失败卡 + 短引导。
     success_spec = None
+    failure_spec = None
+    failure_card = None
     if mutation_form_data is None and approval_form_data is None:
-        success_spec = write_success.spec()
+        if write_failure.tool is not None:
+            failure_card = write_failure.card()
+            if failure_card is not None:
+                failure_spec = {"followup": write_failure.followup()}
+        else:
+            success_spec = write_success.spec()
+    elif form_rejected and mutation_form_data is not None:
+        failure_card = build_mutation_failure_card(
+            str(mutation_form_data.get("tool") or ""),
+            form_rejection_reason(mutation_form_data),
+            kind="form_rejected",
+            facts=mutation_form_data.get("prefills"),
+        )
+        if failure_card is not None:
+            # 失败卡后直接重推 form，不再加气泡。
+            failure_spec = {"followup": None}
     delivery = decide_delivery(
         mode=status.get_mode(conversation_id) if status is not None else "ai",
         origin=TurnOrigin.AI_TURN,
         success_spec=success_spec,
+        failure_spec=failure_spec,
         final=final_text,
     )
     if delivery.card and delivery.outbound:
-        followup = await send_mutation_success_card(
-            chatwoot,
-            conversation_id,
-            success_spec,
-        )
-        final_text = followup
-        if followup is not None and messages_store is not None:
+        if delivery.card_kind == "failure":
+            await send_mutation_failure_card(chatwoot, conversation_id, failure_card)
+            final_text = delivery.persist
+            if final_text is not None:
+                # 失败卡后可跟一句短引导（tool_failed）；form_rejected 没有。
+                await chatwoot.send_bot_message(conversation_id, final_text)
+        else:
+            final_text = await send_mutation_success_card(
+                chatwoot,
+                conversation_id,
+                success_spec,
+            )
+        if final_text is not None and messages_store is not None:
             messages_store.append(
-                conversation_id, "assistant", followup, message_id=final_message_id
+                conversation_id, "assistant", final_text, message_id=final_message_id
             )
     elif delivery.persist is not None and delivery.outbound:
         await chatwoot.send_bot_message(conversation_id, delivery.persist)
