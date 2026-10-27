@@ -46,9 +46,22 @@ def test_unique_mutation_tool_maps_address_phrases(text):
         ("开票", "create_invoice"),
         ("要发票", "create_invoice"),
         ("给我开一张发票", "create_invoice"),
+        # 「开」+ 量词/填充词的口语形态（2026-10-27 真实会话回归）：
+        # 用户说「开个发票吧」，模型只回文本追问槽位，force-form 未命中 -> 无表单。
+        ("开个发票", "create_invoice"),
+        ("开个发票吧", "create_invoice"),
+        ("开个票", "create_invoice"),
+        ("开张票", "create_invoice"),
+        ("开一张票", "create_invoice"),
+        ("开一下发票", "create_invoice"),
+        ("给我开个发票", "create_invoice"),
         ("申请售后", "create_service_ticket"),
         ("开售后工单", "create_service_ticket"),
         ("我要申请售后", "create_service_ticket"),
+        ("开个售后", "create_service_ticket"),
+        ("帮我开个售后", "create_service_ticket"),
+        ("提交个售后", "create_service_ticket"),
+        ("我要开个售后工单", "create_service_ticket"),
     ],
 )
 def test_unique_mutation_tool_maps_other_write_phrases(text, tool):
@@ -65,6 +78,8 @@ def test_unique_mutation_tool_maps_other_write_phrases(text, tool):
         "改联系方式",
         "不要改收货地址",
         "不用改地址",
+        "不要开个发票",
+        "别开个售后",
     ],
 )
 def test_unique_mutation_tool_does_not_force_vague_or_negated(text):
