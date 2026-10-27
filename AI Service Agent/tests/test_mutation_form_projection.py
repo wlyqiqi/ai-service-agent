@@ -14,6 +14,7 @@ import pytest
 
 from ai_service_agent.graph.workflows.copy import (
     update_address_empty_state_text,
+    update_address_form_footnote_text,
     update_address_form_intro_text,
     update_address_form_subtitle_text,
     update_address_form_title_text,
@@ -170,6 +171,22 @@ def test_update_address_form_rejected_keeps_order_draft_and_paints_select():
     address = next(item for item in items if item["name"] == "address")
     assert address["default"] == "太短"
     assert address["placeholder"] == "请填写有效地址"
+
+
+def test_form_rejected_title_keeps_the_abandon_footnote():
+    """重推 form 不重发引导句，脚注（Implicit Cancel 提示）必须留在表单标题里。"""
+    base = {
+        "tool": "update_address",
+        "current_address": "旧址",
+        "order_candidates": [{"order_id": "ORD-1"}],
+    }
+    rejected = mutation_form_title_from_form_data(
+        {**base, "errors": {"address": "请填写有效地址"}}
+    )
+    assert update_address_form_footnote_text() in rejected
+    assert "请填写有效地址" in rejected
+    # 首次打开：脚注在引导句里，标题不重复。
+    assert update_address_form_footnote_text() not in mutation_form_title_from_form_data(base)
 
 
 @pytest.mark.asyncio

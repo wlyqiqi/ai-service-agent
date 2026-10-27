@@ -79,7 +79,14 @@ class WriteFailureCapture:
         if event.get("type") == "tool_call":
             args = data.get("args") if isinstance(data.get("args"), dict) else {}
             self._args[name] = args
-        elif event.get("type") == "tool_result" and not data.get("ok"):
+        elif event.get("type") == "tool_result":
+            if data.get("ok"):
+                # 同一工具后一次成功要清掉前一次失败，否则会「写成功却报失败」。
+                if self.tool == name:
+                    self.tool = None
+                    self.args = {}
+                    self.error = ""
+                return
             payload = data.get("result") if isinstance(data.get("result"), dict) else {}
             self.tool = name
             self.args = self._args.get(name, {})

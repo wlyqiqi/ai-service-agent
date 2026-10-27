@@ -428,7 +428,11 @@ _FAILURE_CARD_TITLES = {
 
 _FAILURE_STATUS_LABEL = "状态"
 _FAILURE_STATUS_VALUE = "未完成"
+# 按钮文案随 kind 走：只有 form_rejected 后面真的会重推 form，才敢写「重新填写」。
+# tool_failed 没有 form（写库失败后图里已无 Form Interrupt），写成「稍后重试」，
+# 与卡后的短引导（稍后重试 / 转人工）一致，避免承诺一个不存在的动作。
 _FAILURE_RETRY_BUTTON = "重新填写"
+_FAILURE_LATER_BUTTON = "稍后重试"
 _FAILURE_REASON_FALLBACK = "提交的信息未通过校验，请核对后重新填写。"
 
 # 写库失败码 → 访客可读的原因（不把 error code 直接抛给用户）。
@@ -469,8 +473,9 @@ def build_mutation_failure_card(
 ) -> dict | None:
     """Build the shared failure card for a write tool. Unknown tools return None.
 
-    ``kind`` 只做留痕（``form_rejected`` 后接重推 form；``tool_failed`` 后接短 text），
-    卡片形状与文案来源对两条路径完全一致——Adapter 不得再拼第二套标题/按钮。
+    ``kind`` 决定按钮文案：``form_rejected`` 后面真的会重推 form →「重新填写」；
+    ``tool_failed`` 没有 form 可填 →「稍后重试」。两条路径的标题/描述/按钮来源
+    完全一致——Adapter 不得再拼第二套文案。
     """
     if kind not in FAILURE_CARD_KINDS:
         raise ValueError(f"unknown failure card kind: {kind!r}")
@@ -494,7 +499,11 @@ def build_mutation_failure_card(
         "actions": [
             {
                 "type": "postback",
-                "text": _FAILURE_RETRY_BUTTON,
+                "text": (
+                    _FAILURE_RETRY_BUTTON
+                    if kind == "form_rejected"
+                    else _FAILURE_LATER_BUTTON
+                ),
                 "payload": mutation_failure_retry_payload(tool),
             }
         ],

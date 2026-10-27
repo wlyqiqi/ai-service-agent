@@ -14,6 +14,7 @@ from typing import Any
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
     update_address_empty_state_text,
+    update_address_form_footnote_text,
     update_address_form_intro_text,
     update_address_form_subtitle_text,
     update_address_form_title_text,
@@ -70,8 +71,10 @@ def form_rejection_reason(data: dict[str, Any]) -> str:
 
 def mutation_form_title_from_form_data(data: dict[str, Any]) -> str:
     """Chatwoot form ``content``: summary plus form-level / leftover error copy."""
-    if _is_update_address_form(data):
-        # Title + limit subtitle in content; footnote is a trailing form item (§2.1).
+    is_address = _is_update_address_form(data)
+    if is_address:
+        # Title + limit subtitle in content. 脚注（Implicit Cancel 提示）随引导句下发；
+        # form_rejected 不重发引导句，故把脚注留在表单顶部，避免提示彻底消失。
         title = "\n".join(
             [
                 update_address_form_title_text(),
@@ -83,6 +86,8 @@ def mutation_form_title_from_form_data(data: dict[str, Any]) -> str:
     errors = _form_errors_map(data)
     if not errors:
         return title
+    if is_address:
+        title = f"{title}\n{update_address_form_footnote_text()}"
     # Field errors are also painted onto matching items; ``_form`` and any
     # unmatched keys still need a visible place in the message copy.
     item_names = {"order_id", "action", "address"}
@@ -182,8 +187,9 @@ def _update_address_form_items(data: dict[str, Any]) -> list[dict[str, Any]]:
 def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Build Chatwoot ``form`` items from a ``form_required`` / ``form_rejected`` payload.
 
-    ``update_address`` uses the locked four-state open-form layout (#71): read-only
-    current address, paid Order Picker (no preselect), new address, footnote, no action select.
+    ``update_address`` uses the locked open-form layout (#71): paid Order Picker
+    (no preselect), new address, no action select. 只读展示项（当前地址 / 脚注）
+    不进 items —— 它们在引导句与标题里（Z2 零回显）。
     Other mutation tools keep Order Picker + schema fields + Confirm/Cancel select.
     ``form_rejected`` ``errors`` are projected into item label/placeholder and
     title copy within what Chatwoot native forms allow.

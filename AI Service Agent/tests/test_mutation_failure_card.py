@@ -47,6 +47,17 @@ _WRITE_TOOLS = (
     "refund_apply",
 )
 
+# 字面量快照：故意不引用生产常量，否则断言会跟着实现一起漂移。
+_EXPECTED_FAILURE_TITLES = {
+    "update_address": "地址未能修改",
+    "update_phone": "手机号未能修改",
+    "update_order_note": "订单备注未能更新",
+    "create_invoice": "发票未能开具",
+    "create_service_ticket": "售后工单未能创建",
+    "cancel_order": "订单未能取消",
+    "refund_apply": "退款申请未能提交",
+}
+
 
 # --- 1. copy contract --------------------------------------------------------
 
@@ -56,18 +67,33 @@ def test_failure_titles_cover_the_same_seven_tools_as_success():
     assert _FAILURE_CARD_TITLES != _SUCCESS_CARD_TITLES
 
 
+def test_failure_titles_match_literal_snapshot():
+    """标题是产品文案，必须被字面量钉住（改文案要有意改测试）。"""
+    assert _FAILURE_CARD_TITLES == _EXPECTED_FAILURE_TITLES
+
+
 @pytest.mark.parametrize("tool", _WRITE_TOOLS)
 def test_failure_card_shape_and_single_retry_action(tool):
     card = build_mutation_failure_card(tool, "请填写有效地址", kind="form_rejected")
     assert card is not None
     assert card["tool"] == tool
-    assert card["title"] == _FAILURE_CARD_TITLES[tool]
+    assert card["title"] == _EXPECTED_FAILURE_TITLES[tool]
     assert card["description"].startswith("• 状态：未完成")
     assert "• 原因：请填写有效地址" in card["description"]
     assert [action["text"] for action in card["actions"]] == ["重新填写"]
     assert card["actions"][0]["type"] == "postback"
     assert card["actions"][0]["payload"] == f"{tool}_failure_retry"
     assert card["actions"][0]["payload"] == mutation_failure_retry_payload(tool)
+    assert "知道了" not in str(card)
+
+
+@pytest.mark.parametrize("tool", _WRITE_TOOLS)
+def test_tool_failed_card_does_not_promise_a_refill(tool):
+    """写库失败后没有 form 可填：按钮不能写「重新填写」，只能是「稍后重试」。"""
+    card = build_mutation_failure_card(tool, "订单系统暂时不可用", kind="tool_failed")
+    assert card is not None
+    assert [action["text"] for action in card["actions"]] == ["稍后重试"]
+    assert "重新填写" not in card["actions"][0]["text"]
     assert "知道了" not in str(card)
 
 
@@ -160,6 +186,20 @@ def test_write_failure_capture_reads_failed_tool_result():
     assert "订单系统暂时不可用" in card["description"]
     assert "• 订单号：ORD-1" in card["description"]
     assert capture.followup() == mutation_tool_failed_text("update_address", "data_source_unavailable")
+
+
+def test_write_failure_capture_resets_when_a_later_write_succeeds():
+    """同一回合先失败后成功，不能带着失败卡出去。"""
+    capture = WriteFailureCapture()
+    capture.observe({"type": "tool_call", "data": {"name": "update_phone", "args": {"phone": "13800138000"}}})
+    capture.observe(
+        {"type": "tool_result", "data": {"name": "update_phone", "ok": False, "result": {"error": "write_conflict"}}}
+    )
+    assert capture.tool == "update_phone"
+    capture.observe({"type": "tool_result", "data": {"name": "update_phone", "ok": True, "result": {"ok": True}}})
+    assert capture.tool is None
+    assert capture.card() is None
+    assert capture.followup() is None
 
 
 def test_write_failure_capture_ignores_success_and_non_write_tools():
@@ -293,7 +333,7 @@ async def test_agent_bot_write_failure_sends_card_then_short_bubble(monkeypatch,
     card = args[3]["items"][0]
     assert card["title"] == "地址未能修改"
     assert "订单系统暂时不可用" in card["description"]
-    assert [action["text"] for action in card["actions"]] == ["重新填写"]
+    assert [action["text"] for action in card["actions"]] == ["稍后重试"]
     # 短引导气泡只发一次，且不是长 done.final
     chatwoot.send_bot_message.assert_awaited_once()
     bubble = chatwoot.send_bot_message.await_args.args[1]
