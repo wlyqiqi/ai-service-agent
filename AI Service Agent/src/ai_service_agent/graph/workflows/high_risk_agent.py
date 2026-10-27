@@ -43,7 +43,9 @@ from ai_service_agent.graph.workflows.copy import (
     RUNTIME_ERROR_TEXT,
 )
 from ai_service_agent.graph.workflows.form_resume import (
+    FORM_SCRUB_KEYS,
     form_resume_model,
+    prepare_form_update,
     resume_action,
     resume_field_values,
     schema_field_args,
@@ -75,13 +77,7 @@ def make_high_risk_graph(
         return order_repository
 
     def prepare_form(state: dict) -> dict:
-        ctx = {
-            key: item
-            for key, item in dict(state.get("context") or {}).items()
-            if key not in ("form_errors", "recheck_reason", "confirm_result")
-        }
-        ctx["form_session_id"] = str(uuid.uuid4())
-        return {"execution_status": "waiting_confirmation", "context": ctx}
+        return prepare_form_update(state)
 
     def form_interrupt(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
         """Missing-arg collection for cancel/refund. Confirm continues to approval, not a write."""
@@ -128,7 +124,7 @@ def make_high_risk_graph(
         next_ctx = {
             key: item
             for key, item in ctx.items()
-            if key not in ("form_errors", "recheck_reason", "confirm_result")
+            if key not in FORM_SCRUB_KEYS
         }
         next_ctx["form_session_id"] = form_session_id
         next_ctx["confirm_result"] = "confirm" if accepted else "cancel"
