@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from typing import AsyncGenerator, Callable
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
@@ -10,13 +11,63 @@ from ai_service_agent.harness.errors import normalize_error
 from ai_service_agent.harness.form_events import project_form_interrupt
 
 
-async def snapshot_assistant_ids(graph, config: dict) -> set:
-    """D7：resume run 前快照 checkpoint 中已有 assistant message id 集合（供 pre/post diff）。"""
+@dataclass(frozen=True)
+class MessageSnapshot:
+    """Invocation 前 checkpoint 中已有消息的稳定标识。"""
+
+    assistant_ids: set[str]
+    message_ids: set[str]
+    tool_call_ids: set[str]
+    tool_result_ids: set[str]
+
+
+def _as_id(value) -> str | None:
+    return str(value) if value else None
+
+
+def _tool_call_id(tool_call) -> str | None:
+    if isinstance(tool_call, dict):
+        return _as_id(tool_call.get("id"))
+    return _as_id(getattr(tool_call, "id", None))
+
+
+async def snapshot_message_state(graph, config: dict) -> MessageSnapshot:
+    """快照调用前已有消息，供 assistant 文本与工具事件做 pre/post diff。"""
     try:
         state = await _aget_state(graph, config)
-        return {m.id for m in state.values.get("messages", []) if isinstance(m, AIMessage) and m.id}
+        messages = state.values.get("messages", [])
+        assistant_ids: set[str] = set()
+        message_ids: set[str] = set()
+        tool_call_ids: set[str] = set()
+        tool_result_ids: set[str] = set()
+        for message in messages:
+            message_id = _as_id(getattr(message, "id", None))
+            if message_id:
+                message_ids.add(message_id)
+            if isinstance(message, AIMessage):
+                if message_id:
+                    assistant_ids.add(message_id)
+                for tool_call in message.tool_calls:
+                    tool_call_id = _tool_call_id(tool_call)
+                    if tool_call_id:
+                        tool_call_ids.add(tool_call_id)
+            elif isinstance(message, ToolMessage):
+                # 不同 stream 聚合可能保留 message id，也可能只保留 tool_call_id。
+                result_ids = (message_id, _as_id(message.tool_call_id))
+                tool_result_ids.update(result_id for result_id in result_ids if result_id)
+        return MessageSnapshot(
+            assistant_ids=assistant_ids,
+            message_ids=message_ids,
+            tool_call_ids=tool_call_ids,
+            tool_result_ids=tool_result_ids,
+        )
     except Exception:
-        return set()
+        return MessageSnapshot(set(), set(), set(), set())
+
+
+async def snapshot_assistant_ids(graph, config: dict) -> set:
+    """D7：resume run 前快照 checkpoint 中已有 assistant message id 集合（供 pre/post diff）。"""
+    return (await snapshot_message_state(graph, config)).assistant_ids
 
 
 async def new_assistant_text_and_id(graph, config: dict, before_ids: set) -> tuple:
@@ -80,7 +131,10 @@ async def event_stream(
     final_message_id: str | None = None
     error_emitted = False
     routing_recovered = False
-    before_ids: set = await snapshot_assistant_ids(graph, config)
+    before = await snapshot_message_state(graph, config)
+    before_ids = before.assistant_ids
+    seen_tool_calls: set[str] = set()
+    seen_tool_results: set[str] = set()
     try:
         async for _ns, mode, payload in graph.astream(
             invocation,
@@ -123,13 +177,46 @@ async def event_stream(
                         if _node_name == "__interrupt__" or not isinstance(node_update, dict):
                             continue
                         for msg in node_update.get("messages", []):
+                            message_id = _as_id(getattr(msg, "id", None))
+                            historical_message = bool(
+                                message_id and message_id in before.message_ids
+                            )
                             if isinstance(msg, AIMessage) and msg.tool_calls:
-                                for tc in msg.tool_calls:
+                                # updates 可能聚合完整历史；旧消息不得再次投影为本轮工具事件。
+                                if historical_message:
+                                    continue
+                                for call_index, tc in enumerate(msg.tool_calls):
+                                    call_id = _tool_call_id(tc)
+                                    if call_id:
+                                        if (
+                                            call_id in before.tool_call_ids
+                                            or call_id in seen_tool_calls
+                                        ):
+                                            continue
+                                        seen_tool_calls.add(call_id)
+                                    else:
+                                        fallback_key = (
+                                            f"{message_id or 'message'}:{call_index}:"
+                                            f"{tc.get('name', 'tool')}"
+                                        )
+                                        if fallback_key in seen_tool_calls:
+                                            continue
+                                        seen_tool_calls.add(fallback_key)
                                     yield {
                                         "type": "tool_call",
                                         "data": {"name": tc["name"], "args": tc["args"]},
                                     }
                             elif isinstance(msg, ToolMessage):
+                                if historical_message:
+                                    continue
+                                result_id = _as_id(msg.tool_call_id) or message_id
+                                if result_id and (
+                                    result_id in before.tool_result_ids
+                                    or result_id in seen_tool_results
+                                ):
+                                    continue
+                                if result_id:
+                                    seen_tool_results.add(result_id)
                                 tool_payload = msg.content
                                 if isinstance(tool_payload, str):
                                     try:

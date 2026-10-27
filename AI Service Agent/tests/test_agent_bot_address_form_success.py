@@ -14,8 +14,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.testing import router_json_message
 from ai_service_agent.harness.mutation_projection import (
     send_mutation_success_card,
     update_address_success_card_items,
@@ -81,6 +83,7 @@ def _agent_bot_mutation_form_graph(
     user_id: str = "u1",
     tool: str = "update_address",
     select_args: dict | None = None,
+    extra_responses: list | None = None,
 ):
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -120,6 +123,7 @@ def _agent_bot_mutation_form_graph(
             responses=[
                 router_json_message("account_profile_update", 0.9),
                 select_json_message(tool, {} if select_args is None else select_args),
+                *(extra_responses or []),
             ]
         ),
         MemorySaver(),
@@ -319,6 +323,92 @@ async def test_phone_confirm_success_sends_shared_card_not_plain_bubble_only(
     assert texts == ["好的，您的联系电话已更新，后续通知将发送到新号码。"]
     assert confirm_result["response"] == texts[0]
 
+
+@pytest.mark.asyncio
+async def test_previous_address_success_is_not_replayed_on_next_normal_turn(
+    tmp_path, monkeypatch
+):
+    """Regression: one completed write must not leak historical tool events into later turns."""
+    import ai_service_agent.harness.agent_bot as agent_bot_mod
+
+    status, mapping, _conn = _contact_first_stores(tmp_path)
+    chatwoot = AsyncMock()
+    graph, repo, _user = _agent_bot_mutation_form_graph(
+        tmp_path,
+        monkeypatch,
+        db_name="agentbot-success-no-replay",
+        extra_responses=[
+            router_json_message("faq", 0.9),
+            AIMessage(content="这是 FAQ 的新回答。"),
+        ],
+    )
+    contact = {"id": 84, "identifier": "u1", "name": "郑军"}
+    cw_conv_id = 9832
+    new_address = "上海市浦东新区不会重放路 74 号"
+
+    await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="no-replay-open",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="我要改个地址",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    await handle_agent_bot_message(
+        _form_submit_payload(
+            message_id="no-replay-confirm",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            submitted_values={"order_id": "ORD-PAID-1", "address": new_address},
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+    assert repo.get_user_profile("u1")["address"] == new_address
+
+    captured_events: list[dict] = []
+    real_event_stream = agent_bot_mod.event_stream
+
+    async def capturing_event_stream(*args, **kwargs):
+        async for event in real_event_stream(*args, **kwargs):
+            captured_events.append(event)
+            yield event
+
+    monkeypatch.setattr(agent_bot_mod, "event_stream", capturing_event_stream)
+    chatwoot.reset_mock()
+
+    result = await handle_agent_bot_message(
+        _incoming_text_payload(
+            message_id="no-replay-next",
+            cw_conv_id=cw_conv_id,
+            contact=contact,
+            content="你好",
+        ),
+        chatwoot,
+        graph=graph,
+        status=status,
+        mapping=mapping,
+    )
+
+    assert result is not None
+    assert result["response"] == "这是 FAQ 的新回答。"
+    assert not any(
+        event.get("type") in ("tool_call", "tool_result")
+        and (event.get("data") or {}).get("name") == "update_address"
+        for event in captured_events
+    )
+    assert not any(
+        call.args[2] == "cards"
+        for call in chatwoot.send_interactive_message.await_args_list
+    )
+    texts = [call.args[1] for call in chatwoot.send_bot_message.await_args_list]
+    assert texts == ["这是 FAQ 的新回答。"]
 
 # --- Seam 3: form_rejected must not emit success cards -----------------------
 
