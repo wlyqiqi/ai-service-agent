@@ -52,12 +52,22 @@ _NOTE_RE = re.compile(
     r"|订单备注"
     r")"
 )
+# 「开」后允许口语填充词再落到名词：开票 / 开发票 / 开个发票 / 开张票 / 开一下发票。
+# 只列动词+量词，不吞任意字符，避免「开票价」以外的长距离误命中。
 _INVOICE_RE = re.compile(
     _NOT_NEGATED
-    + r"(?:开发票|开具发票|补开发票|开一张发票|开张发票|要发票|索要发票|(?<!离)开票)"
+    + r"(?:"
+    r"(?<!离)开(?:一下|下)?(?:个|张|一张)?(?:发)?票"
+    r"|开具发票|补开发票|要发票|索要发票"
+    r")"
 )
+# 同理：开个售后 / 提交个售后 / 开售后工单 都要落 create_service_ticket。
 _TICKET_RE = re.compile(
-    _NOT_NEGATED + r"(?:申请售后|开售后工单|提交售后|发起售后|办理售后|办售后|售后工单|要售后)"
+    _NOT_NEGATED
+    + r"(?:"
+    r"(?:申请|提交|发起|办理|办|开|要)(?:一下|下)?(?:个)?售后"
+    r"|售后工单"
+    r")"
 )
 
 # First-version table. A hit counts only when the tool is on the current allowlist.

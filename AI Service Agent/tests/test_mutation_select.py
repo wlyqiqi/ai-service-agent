@@ -405,6 +405,7 @@ def test_inline_clarify_drops_json_payload_in_content():
 
 _SLOT_ASK = "请问订单号是多少？新的收货地址是什么？"
 _PROFILE_TOOLS = ["update_address", "update_phone"]
+_ORDER_TOOLS = ["update_order_note", "create_invoice", "create_service_ticket"]
 
 
 def _bind_tools_clarify_node(content: str, tool_calls=None):
@@ -484,6 +485,42 @@ def test_fake_null_tool_unique_address_still_pending(monkeypatch):
     assert pending["tool"] == "update_address"
     assert pending["args"].keys() == {"request_id"}
     assert "messages" not in output
+    assert events == []
+
+
+_SLOT_ASK_INVOICE = "您要开发票，请提供订单号、开票金额、公司抬头和税号，我好为您办理。"
+
+
+@pytest.mark.parametrize(
+    ("text", "tool"),
+    [
+        ("开个发票吧", "create_invoice"),
+        ("开个发票", "create_invoice"),
+        ("开张票", "create_invoice"),
+        ("帮我开个售后", "create_service_ticket"),
+    ],
+)
+def test_force_form_order_writes_when_real_model_omits_tool_call(text, tool, monkeypatch):
+    """2026-10-27 真实会话回归：用户「开个发票吧」，模型只回文本追问槽位。
+
+    force-form 表必须命中「开」+量词的口语形态，把唯一工具落成 pending_tool；
+    否则模型那句「请提供订单号/金额/抬头/税号」会被当成澄清文案发给用户，
+    prepare_form 不执行，用户永远看不到表单。
+    """
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
+        lambda: events.append,
+    )
+    node, _bound = _bind_tools_clarify_node(_SLOT_ASK_INVOICE)
+    output = _select_result(node(_force_state(text, allowed_tools=_ORDER_TOOLS)))
+
+    pending = output["context"]["pending_tool"]
+    assert pending["tool"] == tool
+    assert pending["args"].keys() == {"request_id"}
+    assert "messages" not in output
+    assert output.get("execution_status") != "clarifying"
+    assert "请提供订单号" not in str(output)
     assert events == []
 
 
