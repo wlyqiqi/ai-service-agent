@@ -135,40 +135,118 @@
     @media (max-width:1024px) { .hero-grid,.app-grid { grid-template-columns:1fr; gap:52px; } .products,.principles { grid-template-columns:repeat(2,minmax(0,1fr)); } .values,.support { grid-template-columns:1fr; } .nav-links { display:none; } .catalog-top { align-items:flex-start; flex-direction:column; } .cta-card { align-items:flex-start; flex-direction:column; } }
     @media (max-width:640px) { .container { width:min(var(--container),calc(100% - 32px)); } .hero { padding-top:136px; } section { padding:68px 0; } .hero-actions { width:100%; } .hero-actions .button { width:100%; } .products,.principles { grid-template-columns:1fr; } .hero-panel,.cta-card { padding:24px; } .filters { width:100%; justify-content:space-between; } .filter { padding:9px 12px; } }
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } * { transition:none !important; } }
-    .woot-widget-holder.woot-widget-holder--opened { width:420px !important; height:620px !important; }
-    .woot-widget-holder iframe { width:420px !important; height:620px !important; }
-    .human-service-bar { display:none; align-items:center; justify-content:center; align-self:stretch; flex:0 0 36px; box-sizing:border-box; width:100%; margin:0; height:36px; background:#1f2937; color:#fff; font-size:14px; font-weight:600; }
+    /* Widget size: size holder only; iframe always 100%x100% so native <select> popup stays anchored.
+       Note (2026-10-27): previous fixed iframe px + desktop width without matching height broke select menus. */
+    .woot-widget-holder.woot-widget-holder--opened,
+    .woot-widget-holder:not(.woot--hide):not(.has-unread-view) {
+      width: 420px !important;
+      height: 620px !important;
+      max-height: 620px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
+    .woot-widget-holder.woot-widget-holder--opened iframe,
+    .woot-widget-holder:not(.woot--hide):not(.has-unread-view) iframe {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: 100% !important;
+      max-height: 100% !important;
+      box-sizing: border-box !important;
+    }
+    .human-service-bar {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      align-self: stretch;
+      flex: 0 0 36px;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+      height: 36px;
+      background: #1f2937;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+    }
     .woot-widget-holder.human-service:not(.woot--hide),
-    .woot-widget-holder.human-service.woot-widget-holder--opened { display:flex !important; flex-direction:column; align-items:stretch !important; width:420px !important; height:620px !important; }
+    .woot-widget-holder.human-service.woot-widget-holder--opened {
+      display: flex !important;
+      flex-direction: column;
+      align-items: stretch !important;
+      width: 420px !important;
+      height: 620px !important;
+      max-height: 620px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
     .woot-widget-holder.human-service:not(.woot--hide) .human-service-bar,
-    .woot-widget-holder.human-service.woot-widget-holder--opened .human-service-bar { display:flex; width:100%; }
+    .woot-widget-holder.human-service.woot-widget-holder--opened .human-service-bar {
+      display: flex;
+      width: 100%;
+    }
     .woot-widget-holder.human-service:not(.woot--hide) iframe,
-    .woot-widget-holder.human-service.woot-widget-holder--opened iframe { flex:1 1 auto; width:100% !important; max-width:100% !important; height:auto !important; min-height:0; }
-    /* Desktop (≥1025px, above the page's 1024px layout breakpoint): open floating holder is half the viewport, capped at 960px. Height stays 620px.
-       Current Chatwoot drops woot--hide while open and does not add woot-widget-holder--opened; both hooks are covered. Unread preview is left alone. */
-    @media (min-width:1025px) {
+    .woot-widget-holder.human-service.woot-widget-holder--opened iframe {
+      flex: 1 1 0 !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      height: 0 !important;
+      min-height: 0 !important;
+      max-height: none !important;
+      box-sizing: border-box !important;
+    }
+    /* Desktop (>=1025px): half viewport width, cap 960px; height stays 620px. Iframe fills holder. */
+    @media (min-width: 1025px) {
       body .woot-widget-holder.woot-widget-holder--opened,
       body .woot-widget-holder:not(.woot--hide):not(.has-unread-view),
       body .woot-widget-holder.human-service:not(.woot--hide),
       body .woot-widget-holder.human-service.woot-widget-holder--opened {
-        width:min(50vw, 960px) !important;
-        max-width:min(50vw, 960px) !important;
-        height:620px !important;
-        max-height:620px !important;
+        width: min(50vw, 960px) !important;
+        max-width: min(50vw, 960px) !important;
+        height: 620px !important;
+        max-height: 620px !important;
       }
       body .woot-widget-holder.woot-widget-holder--opened iframe,
-      body .woot-widget-holder:not(.woot--hide):not(.has-unread-view) iframe,
+      body .woot-widget-holder:not(.woot--hide):not(.has-unread-view) iframe {
+        width: 100% !important;
+        height: 100% !important;
+        max-width: 100% !important;
+        max-height: 100% !important;
+      }
       body .woot-widget-holder.human-service:not(.woot--hide) iframe,
       body .woot-widget-holder.human-service.woot-widget-holder--opened iframe {
-        width:100% !important;
-        max-width:100% !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: 1 1 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        max-height: none !important;
       }
     }
-    @media (max-width:480px) {
-      .woot-widget-holder.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; }
-      .woot-widget-holder iframe { width:100vw !important; height:calc(100vh - 72px) !important; }
+    @media (max-width: 480px) {
+      .woot-widget-holder.woot-widget-holder--opened,
+      .woot-widget-holder:not(.woot--hide):not(.has-unread-view),
       .woot-widget-holder.human-service:not(.woot--hide),
-      .woot-widget-holder.human-service.woot-widget-holder--opened { width:100vw !important; height:calc(100vh - 72px) !important; }
+      .woot-widget-holder.human-service.woot-widget-holder--opened {
+        width: 100vw !important;
+        max-width: 100vw !important;
+        height: calc(100vh - 72px) !important;
+        max-height: calc(100vh - 72px) !important;
+      }
+      .woot-widget-holder.woot-widget-holder--opened iframe,
+      .woot-widget-holder:not(.woot--hide):not(.has-unread-view) iframe {
+        width: 100% !important;
+        height: 100% !important;
+        max-width: 100% !important;
+        max-height: 100% !important;
+      }
+      .woot-widget-holder.human-service:not(.woot--hide) iframe,
+      .woot-widget-holder.human-service.woot-widget-holder--opened iframe {
+        width: 100% !important;
+        flex: 1 1 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        max-height: none !important;
+      }
     }
   </style>
 </head>
