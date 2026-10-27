@@ -147,16 +147,11 @@ def test_update_address_open_form_locked_layout_without_preselect():
     assert title == "\n".join(
         [update_address_form_title_text(), update_address_form_subtitle_text()]
     )
-    assert [item["name"] for item in items] == [
-        "current_address",
-        "order_id",
-        "address",
-        "abandon_footnote",
-    ]
-    assert "default" not in items[1]
-    assert items[1]["options"] == [{"label": "ORD-PAID-1", "value": "ORD-PAID-1"}]
-    assert items[2]["default"] == "旧预填"
-    assert items[3]["default"] == update_address_form_footnote_text()
+    # Z2 减噪：只留业务可提交字段；当前地址与脚注走引导句。
+    assert [item["name"] for item in items] == ["order_id", "address"]
+    assert "default" not in items[0]
+    assert items[0]["options"] == [{"label": "ORD-PAID-1", "value": "ORD-PAID-1"}]
+    assert items[1]["default"] == "旧预填"
 
 
 def test_update_address_form_rejected_keeps_order_draft_and_paints_select():
@@ -169,14 +164,29 @@ def test_update_address_form_rejected_keeps_order_draft_and_paints_select():
             "errors": {"order_id": "该订单已不可改", "address": "请填写有效地址"},
         }
     )
-    current = next(item for item in items if item["name"] == "current_address")
-    assert current["default"] == "暂无"
+    assert [item["name"] for item in items] == ["order_id", "address"]
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert order_picker["default"] == "ORD-PAID-1"
     assert order_picker["label"] == "选择订单（该订单已不可改）"
     address = next(item for item in items if item["name"] == "address")
     assert address["default"] == "太短"
     assert address["placeholder"] == "请填写有效地址"
+
+
+def test_form_rejected_title_keeps_the_abandon_footnote():
+    """重推 form 不重发引导句，脚注（Implicit Cancel 提示）必须留在表单标题里。"""
+    base = {
+        "tool": "update_address",
+        "current_address": "旧址",
+        "order_candidates": [{"order_id": "ORD-1"}],
+    }
+    rejected = mutation_form_title_from_form_data(
+        {**base, "errors": {"address": "请填写有效地址"}}
+    )
+    assert update_address_form_footnote_text() in rejected
+    assert "请填写有效地址" in rejected
+    # 首次打开：脚注在引导句里，标题不重复。
+    assert update_address_form_footnote_text() not in mutation_form_title_from_form_data(base)
 
 
 @pytest.mark.asyncio
@@ -191,19 +201,16 @@ async def test_send_update_address_open_emits_intro_then_form():
             "order_candidates": [{"order_id": "ORD-PAID-1"}],
         },
     )
+    # 引导句承载当前地址与脚注（已移出 form items）。
     chatwoot.send_bot_message.assert_awaited_once_with(
-        "c1", update_address_form_intro_text()
+        "c1", update_address_form_intro_text("上海")
     )
+    assert "当前收货地址：上海" in update_address_form_intro_text("上海")
     chatwoot.send_interactive_message.assert_awaited_once()
     args = chatwoot.send_interactive_message.await_args.args
     assert args[0] == "c1"
     assert args[2] == "form"
-    assert [item["name"] for item in args[3]["items"]] == [
-        "current_address",
-        "order_id",
-        "address",
-        "abandon_footnote",
-    ]
+    assert [item["name"] for item in args[3]["items"]] == ["order_id", "address"]
 
 
 @pytest.mark.asyncio

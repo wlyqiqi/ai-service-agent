@@ -124,7 +124,7 @@ def _agent_bot_mutation_form_graph(tmp_path, monkeypatch, *, db_name: str, user_
 
 
 def test_update_address_open_form_items_locked_layout_no_action_select():
-    """UX-01 / UX-10: current address → unpaid-selected order → new address → footnote; no action."""
+    """Z2 减噪：items 只留 order_id / address；当前地址与脚注走引导句。"""
     data = {
         "tool": "update_address",
         "summary": "ignored-for-locked-title",
@@ -149,16 +149,14 @@ def test_update_address_open_form_items_locked_layout_no_action_select():
     assert "仅已支付且未发货订单可改" in title
 
     names = [item["name"] for item in items]
-    assert names == ["current_address", "order_id", "address", "abandon_footnote"]
+    assert names == ["order_id", "address"]
     assert all(item["name"] != "action" for item in items)
-    assert items[-1]["default"] == update_address_form_footnote_text()
+    # 展示项已移出 items：当前地址 + 脚注由引导句承载。
+    guide = update_address_form_intro_text("123 Chengyuan Avenue #04-01, Singapore")
+    assert "当前收货地址：123 Chengyuan Avenue #04-01, Singapore" in guide
+    assert update_address_form_footnote_text() in guide
 
-    current = items[0]
-    assert current["type"] == "text"
-    assert "当前" in current["label"]
-    assert current.get("default") == "123 Chengyuan Avenue #04-01, Singapore"
-
-    order_picker = items[1]
+    order_picker = items[0]
     assert order_picker["type"] == "select"
     assert "default" not in order_picker  # never auto-preselect, even with prefill
     assert order_picker["options"] == [
@@ -167,13 +165,14 @@ def test_update_address_open_form_items_locked_layout_no_action_select():
     ]
     assert "请选择" in (order_picker.get("placeholder") or order_picker.get("label") or "")
 
-    address = items[2]
+    address = items[1]
     assert address["type"] == "text"
     assert "省市区" in (address.get("placeholder") or "")
     assert address.get("default") == "旧预填"
 
 
 def test_update_address_current_address_empty_shows_placeholder():
+    """无当前地址时，引导句用「暂无」，而不是留一个空的只读 item。"""
     items = mutation_form_items_from_form_data(
         {
             "tool": "update_address",
@@ -182,8 +181,8 @@ def test_update_address_current_address_empty_shows_placeholder():
             "response_schema": {"properties": {"address": {"type": "string"}}},
         }
     )
-    current = next(item for item in items if item["name"] == "current_address")
-    assert current.get("default") == "暂无"
+    assert [item["name"] for item in items] == ["order_id", "address"]
+    assert "当前收货地址：暂无" in update_address_form_intro_text("")
 
 
 @pytest.mark.asyncio
@@ -202,7 +201,7 @@ async def test_send_update_address_form_emits_intro_then_form():
     }
     await send_mutation_form(chatwoot, "c1", data)
     assert chatwoot.send_bot_message.await_count == 1
-    assert chatwoot.send_bot_message.await_args.args[1] == update_address_form_intro_text()
+    assert chatwoot.send_bot_message.await_args.args[1] == update_address_form_intro_text("上海")
     chatwoot.send_interactive_message.assert_awaited_once()
     assert chatwoot.send_interactive_message.await_args.args[2] == "form"
     items = chatwoot.send_interactive_message.await_args.args[3]["items"]
@@ -301,28 +300,21 @@ async def test_fake_graph_open_form_carries_current_address_and_locked_projectio
     assert value["order_candidates"]
 
     assert chatwoot.send_bot_message.await_count >= 1
+    # 引导句携带当前地址与脚注（Z2 减噪后不再作为 form items）。
     intro_calls = [
         call.args[1]
         for call in chatwoot.send_bot_message.await_args_list
-        if call.args[1] == update_address_form_intro_text()
+        if call.args[1] == update_address_form_intro_text(expected_address)
     ]
     assert intro_calls
     chatwoot.send_interactive_message.assert_awaited_once()
     items = chatwoot.send_interactive_message.await_args.args[3]["items"]
-    assert [item["name"] for item in items] == [
-        "current_address",
-        "order_id",
-        "address",
-        "abandon_footnote",
-    ]
+    assert [item["name"] for item in items] == ["order_id", "address"]
     assert all(item["name"] != "action" for item in items)
-    current = next(item for item in items if item["name"] == "current_address")
-    assert current.get("default") == expected_address
     order_picker = next(item for item in items if item["name"] == "order_id")
     assert "default" not in order_picker
     assert order_picker["options"]
     assert all(opt["label"] == opt["value"] for opt in order_picker["options"])
-    assert items[-1]["default"] == update_address_form_footnote_text()
 
 
 @pytest.mark.asyncio
@@ -469,8 +461,12 @@ async def test_form_rejected_event_repushes_form_not_empty_state(monkeypatch, tm
     )
 
     assert result is not None
-    chatwoot.send_interactive_message.assert_awaited_once()
-    assert chatwoot.send_interactive_message.await_args.args[2] == "form"
+    # 失败卡 → 重推 form；两次 interactive，顺序固定。
+    assert chatwoot.send_interactive_message.await_count == 2
+    failure_call, form_call = chatwoot.send_interactive_message.await_args_list
+    assert failure_call.args[2] == "cards"
+    assert failure_call.args[3]["items"][0]["title"] == "地址未能修改"
+    assert form_call.args[2] == "form"
     # Empty-state text must not replace form_rejected projection.
     empty = update_address_empty_state_text()
     for call in chatwoot.send_bot_message.await_args_list:

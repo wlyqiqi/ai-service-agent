@@ -34,8 +34,9 @@ class TurnOrigin(str, Enum):
 class DeliveryDecision:
     persist: str | None = None   # 落 Message Store 的 assistant 文案（None = 不落）
     outbound: bool = False       # 是否发 Chatwoot
-    card: bool = False           # True → 调用方用成功卡片出站（需持 success_spec）
+    card: bool = False           # True → 调用方发卡片（success / failure，见 card_kind）
     notice: str | None = None    # 对外提示码；None = 静默
+    card_kind: str = "success"   # "success" | "failure"
 
 
 def decide_delivery(
@@ -43,15 +44,29 @@ def decide_delivery(
     mode: str,
     origin: TurnOrigin,
     success_spec: Any = None,
+    failure_spec: Any = None,
     final: str | None = None,
     can_send: bool = True,
 ) -> DeliveryDecision:
-    """唯一门控。空文案视为无内容（不落库、不出站）。"""
+    """唯一门控。空文案视为无内容（不落库、不出站）。
+
+    卡片路径（成功/失败）都**不落** ``final``：成功用短 followup，失败用卡内文案
+    （可再附一句短引导）。这样长 ``done.final`` 与冷启动问候都不会跟在卡片后面。
+    """
     gated = mode != "ai"
 
     if gated and origin is TurnOrigin.AI_TURN:
         # 整轮作废：坐席已接管，AI 气泡不得进入客户历史。
         return DeliveryDecision(notice=MODE_CHANGED_NOTICE)
+
+    if failure_spec is not None:
+        # 失败卡必达：气泡只放可选的短引导（form_rejected 没有）。
+        return DeliveryDecision(
+            persist=failure_spec.get("followup") or None,
+            outbound=(not gated) and can_send,
+            card=True,
+            card_kind="failure",
+        )
 
     text = success_spec.followup if success_spec is not None else final
     if not text:

@@ -13,7 +13,6 @@ from typing import Any
 
 from ai_service_agent.graph.workflows.copy import (
     FIELD_LABELS,
-    update_address_current_address_display,
     update_address_empty_state_text,
     update_address_form_footnote_text,
     update_address_form_intro_text,
@@ -50,10 +49,32 @@ def _is_update_address_form(data: dict[str, Any]) -> bool:
     return data.get("tool") == "update_address"
 
 
+def form_rejection_reason(data: dict[str, Any]) -> str:
+    """One human sentence from ``form_rejected`` errors, for the failure card.
+
+    Chatwoot forms have no error slot; the card carries the cause, the re-pushed
+    form keeps the draft and paints the same errors on its items.
+    """
+    errors = _form_errors_map(data)
+    if not errors:
+        return ""
+    ordered = [errors["_form"]] if "_form" in errors else []
+    ordered.extend(message for key, message in errors.items() if key != "_form")
+    seen: set[str] = set()
+    unique: list[str] = []
+    for message in ordered:
+        if message not in seen:
+            seen.add(message)
+            unique.append(message)
+    return "；".join(unique[:2])
+
+
 def mutation_form_title_from_form_data(data: dict[str, Any]) -> str:
     """Chatwoot form ``content``: summary plus form-level / leftover error copy."""
-    if _is_update_address_form(data):
-        # Title + limit subtitle in content; footnote is a trailing form item (§2.1).
+    is_address = _is_update_address_form(data)
+    if is_address:
+        # Title + limit subtitle in content. 脚注（Implicit Cancel 提示）随引导句下发；
+        # form_rejected 不重发引导句，故把脚注留在表单顶部，避免提示彻底消失。
         title = "\n".join(
             [
                 update_address_form_title_text(),
@@ -65,9 +86,11 @@ def mutation_form_title_from_form_data(data: dict[str, Any]) -> str:
     errors = _form_errors_map(data)
     if not errors:
         return title
+    if is_address:
+        title = f"{title}\n{update_address_form_footnote_text()}"
     # Field errors are also painted onto matching items; ``_form`` and any
     # unmatched keys still need a visible place in the message copy.
-    item_names = {"order_id", "action", "current_address", "address"}
+    item_names = {"order_id", "action", "address"}
     explicit = data.get("fields")
     if isinstance(explicit, list):
         for field in explicit:
@@ -129,16 +152,14 @@ def order_picker_options(candidates: Any) -> list[dict[str, str]]:
 
 
 def _update_address_form_items(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Locked open-form / form_rejected IA for update_address (#71). No action select."""
+    """Locked open-form / form_rejected IA for update_address (#71). No action select.
+
+    Z2 减噪：items 只留业务可提交字段（``order_id`` / ``address``）。
+    ``current_address`` 与 ``abandon_footnote`` 原本是只读展示项，会被 Widget
+    当提交值回显成橙气泡；现在由引导句（``send_mutation_form``）承载。
+    """
     prefills = data.get("prefills") if isinstance(data.get("prefills"), dict) else {}
-    items: list[dict[str, Any]] = [
-        {
-            "name": "current_address",
-            "label": "当前收货地址（只读）",
-            "type": "text",
-            "default": update_address_current_address_display(data.get("current_address")),
-        },
-    ]
+    items: list[dict[str, Any]] = []
     options = order_picker_options(data.get("order_candidates"))
     order_item: dict[str, Any] = {
         "name": "order_id",
@@ -160,22 +181,15 @@ def _update_address_form_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     if prefills.get("address") is not None:
         address_item["default"] = prefills["address"]
     items.append(address_item)
-    items.append(
-        {
-            "name": "abandon_footnote",
-            "label": "说明",
-            "type": "text",
-            "default": update_address_form_footnote_text(),
-        }
-    )
     return _apply_errors_to_mutation_form_items(items, _form_errors_map(data))
 
 
 def mutation_form_items_from_form_data(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Build Chatwoot ``form`` items from a ``form_required`` / ``form_rejected`` payload.
 
-    ``update_address`` uses the locked four-state open-form layout (#71): read-only
-    current address, paid Order Picker (no preselect), new address, footnote, no action select.
+    ``update_address`` uses the locked open-form layout (#71): paid Order Picker
+    (no preselect), new address, no action select. 只读展示项（当前地址 / 脚注）
+    不进 items —— 它们在引导句与标题里（Z2 零回显）。
     Other mutation tools keep Order Picker + schema fields + Confirm/Cancel select.
     ``form_rejected`` ``errors`` are projected into item label/placeholder and
     title copy within what Chatwoot native forms allow.
@@ -266,8 +280,10 @@ async def send_mutation_form(
             )
             return
         if errors in (None, {}, [], ""):
+            # 当前地址 + 脚注随引导句下发（已移出 form items，见 Z2 减噪）。
             await chatwoot.send_bot_message(
-                conversation_id, update_address_form_intro_text()
+                conversation_id,
+                update_address_form_intro_text(form_data.get("current_address")),
             )
     title = mutation_form_title_from_form_data(form_data)
     items = mutation_form_items_from_form_data(form_data)

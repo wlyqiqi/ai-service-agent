@@ -1,0 +1,7 @@
+/* chengyuan: hide Chatwoot form submitted_values echo (Z2)
+   Source: AgentMessage.vue — submitted form drops .agent-message,
+   leaves only UserMessage children under .has-response.
+   Do NOT put this in landing.html (cross-origin iframe). */
+.agent-message-wrap.has-response:not(:has(.agent-message)) {
+  display: none !important;
+}
