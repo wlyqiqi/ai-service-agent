@@ -50,6 +50,7 @@ _TIER = "mutation"
 # 1. 改地址 / 改电话 / 备注 / 开票 / 售后且话术完整 → 选对应工具，只填句中已有字段。
 # 2. 开票句无金额 → create_invoice 不含 amount（schema 字段为 company / tax_no）。
 # 3. 缺参仍选工具：档案类（地址优先，否则电话）与订单写（备注优先，否则开票 / 售后）各一条。
+#    create_invoice 在列表中时，另加「开个发票」「开个发票吧」→ 空 args。
 # 4. 「改一下订单」→ 不选工具，只列举当前工具对应能力。
 # 5. 「退款」等列表外 → 不选工具、不映射，说明当前能办哪些。
 # 6. 同时有地址和电话时，「改联系方式」→ 追问；同时有开票和备注且混说 → 追问。
@@ -90,6 +91,8 @@ _MUTATION_MISSING_USER_TEXTS = {
 
 _PROFILE_MISSING_PRIORITY = ("update_address", "update_phone")
 _ORDER_MISSING_PRIORITY = ("update_order_note", "create_invoice", "create_service_ticket")
+# 订单写缺参只示范优先级里的第一条（通常是备注）。口语开票必须另给空 args 正例。
+_INVOICE_SPOKEN_MISSING = ("开个发票", "开个发票吧")
 
 
 def _first_present(priority: tuple[str, ...], names: set[str]) -> str | None:
@@ -239,6 +242,21 @@ def _build_mutation_examples(tier_tools: list, registry: ToolRegistry, mode: str
                 mode,
             )
         )
+
+    if "create_invoice" in names:
+        for user_text in _INVOICE_SPOKEN_MISSING:
+            parts.append(
+                _render_pair(
+                    user_text,
+                    _json_tool("create_invoice", {}),
+                    (
+                        "发起 tool_call：create_invoice()"
+                        "（唯一开票意图，args 为空；缺订单号、抬头、税号、金额交后续表单，"
+                        "禁止用纯文本追问）"
+                    ),
+                    mode,
+                )
+            )
 
     labels = _labels_for(tier_tools, registry)
     vague = _vague_content(labels)

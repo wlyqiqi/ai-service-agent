@@ -52,8 +52,20 @@ def test_mutation_select_templates_share_write_and_business_boundaries():
         assert "改联系方式" in template
         assert "开票" in template
         assert "加备注" in template
+        assert "当前允许列表含 create_invoice" in template
+        assert "唯一开票意图" in template
+        assert "「开个发票」" in template
+        assert "「开个发票吧」" in template
+        assert "即使没有订单号、抬头、税号、金额" in template
+        assert "args 可为空或只含已知字段" in template
+        assert "禁止用纯文本追问订单号、抬头、税号、金额" in template
+        assert "缺参交后续表单" in template
         assert "refund_apply" not in template
         assert "cancel_order" not in template
+    assert "必须输出 JSON 工具 create_invoice" in MUTATION_SELECT_SYSTEM_TEMPLATE
+    assert "必须输出 JSON 工具 create_invoice" not in MUTATION_SELECT_BINDTOOLS_TEMPLATE
+    assert "必须发起 tool_call create_invoice" in MUTATION_SELECT_BINDTOOLS_TEMPLATE
+    assert "tool_choice" not in MUTATION_SELECT_BINDTOOLS_TEMPLATE
     assert "只输出 JSON" in MUTATION_SELECT_SYSTEM_TEMPLATE
     assert "只输出 JSON" not in MUTATION_SELECT_BINDTOOLS_TEMPLATE
     assert '{"tool":' not in MUTATION_SELECT_BINDTOOLS_TEMPLATE
@@ -241,6 +253,16 @@ def test_fake_missing_arg_examples_cover_profile_and_order_tools():
     assert '"tool": "update_order_note", "args": {}' in examples
 
 
+def test_spoken_invoice_missing_args_examples_select_empty_create_invoice():
+    """「开个发票」/「开个发票吧」缺参仍选 create_invoice，不改成纯文本追问。"""
+    examples = _example_section(
+        _seen_fake_system(["update_order_note", "create_invoice", "create_service_ticket"])
+    )
+    payload = '{"tool": "create_invoice", "args": {}}'
+    for phrase in ("开个发票", "开个发票吧"):
+        assert f"用户：{phrase}\n输出：{payload}" in examples
+
+
 def test_fake_clarify_examples_list_only_current_capabilities():
     examples = _example_section(_seen_fake_system())
     assert "帮我改一下订单" in examples
@@ -271,6 +293,7 @@ def test_profile_allowlist_examples_omit_order_capabilities():
     assert "加订单备注" not in examples
     assert "申请售后" not in examples
     assert "既要开票又要加备注" not in examples
+    assert "开个发票" not in examples
     assert "refund_apply" not in examples
 
 
@@ -329,6 +352,9 @@ def test_bind_tools_examples_describe_tool_calls_without_json_payloads():
     assert "发起 tool_call：update_address()" in examples
     assert "给订单加个备注（参数不完整）" in examples
     assert "发起 tool_call：update_order_note()" in examples
+    for phrase in ("开个发票", "开个发票吧"):
+        assert f"用户：{phrase}\n行为：发起 tool_call：create_invoice()" in examples
+    assert "禁止用纯文本追问" in examples
     assert "不发起 tool_call，纯文本追问：" in examples
     assert "我要退款" in examples
     assert "退款不在当前能办的范围内" in examples
@@ -404,7 +430,10 @@ def test_inline_clarify_drops_json_payload_in_content():
 
 
 _SLOT_ASK = "请问订单号是多少？新的收货地址是什么？"
+_INVOICE_SLOT_ASK = "请提供订单号、发票抬头、税号和开票金额。"
 _PROFILE_TOOLS = ["update_address", "update_phone"]
+_ORDER_WRITE_TOOLS = ["update_order_note", "create_invoice", "create_service_ticket"]
+_SPOKEN_INVOICE = ("开个发票", "开个发票吧", "帮我开个发票", "给我开个发票")
 
 
 def _bind_tools_clarify_node(content: str, tool_calls=None):
@@ -551,6 +580,120 @@ def test_address_phrase_outside_allowlist_stays_clarify():
     node, _bound = _bind_tools_clarify_node("目前可以帮您改联系电话。")
     output = _select_result(
         node(_force_state("我要改收货地址", allowed_tools=["update_phone"]))
+    )
+    assert output["execution_status"] == "clarifying"
+    assert "pending_tool" not in output["context"]
+
+
+@pytest.mark.parametrize("text", _SPOKEN_INVOICE)
+def test_fake_spoken_invoice_without_tool_still_pending_create_invoice(text, monkeypatch):
+    """缺参开票口语：模型只吐追问时，仍 pending create_invoice，不把槽位留在聊天里。"""
+    from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel, select_clarify_message
+
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
+        lambda: events.append,
+    )
+    model = ToolCallingFakeModel(responses=[select_clarify_message(_INVOICE_SLOT_ASK)])
+    node = make_mutation_select_node(
+        model,
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    output = _select_result(node(_force_state(text, allowed_tools=_ORDER_WRITE_TOOLS)))
+    pending = output["context"]["pending_tool"]
+    assert pending["tool"] == "create_invoice"
+    assert set(pending["args"]) == {"request_id"}
+    assert "messages" not in output
+    assert output.get("execution_status") != "clarifying"
+    assert "发票抬头" not in str(output)
+    assert "税号" not in str(output)
+    assert "开票金额" not in str(output)
+    assert events == []
+
+
+def test_fake_spoken_invoice_json_tool_pending_create_invoice():
+    """模型按契约返回 create_invoice 空 args 时，直接进 Form。"""
+    from ai_service_agent.graph.workflows.mutation_select import make_mutation_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    model = ToolCallingFakeModel(responses=[select_json_message("create_invoice", {})])
+    node = make_mutation_select_node(
+        model,
+        DEFAULT_TOOL_REGISTRY.for_risk_level("mutation"),
+        DEFAULT_TOOL_REGISTRY,
+    )
+    output = _select_result(
+        node(_force_state("开个发票吧", allowed_tools=_ORDER_WRITE_TOOLS))
+    )
+    pending = output["context"]["pending_tool"]
+    assert pending["tool"] == "create_invoice"
+    assert set(pending["args"]) == {"request_id"}
+    assert "messages" not in output
+    assert output.get("execution_status") != "clarifying"
+
+
+@pytest.mark.parametrize("text", _SPOKEN_INVOICE)
+def test_real_spoken_invoice_without_tool_call_still_pending_create_invoice(text, monkeypatch):
+    """Real 路径漏 tool_call 时，Force-form 在同一次调用后补上 create_invoice。"""
+    events = []
+    monkeypatch.setattr(
+        "ai_service_agent.graph.workflows.mutation_select.get_stream_writer",
+        lambda: events.append,
+    )
+    node, bound_model = _bind_tools_clarify_node(_INVOICE_SLOT_ASK)
+    output = _select_result(node(_force_state(text, allowed_tools=_ORDER_WRITE_TOOLS)))
+
+    assert bound_model.ainvoke.await_count == 1
+    pending = output["context"]["pending_tool"]
+    assert pending["tool"] == "create_invoice"
+    assert set(pending["args"]) == {"request_id"}
+    assert "messages" not in output
+    assert output.get("execution_status") != "clarifying"
+    assert "发票抬头" not in str(output)
+    assert events == []
+
+
+def test_spoken_invoice_tool_call_is_not_replaced_by_force_form():
+    """已有 tool_call 时，开票口语正则不得改绑。"""
+    node, bound_model = _bind_tools_clarify_node(
+        "",
+        tool_calls=[
+            {
+                "name": "update_order_note",
+                "args": {"order_id": "ORD-10086", "note": "放驿站就行"},
+                "id": "call_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    output = _select_result(
+        node(_force_state("开个发票吧", allowed_tools=_ORDER_WRITE_TOOLS))
+    )
+    assert bound_model.ainvoke.await_count == 1
+    assert output["context"]["pending_tool"]["tool"] == "update_order_note"
+    assert output["context"]["pending_tool"]["args"]["note"] == "放驿站就行"
+
+
+def test_spoken_invoice_keeps_order_id_from_the_utterance():
+    node, _bound = _bind_tools_clarify_node(_INVOICE_SLOT_ASK)
+    output = _select_result(
+        node(_force_state("订单 ORD-10086 开个发票吧", allowed_tools=_ORDER_WRITE_TOOLS))
+    )
+    args = output["context"]["pending_tool"]["args"]
+    assert output["context"]["pending_tool"]["tool"] == "create_invoice"
+    assert args["order_id"] == "ORD-10086"
+    assert "company" not in args
+    assert "tax_no" not in args
+    assert "amount" not in args
+
+
+def test_spoken_invoice_plus_note_stays_clarify():
+    node, _bound = _bind_tools_clarify_node("您是要开发票，还是加订单备注？")
+    output = _select_result(
+        node(_force_state("开个发票吧，再加个备注", allowed_tools=_ORDER_WRITE_TOOLS))
     )
     assert output["execution_status"] == "clarifying"
     assert "pending_tool" not in output["context"]
