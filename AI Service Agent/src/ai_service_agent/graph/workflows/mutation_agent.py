@@ -37,7 +37,9 @@ from ai_service_agent.config import get_settings
 from ai_service_agent.graph.fault_tolerance import RETRY_LLM, make_subgraph_error_handler, make_timeout_policy
 from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_tool_hook_wrapper_sync
 from ai_service_agent.graph.workflows.form_resume import (
+    FORM_SCRUB_KEYS,
     form_resume_model,
+    prepare_form_update,
     resume_action,
     resume_field_values,
     schema_field_args,
@@ -68,17 +70,7 @@ def make_mutation_graph(
     order_repository=None,
 ):
     def prepare_form(state: dict) -> dict:
-        # Mint form_session_id before Form Interrupt so resume re-runs of
-        # form_interrupt keep the same session (interrupt-before is idempotent).
-        # Recheck failures loop back to form_interrupt without prepare_form, so the
-        # id stays stable for form_rejected; a later new form gets a fresh id here.
-        ctx = {
-            key: item
-            for key, item in dict(state.get("context") or {}).items()
-            if key not in ("form_errors", "recheck_reason")
-        }
-        ctx["form_session_id"] = str(uuid.uuid4())
-        return {"execution_status": "waiting_confirmation", "context": ctx}
+        return prepare_form_update(state)
 
     def _order_repository(runtime: Runtime[GraphContext] | None):
         if runtime is not None and runtime.context is not None:
@@ -152,7 +144,7 @@ def make_mutation_graph(
         next_ctx = {
             key: item
             for key, item in ctx.items()
-            if key not in ("form_errors", "recheck_reason", "confirm_result")
+            if key not in FORM_SCRUB_KEYS
         }
         next_ctx["form_session_id"] = form_session_id
         next_ctx["confirm_result"] = "confirm" if accepted else "cancel"
