@@ -46,6 +46,16 @@ def test_unique_mutation_tool_maps_address_phrases(text):
         ("开票", "create_invoice"),
         ("要发票", "create_invoice"),
         ("给我开一张发票", "create_invoice"),
+        ("开个发票", "create_invoice"),
+        ("开个发票吧", "create_invoice"),
+        ("帮我开个发票", "create_invoice"),
+        ("给我开个发票", "create_invoice"),
+        ("开具发票", "create_invoice"),
+        ("补开发票", "create_invoice"),
+        ("开张发票", "create_invoice"),
+        ("索要发票", "create_invoice"),
+        ("开一份发票", "create_invoice"),
+        ("开一下发票", "create_invoice"),
         ("申请售后", "create_service_ticket"),
         ("开售后工单", "create_service_ticket"),
         ("我要申请售后", "create_service_ticket"),
@@ -65,6 +75,10 @@ def test_unique_mutation_tool_maps_other_write_phrases(text, tool):
         "改联系方式",
         "不要改收货地址",
         "不用改地址",
+        "离开票",
+        "不要开个发票",
+        "不用开发票",
+        "别开票",
     ],
 )
 def test_unique_mutation_tool_does_not_force_vague_or_negated(text):
@@ -81,6 +95,8 @@ def test_unique_mutation_tool_requires_a_single_hit():
     assert (
         unique_mutation_tool("订单 ORD-10086 既要开票又要加备注", _ORDER) is None
     )
+    assert unique_mutation_tool("开个发票吧，再加个备注", _ORDER) is None
+    assert unique_mutation_tool("帮我开个发票并给订单加备注", _ALL) is None
 
 
 def test_contact_ambiguity_blocks_only_when_both_profile_tools_are_allowed():
