@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -193,13 +194,103 @@ def _fact_signals(fact: str) -> tuple[list[str], list[str]]:
     return numbers, others
 
 
-def fact_hit(fact: str, actual_output: str) -> bool:
+def _normalize_match_text(text: str) -> str:
+    """Normalize harmless formatting differences before deterministic matching."""
+    normalized = unicodedata.normalize("NFKC", text or "").casefold()
+    normalized = re.sub(r"\s+", "", normalized)
+    normalized = re.sub(r"[‐‑‒–—−~～]", "-", normalized)
+    normalized = re.sub(r"(?<=\d)至(?=\d)", "-", normalized)
+    return normalized
+
+
+def _fact_label(fact: str | dict[str, Any]) -> str:
+    if isinstance(fact, dict):
+        return str(fact.get("label") or "").strip()
+    return str(fact).strip()
+
+
+def _condition_hit(condition: str | dict[str, Any], answer_norm: str) -> bool:
+    if isinstance(condition, str):
+        needle = _normalize_match_text(condition)
+        return bool(needle) and needle in answer_norm
+    if not isinstance(condition, dict):
+        raise TypeError("structured fact condition must be str or dict")
+
+    any_of = condition.get("any_of")
+    if any_of is not None:
+        if not isinstance(any_of, list) or not any_of:
+            raise ValueError("any_of must be a non-empty list")
+        if any(_condition_hit(candidate, answer_norm) for candidate in any_of):
+            return True
+
+    regex = condition.get("regex")
+    if regex is not None:
+        if not isinstance(regex, str) or not regex:
+            raise ValueError("regex must be a non-empty string")
+        if re.search(regex, answer_norm, re.IGNORECASE | re.DOTALL):
+            return True
+
+    all_of = condition.get("all_of")
+    if all_of is not None:
+        if not isinstance(all_of, list) or not all_of:
+            raise ValueError("all_of must be a non-empty list")
+        return all(_condition_hit(item, answer_norm) for item in all_of)
+
+    return False
+
+
+def _number_hit(number: str, answer_norm: str) -> bool:
+    token = _normalize_match_text(str(number))
+    if not token:
+        return False
+    # Exact numeric token boundaries prevent ``1`` from matching ``1.75`` or ``10``.
+    pattern = rf"(?<![\d.]){re.escape(token)}(?![\d.])"
+    return re.search(pattern, answer_norm) is not None
+
+
+def _structured_fact_hit(fact: dict[str, Any], actual_output: str) -> bool:
+    answer_norm = _normalize_match_text(actual_output)
+
+    for number in fact.get("numbers") or []:
+        if not _number_hit(number, answer_norm):
+            return False
+
+    for pattern in fact.get("must_not") or []:
+        normalized_pattern = _normalize_match_text(str(pattern))
+        if re.search(normalized_pattern, answer_norm, re.IGNORECASE | re.DOTALL):
+            return False
+
+    all_of = fact.get("all_of")
+    any_of = fact.get("any_of")
+    if all_of is not None:
+        if not isinstance(all_of, list) or not all_of:
+            raise ValueError("structured fact all_of must be a non-empty list")
+        if not all(_condition_hit(condition, answer_norm) for condition in all_of):
+            return False
+    if any_of is not None:
+        if not isinstance(any_of, list) or not any_of:
+            raise ValueError("structured fact any_of must be a non-empty list")
+        if not any(_condition_hit(condition, answer_norm) for condition in any_of):
+            return False
+
+    if all_of is None and any_of is None:
+        label = _normalize_match_text(_fact_label(fact))
+        return bool(label) and label in answer_norm
+    return True
+
+
+def fact_hit(fact: str | dict[str, Any], actual_output: str) -> bool:
     """Keyword/number heuristic for one expected_fact against the answer.
 
     Chinese facts are matched via short runs / character n-grams so that
     ``滤网等易耗件不在保修范围`` can hit answers that phrase the same idea
-    with intervening words (e.g. 「易耗件……不在保修范围内」).
+    with intervening words (e.g. 「易耗件……不在保修范围内」). Structured
+    facts provide explicit synonym groups, exact numbers, and contradiction
+    guards while retaining the string heuristic for older datasets.
     """
+    if isinstance(fact, dict):
+        return _structured_fact_hit(fact, actual_output or "")
+    fact = str(fact or "")
     answer = actual_output or ""
     answer_norm = answer.casefold()
     numbers, others = _fact_signals(fact)
@@ -223,19 +314,20 @@ def fact_hit(fact: str, actual_output: str) -> bool:
 
 
 def check_l1_facts(
-    actual_output: str, expected_facts: list[str] | None
+    actual_output: str, expected_facts: list[str | dict[str, Any]] | None
 ) -> tuple[bool, list[str], list[str]]:
     """Hard gate for answerable cases: each expected_fact should hit."""
-    facts = [f for f in (expected_facts or []) if str(f).strip()]
+    facts = [f for f in (expected_facts or []) if _fact_label(f)]
     if not facts:
         return True, [], []
     hit: list[str] = []
     miss: list[str] = []
     for fact in facts:
-        if fact_hit(str(fact), actual_output):
-            hit.append(str(fact))
+        label = _fact_label(fact)
+        if fact_hit(fact, actual_output):
+            hit.append(label)
         else:
-            miss.append(str(fact))
+            miss.append(label)
     return (len(miss) == 0), hit, miss
 
 
