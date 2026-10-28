@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>坐席端审批卡 · 设计稿</title>
+<style>
+  :root {
+    --accent: #C0562B;
+    --accent-strong: #A2461F;
+    --accent-soft: #FBEFE6;
+    --accent-line: #EBD5C3;
+
+    --ink: #2A211B;
+    --ink-2: #5A4A3D;
+    --ink-3: #8A7C6D;
+    --ink-4: #A9998A;
+
+    --surface: #FFFDF8;
+    --surface-2: #FAF6F0;
+    --line: #E6D8C6;
+    --line-soft: #F0E6DA;
+
+    --ok: #2F7A57;
+    --ok-soft: #EAF3EE;
+    --danger: #B23A2E;
+    --danger-soft: #FBEDEA;
+
+    --page: #EFEDE9;
+    --chrome: #FFFFFF;
+    --chrome-line: #E7E5E2;
+    --rail: #FBFAF9;
+    --side: #F7F5F2;
+    --bubble-user: #F2F1EF;
+    --bubble-bot: #EDE9FE;
+    --bubble-note: #FFE4B5;
+    --bubble-note-ink: #4A3A20;
+
+    --r-card: 12px;
+    --shadow: 0 1px 2px rgba(42, 33, 27, .06), 0 8px 24px -12px rgba(42, 33, 27, .18);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .page { max-width: 1400px; margin: 0 auto; padding: 28px 24px 56px; }
+
+  /* ── 页头 ───────────────────────────────────────────── */
+  .doc-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+  .doc-title { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+  .doc-sub { margin: 6px 0 0; font-size: 12.5px; color: var(--ink-3); line-height: 1.6; }
+  .doc-meta { font-size: 11.5px; color: var(--ink-4); text-align: right; line-height: 1.7; white-space: nowrap; }
+
+  /* ── 状态切换 ───────────────────────────────────────── */
+  .toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px; margin-bottom: 14px;
+    background: rgba(255, 253, 248, .8);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+  }
+  .seg { display: flex; gap: 2px; flex-wrap: wrap; }
+  .seg button {
+    appearance: none; border: 0; background: transparent;
+    font: inherit; font-size: 12.5px; font-weight: 550; color: var(--ink-2);
+    padding: 7px 12px; border-radius: 9px; cursor: pointer;
+    transition: background .16s ease, color .16s ease;
+  }
+  .seg button:hover { background: var(--surface-2); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .seg button[aria-pressed="true"] .dot { background: rgba(255, 255, 255, .8); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-4); display: inline-block; margin-right: 7px; vertical-align: 1px; }
+  .toolbar .spacer { flex: 1; }
+  .toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-3); cursor: pointer; user-select: none; }
+  .toggle input { accent-color: var(--accent); }
+
+  /* ── 应用外框 ───────────────────────────────────────── */
+  .frame {
+    width: 1360px; max-width: 100%; height: 812px;
+    display: grid; grid-template-columns: 60px 188px 1fr;
+    background: var(--chrome); border: 1px solid var(--chrome-line);
+    border-radius: 16px; overflow: hidden; box-shadow: var(--shadow);
+    position: relative;
+  }
+  .rail { background: var(--rail); border-right: 1px solid var(--chrome-line); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 4px; }
+  .rail .logo { width: 26px; height: 26px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-bottom: 10px; }
+  .rail .ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: #6B625B; }
+  .rail .ico svg { width: 17px; height: 17px; }
+  .rail .ico.on { background: var(--accent-soft); color: var(--accent-strong); }
+  .rail .foot { margin-top: auto; width: 30px; height: 30px; border-radius: 50%; background: #E8DED3; color: #7A6A5C; display: grid; place-items: center; font-size: 10.5px; font-weight: 650; }
+
+  .side { background: var(--side); border-right: 1px solid var(--chrome-line); display: flex; flex-direction: column; }
+  .side-head { padding: 14px 14px 10px; }
+  .side-title { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 650; color: #3E3733; }
+  .side-tabs { display: flex; gap: 14px; margin-top: 12px; font-size: 12px; color: var(--ink-3); }
+  .side-tabs .on { color: var(--ink); font-weight: 600; }
+  .side-empty { margin: 10px 14px; padding: 22px 12px; text-align: center; font-size: 12px; color: var(--ink-4); border: 1px dashed #E2DCD5; border-radius: 10px; }
+  .side-item { margin: 4px 8px; padding: 9px 10px; border-radius: 9px; font-size: 12px; color: #4A423C; }
+  .side-item .n { font-weight: 600; }
+  .side-item .t { color: var(--ink-4); font-size: 11px; margin-top: 3px; }
+  .side-item.on { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .05); }
+
+  .main { display: grid; grid-template-rows: 54px 1fr 128px; min-width: 0; background: #fff; }
+  .conv-head { display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--chrome-line); }
+  .avatar { width: 28px; height: 28px; border-radius: 8px; background: #EFE7DE; color: #7A6A5C; font-size: 12px; font-weight: 650; display: grid; place-items: center; }
+  .conv-name { font-size: 13px; font-weight: 650; color: #3E3733; }
+  .conv-meta { font-size: 11.5px; color: var(--ink-4); }
+  .conv-actions { margin-left: auto; display: flex; gap: 8px; }
+  .ghost { border: 1px solid #E2DCD5; background: #fff; border-radius: 8px; font-size: 12px; color: #4A423C; padding: 5px 10px; }
+
+  .thread { overflow: hidden; padding: 18px 26px; display: flex; flex-direction: column; gap: 14px; background: #fff; }
+  .row { display: flex; }
+  .row.right { justify-content: flex-end; }
+  .msg { max-width: 560px; font-size: 13.5px; line-height: 1.65; }
+  .msg .meta { font-size: 11px; color: #A79C92; margin-top: 5px; }
+  .row.right .msg .meta { text-align: right; }
+  .bubble { border-radius: 12px; padding: 9px 13px; }
+  .bubble.user { background: var(--bubble-user); color: #2F2A26; border-bottom-left-radius: 3px; }
+  .bubble.bot { background: var(--bubble-bot); color: #2E2A46; border-bottom-right-radius: 3px; }
+  .bubble.note { background: var(--bubble-note); color: var(--bubble-note-ink); border-bottom-right-radius: 3px; }
+
+  .composer { border-top: 1px solid var(--chrome-line); padding: 10px 18px 14px; }
+  .composer .tabs { display: flex; gap: 16px; font-size: 12px; color: var(--ink-3); }
+  .composer .tabs .on { color: var(--ink); font-weight: 600; }
+  .composer .box { margin-top: 8px; height: 56px; border: 1px solid #E7E1DA; border-radius: 10px; padding: 9px 11px; font-size: 12.5px; color: #B7ADA3; }
+
+  /* ── 审批卡 ─────────────────────────────────────────── */
+  .card {
+    width: 424px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(42, 33, 27, .05);
+  }
+  .card-stripe { height: 3px; background: var(--accent); }
+  .card[data-state="approved"] .card-stripe { background: var(--ok); }
+  .card[data-state="rejected"] .card-stripe { background: var(--danger); }
+  .card[data-state="expired"] .card-stripe,
+  .card[data-state="taken"] .card-stripe { background: #C9BEB2; }
+
+  .card-body { padding: 14px 16px 15px; }
+
+  .card-eyebrow { display: flex; align-items: center; gap: 8px; }
+  .tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 650; letter-spacing: .02em;
+    color: var(--accent-strong); background: var(--accent-soft);
+    border: 1px solid var(--accent-line); border-radius: 6px; padding: 3px 7px;
+  }
+  .tag svg { width: 11px; height: 11px; }
+  .tag.ok { color: var(--ok); background: var(--ok-soft); border-color: #CFE4D8; }
+  .tag.bad { color: var(--danger); background: var(--danger-soft); border-color: #F0D2CC; }
+  .tag.mute { color: var(--ink-3); background: var(--surface-2); border-color: var(--line); }
+  .ref { font-size: 11px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+  .sla { margin-left: auto; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 4px; }
+  .sla b { color: var(--accent-strong); font-weight: 650; }
+
+  .card-title { margin: 9px 0 0; font-size: 17px; line-height: 1.35; font-weight: 650; letter-spacing: -.01em; color: var(--ink); }
+  .card-title .amt { font-variant-numeric: tabular-nums; }
+  .card-sub { margin: 4px 0 0; font-size: 12px; line-height: 1.55; color: var(--ink-3); }
+
+  .facts { margin: 12px 0 0; display: grid; grid-template-columns: 58px 1fr; row-gap: 7px; column-gap: 10px; }
+  .facts dt { font-size: 11.5px; color: var(--ink-4); line-height: 1.5; }
+  .facts dd { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.5; }
+  .facts dd .num { font-variant-numeric: tabular-nums; }
+  .facts dd .dim { color: var(--ink-4); }
+  .facts .full { grid-column: 1 / -1; }
+
+  .quote {
+    margin: 12px 0 0; padding: 8px 10px;
+    background: var(--surface-2); border-left: 2px solid var(--accent-line);
+    border-radius: 0 6px 6px 0;
+    font-size: 12.5px; line-height: 1.6; color: var(--ink-2);
+  }
+  .quote .who { color: var(--ink-4); font-size: 11px; }
+
+  .hr { height: 1px; background: var(--line-soft); margin: 13px 0 0; }
+
+  .actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .btn {
+    appearance: none; border: 1px solid transparent; font: inherit;
+    height: 38px; padding: 0 15px; border-radius: 9px;
+    font-size: 12.5px; font-weight: 650; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: background .16s ease, border-color .16s ease, transform .06s ease;
+  }
+  .btn:active { transform: translateY(.5px); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-strong); }
+  .btn.secondary { background: #fff; color: var(--ink-2); border-color: #DDCDBA; }
+  .btn.secondary:hover { background: var(--surface-2); }
+  .btn[disabled] { opacity: .45; cursor: default; }
+  .link { margin-left: auto; font-size: 12px; color: var(--accent-strong); text-decoration: none; border-bottom: 1px solid var(--accent-line); padding-bottom: 1px; }
+  .foot { margin-top: 10px; font-size: 11px; color: var(--ink-4); line-height: 1.5; display: flex; align-items: center; gap: 5px; }
+  .foot svg { width: 11px; height: 11px; flex: none; }
+
+  .verdict { margin-top: 12px; padding: 9px 11px; border-radius: 8px; font-size: 12.5px; line-height: 1.6; }
+  .verdict.ok { background: var(--ok-soft); color: #235C41; }
+  .verdict.bad { background: var(--danger-soft); color: #8A2B21; }
+  .verdict.mute { background: var(--surface-2); color: var(--ink-2); }
+  .verdict b { font-weight: 650; }
+
+  .spin { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 标注 */
+  .pin {
+    position: absolute; width: 17px; height: 17px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 10px; font-weight: 700;
+    display: none; place-items: center; box-shadow: 0 0 0 3px rgba(192, 86, 43, .16);
+    z-index: 5;
+  }
+  body.notes .pin { display: grid; }
+  .pin::after { content: ""; }
+
+  .legend { margin-top: 16px; display: none; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 22px; }
+  body.notes .legend { display: grid; }
+  .legend div { font-size: 12px; color: var(--ink-2); line-height: 1.55; display: flex; gap: 8px; }
+  .legend b { color: var(--accent); flex: none; font-variant-numeric: tabular-nums; }
+
+  .spec { margin-top: 18px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .spec .cell { background: #fff; border: 1px solid var(--line); border-radius: 11px; padding: 11px 13px; }
+  .spec .k { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-4); }
+  .spec .v { font-size: 12.5px; color: var(--ink-2); margin-top: 5px; line-height: 1.55; font-variant-numeric: tabular-nums; }
+
+  .state-note { margin-top: 12px; font-size: 12px; color: var(--ink-3); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-head">
+    <div>
+      <h1 class="doc-title">坐席端审批卡 · 设计稿</h1>
+      <p class="doc-sub">Chatwoot Dashboard 会话视图复刻（1360×812）· 高风险退款/取消订单审批 · 暖橙体系（#C0562B）</p>
+    </div>
+    <div class="doc-meta">
+      设计稿 v1 · 2026-10-28<br>
+      与 widget 端共用同一套色板与字号阶梯
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="seg" role="group" aria-label="状态切换">
+      <button data-state="before" aria-pressed="false"><span class="dot"></span>现状</button>
+      <button data-state="pending" aria-pressed="true"><span class="dot"></span>待审批</button>
+      <button data-state="processing" aria-pressed="false"><span class="dot"></span>处理中</button>
+      <button data-state="approved" aria-pressed="false"><span class="dot"></span>已批准</button>
+      <button data-state="rejected" aria-pressed="false"><span class="dot"></span>已拒绝</button>
+      <button data-state="expired" aria-pressed="false"><span class="dot"></span>已过期</button>
+      <button data-state="failed" aria-pressed="false"><span class="dot"></span>执行失败</button>
+      <button data-state="taken" aria-pressed="false"><span class="dot"></span>他人已处理</button>
+    </div>
+    <div class="spacer"></div>
+    <label class="toggle"><input type="checkbox" id="notes"> 显示标注</label>
+  </div>
+
+  <div class="frame">
+    <!-- 左侧图标栏 -->
+    <div class="rail">
+      <div class="logo">澄</div>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div>
+      <div class="ico on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16v10H8l-4 4z"/></svg></div>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/></svg></div>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c1.4-3.6 3.8-5.2 7-5.2s5.6 1.6 7 5.2"/></svg></div>
+      <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V9m5 10V5m5 14v-7m5 7V8"/></svg></div>
+      <div class="foot">WQ</div>
+    </div>
+
+    <!-- 会话列表 -->
+    <div class="side">
+      <div class="side-head">
+        <div class="side-title"><span>我的收件箱</span><span style="color:#A79C92">⌄</span></div>
+        <div class="side-tabs"><span class="on">全部</span><span>未分配</span><span>我的</span></div>
+      </div>
+      <div class="side-item on">
+        <div class="n">张伟 <span style="color:#A79C92;font-weight:400">#843</span></div>
+        <div class="t">高风险审批 · 取消订单 ORD-PAID-1</div>
+      </div>
+      <div class="side-item">
+        <div class="n">李静 <span style="color:#A79C92;font-weight:400">#842</span></div>
+        <div class="t">地址修改完成</div>
+      </div>
+      <div class="side-item">
+        <div class="n">陈晓 <span style="color:#A79C92;font-weight:400">#841</span></div>
+        <div class="t">转人工申请</div>
+      </div>
+      <div class="side-empty">没有更多待处理</div>
+    </div>
+
+    <!-- 会话 -->
+    <div class="main">
+      <div class="conv-head">
+        <div class="avatar">张</div>
+        <div>
+          <div class="conv-name">张伟 <span style="color:#A79C92;font-weight:400">#843</span> · <span style="color:#8A7C6D;font-weight:500">澄元AI客服助手</span></div>
+          <div class="conv-meta">网页渠道 · 已分配给 王琦</div>
+        </div>
+        <div class="conv-actions">
+          <button class="ghost">打开</button>
+          <button class="ghost">⋯</button>
+        </div>
+      </div>
+
+      <div class="thread" id="thread">
+        <!-- 客户 -->
+        <div class="row">
+          <div class="msg">
+            <div class="bubble user">这个订单我不想要了，能退吗</div>
+            <div class="meta">Oct 27, 5:47 PM</div>
+          </div>
+        </div>
+        <!-- bot 回执 -->
+        <div class="row right">
+          <div class="msg">
+            <div class="bubble bot">已收到，我先为您提交退款申请，稍后告知结果。</div>
+            <div class="meta">Oct 27, 5:48 PM</div>
+          </div>
+        </div>
+
+        <!-- 审批卡 -->
+        <div class="row right">
+          <div class="msg" style="max-width:452px">
+            <div id="card-slot"></div>
+            <div class="meta" style="display:flex;align-items:center;justify-content:flex-end;gap:5px">
+              <span id="card-time">Oct 27, 5:49 PM</span>
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#A79C92" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+              <span>仅坐席可见</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="tabs"><span class="on">回复</span><span>私人便笺</span></div>
+        <div class="box">输入 “/” 开始选择快捷回复</div>
+      </div>
+    </div>
+
+    <!-- 标注 -->
+    <span class="pin" style="left:986px;top:214px">1</span>
+    <span class="pin" style="left:986px;top:268px">2</span>
+    <span class="pin" style="left:986px;top:344px">3</span>
+    <span class="pin" style="left:986px;top:452px">4</span>
+    <span class="pin" style="left:986px;top:512px">5</span>
+  </div>
+
+  <div class="legend">
+    <div><b>1</b><span>风险抬头：动作类型 + 可读单号尾号 + 剩余时限，一眼判断轻重缓急。</span></div>
+    <div><b>2</b><span>标题即结论：动词 + 金额（含币种、两位小数、千分位），不写“审批”这种空词。</span></div>
+    <div><b>3</b><span>事实区固定 6 行：客户、订单、商品、金额、订单状态、申请时间。缺失项显式说明。</span></div>
+    <div><b>4</b><span>客户原话引用：坐席最常问“为什么”，这里直接给，不用翻聊天记录。</span></div>
+    <div><b>5</b><span>动作分层：批准=主按钮（危险动作，二次确认）；拒绝=次按钮（必填理由）；详情=文字链。</span></div>
+  </div>
+
+  <div class="spec">
+    <div class="cell"><div class="k">卡片</div><div class="v">424px 宽 · 12px 圆角<br>1px #E6D8C6 · 顶部 3px 风险条</div></div>
+    <div class="cell"><div class="k">字号阶梯</div><div class="v">标题 17/650 · 正文 12.5<br>label 11.5 · 徽标 11</div></div>
+    <div class="cell"><div class="k">动作</div><div class="v">按钮 38px 高 · 9px 圆角<br>主 #C0562B · 次 白底描边</div></div>
+    <div class="cell"><div class="k">间距</div><div class="v">内边距 16 · 段落 12<br>事实行 7 · 动作区 12</div></div>
+  </div>
+
+  <div class="state-note" id="state-note"></div>
+</div>
+
+<script>
+const CARD = {
+  before: `
+    <div class="bubble note" style="width:424px;font-size:13px;line-height:1.6">
+      高风险审批 · 取消订单 ORD-PAID-1｜金额 99.0｜商品：商品信息不可用｜申请人 u1｜状态 已付款 单号 da86681d-56f1-4375-9e43-a8c93a9522ed 截止 2026-10-27T10:19:28.287790+00:00
+      <div style="margin-top:10px;color:#8A7C6D">无响应</div>
+    </div>`,
+  pending: `
+    <div class="card" data-state="pending">
+      <div class="card-stripe"></div>
+      <div class="card-body">
+        <div class="card-eyebrow" data-pin="1">
+          <span class="tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3 3 20h18L12 3Z"/><path d="M12 9v5M12 17h.01"/></svg>高风险审批</span>
+          <span class="ref">#da8668</span>
+          <span class="sla">剩 <b>28:41</b></span>
+        </div>
+        <h3 class="card-title" data-pin="2">退款 <span class="amt">¥240.31</span></h3>
+        <p class="card-sub">客户申请整单退款，需你确认后立即打款</p>
+
+        <dl class="facts" data-pin="3">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>商品</dt><dd>澄元智能破壁机 Pro Max 01 ×1</dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span> <span class="dim">· 订单总额 ¥240.31，未退过款</span></dd>
+          <dt>状态</dt><dd>已付款 · 未发货</dd>
+          <dt>申请时间</dt><dd><span class="num">今天 17:49</span> <span class="dim">· 客户已等待 8 分钟</span></dd>
+        </dl>
+
+        <div class="quote" data-pin="4">「不想要了，麻烦帮我退掉」<div class="who">客户原话 · 第 1 轮会话</div></div>
+
+        <div class="hr"></div>
+        <div class="actions" data-pin="5">
+          <button class="btn primary">批准并退款</button>
+          <button class="btn secondary">拒绝</button>
+          <a class="link" href="#">查看订单详情</a>
+        </div>
+        <div class="foot">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+          30 分钟内有效 · 处理后客户立即收到结果
+        </div>
+      </div>
+    </div>`,
+  processing: `
+    <div class="card" data-state="processing">
+      <div class="card-stripe"></div>
+      <div class="card-body">
+        <div class="card-eyebrow">
+          <span class="tag">执行中</span>
+          <span class="ref">#da8668</span>
+        </div>
+        <h3 class="card-title">退款 <span class="amt">¥240.31</span></h3>
+        <p class="card-sub">已由 王琦 批准，正在调用退款接口…</p>
+        <dl class="facts">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span></dd>
+        </dl>
+        <div class="hr"></div>
+        <div class="actions">
+          <button class="btn primary" disabled><span class="spin"></span>处理中…</button>
+          <button class="btn secondary" disabled>拒绝</button>
+        </div>
+        <div class="foot">通常 2–5 秒完成，请勿关闭页面</div>
+      </div>
+    </div>`,
+  approved: `
+    <div class="card" data-state="approved">
+      <div class="card-stripe"></div>
+      <div class="card-body">
+        <div class="card-eyebrow">
+          <span class="tag ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m5 13 4 4L19 7"/></svg>已批准</span>
+          <span class="ref">#da8668</span>
+          <span class="sla">王琦 · 17:52</span>
+        </div>
+        <h3 class="card-title">退款 <span class="amt">¥240.31</span></h3>
+        <dl class="facts" style="opacity:.75">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span></dd>
+        </dl>
+        <div class="verdict ok">退款已提交至原支付渠道，预计 <b>1–3 个工作日</b>到账。客户已收到通知。</div>
+        <div class="hr"></div>
+        <div class="actions" style="gap:18px">
+          <a class="link" href="#" style="margin-left:0">查看订单详情</a>
+          <a class="link" href="#">查看处理记录</a>
+        </div>
+      </div>
+    </div>`,
+  rejected: `
+    <div class="card" data-state="rejected">
+      <div class="card-stripe"></div>
+      <div class="card-body">
+        <div class="card-eyebrow">
+          <span class="tag bad"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M6 6l12 12M18 6 6 18"/></svg>已拒绝</span>
+          <span class="ref">#da8668</span>
+          <span class="sla">王琦 · 17:52</span>
+        </div>
+        <h3 class="card-title">退款 <span class="amt">¥240.31</span></h3>
+        <dl class="facts" style="opacity:.75">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span></dd>
+        </dl>
+        <div class="verdict bad">理由：<b>商品已发货，需走退货流程</b><div style="margin-top:4px;color:#8A2B21;opacity:.8">客户已收到该理由，并被告知可申请退货。</div></div>
+        <div class="hr"></div>
+        <div class="actions" style="gap:18px"><a class="link" href="#" style="margin-left:0">查看订单详情</a></div>
+      </div>
+    </div>`,
+  expired: `
+    <div class="card" data-state="expired">
+      <div class="card-stripe"></div>
+      <div class="card-body">
+        <div class="card-eyebrow">
+          <span class="tag mute">已过期</span>
+          <span class="ref">#da8668</span>
+          <span class="sla">超时 30 分钟</span>
+        </div>
+        <h3 class="card-title" style="color:#5A4A3D">退款 <span class="amt">¥240.31</span></h3>
+        <dl class="facts" style="opacity:.75">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span></dd>
+        </dl>
+        <div class="verdict mute">30 分钟内无人处理，系统已自动取消申请，订单保持不变。客户已收到「申请已过期，可重新发起」。</div>
+        <div class="hr"></div>
+        <div class="actions" style="gap:18px"><a class="link" href="#" style="margin-left:0">查看订单详情</a></div>
+      </div>
+    </div>`,
+  failed: `
+    <div class="card" data-state="failed">
+      <div class="card-stripe" style="background:#B23A2E"></div>
+      <div class="card-body">
+        <div class="card-eyebrow">
+          <span class="tag bad">执行失败</span>
+          <span class="ref">#da8668</span>
+          <span class="sla">处理编号 8f3a1c2b</span>
+        </div>
+        <h3 class="card-title">退款 <span class="amt">¥240.31</span></h3>
+        <dl class="facts" style="opacity:.75">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span></dd>
+        </dl>
+        <div class="verdict bad">审批已通过，但退款接口返回失败。客户已收到「稍后重试或转人工」的说明。</div>
+        <div class="hr"></div>
+        <div class="actions">
+          <button class="btn primary">重试执行</button>
+          <button class="btn secondary">转人工跟进</button>
+          <a class="link" href="#">查看日志</a>
+        </div>
+      </div>
+    </div>`,
+  taken: `
+    <div class="card" data-state="taken">
+      <div class="card-stripe"></div>
+      <div class="card-body">
+        <div class="card-eyebrow">
+          <span class="tag mute">已由他人处理</span>
+          <span class="ref">#da8668</span>
+          <span class="sla">李娜 · 17:51</span>
+        </div>
+        <h3 class="card-title" style="color:#5A4A3D">退款 <span class="amt">¥240.31</span></h3>
+        <dl class="facts" style="opacity:.75">
+          <dt>客户</dt><dd>张伟 <span class="dim">· 尾号 6375</span></dd>
+          <dt>订单</dt><dd><span class="num">ORD-2026-10059</span></dd>
+          <dt>金额</dt><dd><span class="num">¥240.31</span></dd>
+        </dl>
+        <div class="verdict mute">李娜 已于 17:51 批准并完成退款，无需重复处理。</div>
+        <div class="hr"></div>
+        <div class="actions" style="gap:18px"><a class="link" href="#" style="margin-left:0">查看处理记录</a></div>
+      </div>
+    </div>`
+};
+
+const NOTES = {
+  before: '现状：Chatwoot 坐席端 FormBubble 只渲染 content 文本与已提交值，items（批准/拒绝下拉、备注框）完全不渲染 —— 坐席看到的是一条无法操作的黄底私备注，末尾还挂着「无响应」。',
+  pending: '待审批：一条消息说清“批什么、批多少、批给谁、还剩多久”。批准是资金动作，按钮文案直接写后果（批准并退款），点击后仍需二次确认。',
+  processing: '处理中：按钮立即置灰并给出进度，避免坐席连点或重复从别处操作；此状态通常持续 2–5 秒。',
+  approved: '已批准：卡片就地变结果态，保留审批人与时间；客户侧话术与卡片文案对齐（到账时效），减少坐席再解释。',
+  rejected: '已拒绝：拒绝理由必填且原样回传客户，卡片留痕。避免“拒绝后客户不知道为什么”。',
+  expired: '已过期：默认 30 分钟 TTL。过期不是静默失败，卡片与客户侧都要有交代，并提供重新发起入口。',
+  failed: '执行失败：审批通过但工具失败时，卡片给处理编号 + 重试 + 转人工，不让坐席去翻日志。',
+  taken: '并发：同一审批被两个坐席同时打开时，后到者看到「已由他人处理」，按钮不再可点（对应后端 409 幂等）。'
+};
+
+const slot = document.getElementById('card-slot');
+const note = document.getElementById('state-note');
+const time = document.getElementById('card-time');
+const pins = document.querySelectorAll('.pin');
+
+function placePins() {
+  const frame = document.querySelector('.frame').getBoundingClientRect();
+  const card = document.querySelector('.card');
+  if (!card) return;
+  const cardRect = card.getBoundingClientRect();
+  pins.forEach(pin => {
+    const target = document.querySelector(`[data-pin="${pin.textContent}"]`);
+    if (!target) { pin.style.display = 'none'; return; }
+    const r = target.getBoundingClientRect();
+    pin.style.left = (cardRect.left - frame.left - 28) + 'px';
+    pin.style.top = (r.top - frame.top + r.height / 2 - 8) + 'px';
+    pin.style.display = document.body.classList.contains('notes') ? 'grid' : 'none';
+  });
+}
+
+function render(state) {
+  slot.innerHTML = CARD[state];
+  note.textContent = NOTES[state];
+  time.textContent = state === 'before' ? 'Oct 27, 5:50 PM' : 'Oct 27, 5:49 PM';
+  requestAnimationFrame(placePins);
+}
+
+window.addEventListener('resize', placePins);
+
+document.querySelectorAll('.seg button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', 'false'));
+    btn.setAttribute('aria-pressed', 'true');
+    render(btn.dataset.state);
+    requestAnimationFrame(placePins);
+  });
+});
+
+document.getElementById('notes').addEventListener('change', e => {
+  document.body.classList.toggle('notes', e.target.checked);
+  placePins();
+});
+
+render('pending');
+document.body.classList.remove('notes');
+</script>
+</body>
+</html>
