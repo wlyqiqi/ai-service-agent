@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -213,6 +214,8 @@ def create_app(
     order_repository=None,
     chatwoot_revert_bot_error_open: bool | None = None,
     chatwoot_bot_error_open_grace_seconds: float | None = None,
+    approval_link_base_url: str | None = None,
+    approval_link_secret: str | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -230,6 +233,14 @@ def create_app(
         settings.seat_approval_secret if seat_approval_secret is None else seat_approval_secret
     ) or None
     sim = settings.simulate_approval if simulate_approval is None else simulate_approval
+    # 审批卡按钮要指回 Runtime 自己的确认页。没配对外地址时按本机端口推，
+    # 让本地 demo 零配置可用；生产必须配 APPROVAL_LINK_BASE_URL。
+    resolved_link_base_url = (
+        approval_link_base_url
+        or settings.approval_link_base_url
+        or f"http://127.0.0.1:{os.environ.get('AI_SERVICE_PORT', '8000')}"
+    ).rstrip("/")
+    resolved_link_secret = approval_link_secret or settings.approval_link_secret
     conn = sqlite3.connect(db_path, check_same_thread=False)
     users = UserStore(conn)
     status = ConversationStatusStore(conn)
@@ -420,6 +431,8 @@ def create_app(
         on_handoff_requested=_handoff_events,
         seat_secret=seat_secret,
         simulate_approval=bool(sim),
+        approval_link_base_url=resolved_link_base_url,
+        approval_link_secret=resolved_link_secret,
     )
 
     async def _emit_joined_notice(conv_id: str) -> None:

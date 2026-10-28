@@ -15,10 +15,18 @@ FastAPI 单测。本模块是这条链的唯一归属：
 """
 
 import hmac
+import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from ai_service_agent.config import get_settings
+from ai_service_agent.harness.approval_card import (
+    default_base_url,
+    derive_decision_secret,
+    render_approval_card,
+    sign_decision_token,
+)
 from ai_service_agent.harness.approvals import (
     ApprovalAlreadyProcessed,
     ApprovalExpired,
@@ -38,6 +46,10 @@ from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 _APPROVAL_FORM_ID_FIELD = "approval_id"
 _APPROVAL_FORM_DECISION_FIELD = "decision"
 _APPROVAL_FORM_NOTE_FIELD = "note"
+
+#: 决策链接的坐席身份。一期是共享口令，拿不到真实坐席 id；用 ``link`` 如实标记
+#: "通过签名链接决策、身份未绑定"，审计里能一眼区分。二期注入式按钮再绑 sender.id。
+_LINK_ACTOR = "link"
 
 
 # --- 错误：模块不依赖 FastAPI，由 Transport 映射状态码 -----------------------
@@ -91,21 +103,31 @@ def _approval_form_decision_item() -> dict[str, Any]:
     }
 
 
-def approval_form_title_from_payload(data: dict[str, Any]) -> str:
-    """Seat-facing Chatwoot form title: enough summary to decide (#64)."""
-    summary = (data.get("summary") or "").strip() or "高风险操作待审批"
-    approval_id = (data.get("approval_id") or "").strip()
-    expires_at = (data.get("expires_at") or "").strip()
-    parts = [f"高风险审批 · {summary}"]
-    if approval_id:
-        parts.append(f"单号 {approval_id}")
-    if expires_at:
-        parts.append(f"截止 {expires_at}")
-    return "\n".join(parts)
+def approval_facts_from_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """interrupt 载荷里的业务事实（``x_approval.facts``）；缺失返回空 dict。"""
+    extension = data.get("x_approval")
+    if isinstance(extension, dict) and isinstance(extension.get("facts"), dict):
+        return extension["facts"]
+    return {}
+
+
+def _load_payload(raw: object) -> dict[str, Any] | None:
+    """``approval_record.payload_json`` → dict（老记录没有该列时为 None）。"""
+    if not raw:
+        return None
+    try:
+        value = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def approval_form_items_from_payload(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build private Chatwoot ``form`` items for Seat Approver approve/reject."""
+    """Build private Chatwoot ``form`` items for Seat Approver approve/reject.
+
+    坐席端 ``FormBubble`` 并不渲染 ``items``（只渲染 ``content``），保留它是为了
+    Chatwoot 的 ``submitted_values`` 回传路径与既有 webhook 解析不失效。
+    """
     approval_id = str(data.get("approval_id") or "")
     items: list[dict[str, Any]] = [
         {
@@ -143,22 +165,47 @@ def parse_approval_form_submission(
     return parsed
 
 
-async def send_approval_form(
+async def send_approval_card(
     chatwoot: ChatwootClient,
     conversation_id: str,
     data: dict[str, Any],
+    *,
+    base_url: str | None = None,
+    secret: str | None = None,
 ) -> None:
-    """Project ``approval_required`` to a private seat-facing Chatwoot form (#64).
+    """把 ``approval_required`` 投影成坐席私有卡片（#64 / ADR-0006）。
 
-    ``private=True`` keeps Approve/Reject off the customer Widget (ADR-0001).
+    ``private=True`` 让审批留在坐席侧（ADR-0001）。卡片是 HTML 字符串：
+    Chatwoot 坐席端只渲染 ``content``，``items`` / ``cards`` 都不渲染。
+    ``base_url`` / ``secret`` 缺省时从配置推（未接线的调用路径也能拿到可用链接）。
     """
-    title = approval_form_title_from_payload(data)
-    items = approval_form_items_from_payload(data)
+    approval_id = str(data.get("approval_id") or "")
+    if secret is None:
+        settings = get_settings()
+        seat = settings.seat_approval_secret
+        secret = (
+            derive_decision_secret(seat, settings.approval_link_secret)
+            if (seat or settings.approval_link_secret)
+            else None
+        )
+    facts = approval_facts_from_payload(data)
+    token = (
+        sign_decision_token(approval_id, conversation_id, _LINK_ACTOR, secret=secret)
+        if (approval_id and secret)
+        else ""
+    )
+    content = render_approval_card(
+        facts,
+        approval_id=approval_id,
+        expires_at=str(data.get("expires_at") or ""),
+        base_url=base_url or default_base_url(),
+        token=token,
+    )
     await chatwoot.send_interactive_message(
         conversation_id,
-        title,
+        content,
         "form",
-        {"items": items},
+        {"items": approval_form_items_from_payload(data)},
         private=True,
     )
 
@@ -217,6 +264,8 @@ class ApprovalSideChannel:
         on_handoff_requested: Callable[[str, dict], Awaitable[None]] | None = None,
         seat_secret: str | None = None,
         simulate_approval: bool = False,
+        approval_link_base_url: str | None = None,
+        approval_link_secret: str | None = None,
     ) -> None:
         self._store = store
         self._status = status
@@ -228,6 +277,12 @@ class ApprovalSideChannel:
         self._on_handoff_requested = on_handoff_requested
         self._seat_secret = seat_secret
         self._simulate_approval = simulate_approval
+        self._link_base_url = (approval_link_base_url or "").rstrip("/")
+        self._link_secret = (
+            derive_decision_secret(seat_secret or "", approval_link_secret)
+            if (seat_secret or approval_link_secret)
+            else None
+        )
 
     # --- 鉴权 ---
 
@@ -247,10 +302,31 @@ class ApprovalSideChannel:
     # --- 投影 ---
 
     async def project(self, conversation_id: str, interrupt_value: dict) -> None:
-        """把 ``approval_required`` 投影为坐席私有表单（无 Chatwoot 时静默跳过）。"""
+        """把 ``approval_required`` 投影为坐席私有卡片（无 Chatwoot 时静默跳过）。
+
+        幂等：``projected_at`` 已写就跳过。同一审批被 interrupt / follow-on 中断
+        多次回调时只发一条（修掉实测的同一 approval 连发 3 条）。
+        """
         if self._chatwoot is None:
             return
-        await send_approval_form(self._chatwoot, conversation_id, interrupt_value)
+        data = interrupt_value if isinstance(interrupt_value, dict) else {}
+        approval_id = str(data.get("approval_id") or "")
+        if approval_id:
+            record = self._store.get(approval_id)
+            if record is not None:
+                if record.get("projected_at"):
+                    return
+                # 库里存的原始载荷比事件 data 完整（事件里只有 summary/expires_at）。
+                data = _load_payload(record.get("payload_json")) or data
+        await send_approval_card(
+            self._chatwoot,
+            conversation_id,
+            data,
+            base_url=self._link_base_url,
+            secret=self._link_secret,
+        )
+        if approval_id:
+            self._store.mark_projected(approval_id)
 
     def interrupt_callback(self, conversation_id: str, thread_id: str):
         return make_approval_interrupt_callback(

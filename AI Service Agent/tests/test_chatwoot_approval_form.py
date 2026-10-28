@@ -110,19 +110,25 @@ def _pending_with_mapping(tmp_path, *, cw_conv_id: int = 555) -> tuple[TestClien
 
 
 def test_approval_form_items_include_summary_decision_and_approval_id():
-    from ai_service_agent.harness.approval_side_channel import (
-        approval_form_items_from_payload,
-        approval_form_title_from_payload,
-    )
+    from ai_service_agent.harness.approval_card import render_approval_card
+    from ai_service_agent.harness.approval_side_channel import approval_form_items_from_payload
 
     data = {
         "approval_id": "A-42",
         "summary": "退款 ORD-PAID-1 · ¥100",
         "expires_at": "2099-01-01T00:00:00+00:00",
+        "x_approval": {"facts": {"tool": "refund_apply", "action_label": "退款申请", "order_id": "ORD-PAID-1", "amount": 100}},
     }
-    title = approval_form_title_from_payload(data)
+    content = render_approval_card(
+        data["x_approval"]["facts"],
+        approval_id=data["approval_id"],
+        expires_at=data["expires_at"],
+        base_url="http://127.0.0.1:8766",
+        token="tok",
+    )
     items = approval_form_items_from_payload(data)
-    assert "退款 ORD-PAID-1" in title
+    assert "退款申请 ¥100.00" in content
+    assert "ORD-PAID-1" in content
     names = {item["name"] for item in items}
     assert "approval_id" in names
     assert "decision" in names
@@ -134,19 +140,26 @@ def test_approval_form_items_include_summary_decision_and_approval_id():
 
 
 @pytest.mark.asyncio
-async def test_send_approval_form_is_private_interactive(tmp_path):
-    from ai_service_agent.harness.approval_side_channel import send_approval_form
+async def test_send_approval_card_is_private_interactive(tmp_path):
+    from ai_service_agent.harness.approval_side_channel import send_approval_card
 
     chatwoot = AsyncMock()
-    await send_approval_form(
+    await send_approval_card(
         chatwoot,
         "c1",
-        {"approval_id": "A-1", "summary": "cancel ORD-1", "expires_at": "2099-01-01T00:00:00+00:00"},
+        {
+            "approval_id": "A-1",
+            "summary": "cancel ORD-1",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "x_approval": {"facts": {"tool": "cancel_order", "action_label": "订单取消", "order_id": "ORD-1"}},
+        },
+        base_url="http://127.0.0.1:8766",
+        secret="test-secret",
     )
     chatwoot.send_interactive_message.assert_awaited_once()
     args, kwargs = chatwoot.send_interactive_message.call_args
     assert args[0] == "c1"
-    assert "cancel ORD-1" in args[1]
+    assert "高风险审批" in args[1] and "ORD-1" in args[1]
     assert args[2] == "form"
     assert "items" in args[3]
     assert kwargs.get("private") is True or (len(args) > 4 and args[4] is True)
