@@ -27,11 +27,12 @@ def _seed_db(tmp_path: Path) -> Path:
 def test_get_user_profile_returns_phone_and_address(tmp_path):
     repo = SQLiteOrderRepository(str(_seed_db(tmp_path)))
 
-    assert repo.get_user_profile("u0001") == {
-        "user_id": "u0001",
-        "phone": "+84-92722552",
-        "address": "No. 1, Chengyuan VN",
-    }
+    profile = repo.get_user_profile("u0001")
+    assert profile["user_id"] == "u0001"
+    assert profile["phone"] == "+84-92722552"
+    assert profile["address"] == "No. 1, Chengyuan VN"
+    # 坐席审批卡要显示可读的客户身份，不能只有内部 id
+    assert profile["name"]
 
 
 def test_get_user_profile_returns_none_for_unknown_user(tmp_path):

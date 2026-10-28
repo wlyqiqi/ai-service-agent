@@ -258,9 +258,15 @@ def test_approval_decision_sends_result_to_chatwoot(tmp_path):
     assert "\n\n" in card["description"]
     assert "ORD-PAID-1" in card["description"]
     assert card["actions"][0]["text"] == "知道了"
-    cw.send_bot_message.assert_awaited_once()
-    assert "退款申请已提交" in cw.send_bot_message.await_args.args[1]
-    assert "通过审核" not in cw.send_bot_message.await_args.args[1]
+    # 客户可见文案 + 坐席留痕私备注各一条
+    public = [
+        call.args[1]
+        for call in cw.send_bot_message.await_args_list
+        if not call.kwargs.get("private")
+    ]
+    assert len(public) == 1
+    assert "退款申请已提交" in public[0]
+    assert "通过审核" not in public[0]
 
 
 def test_chat_unknown_session_errors(tmp_path):
