@@ -33,6 +33,7 @@ from ai_service_agent.harness.tool_hooks import make_tool_hook_wrapper, make_too
 from ai_service_agent.graph.workflows.copy import (
     approval_approved_text,
     approval_expired_text,
+    approval_facts,
     approval_failed_text,
     approval_rejected_text,
     approval_summary,
@@ -142,24 +143,45 @@ def make_high_risk_graph(
         }
         return {"context": next_ctx, "execution_status": "waiting_confirmation"}
 
-    def prepare_approval(state: dict) -> dict:
+    def _user_profile(runtime: Runtime[GraphContext] | None, user_id: str) -> dict | None:
+        """审批卡要展示可读的客户身份（姓名 + 尾号），拿不到就当缺失。"""
+        repository = _order_repository(runtime)
+        if repository is None or not user_id:
+            return None
+        try:
+            return repository.get_user_profile(user_id)
+        except OrderRepositoryUnavailable:
+            return None
+
+    def prepare_approval(state: dict, runtime: Runtime[GraphContext] | None = None) -> dict:
         pending = state["context"]["pending_tool"]
         ctx = state.get("context", {})
+        user_id = state.get("user_id", "")
+        precheck = ctx.get("precheck_data")
         summary, unavailable_reason = approval_summary(
             pending["tool"],
             pending.get("args") or {},
-            ctx.get("precheck_data"),
-            state.get("user_id", ""),
+            precheck,
+            user_id,
         )
         if unavailable_reason:
             return {
                 "context": {**ctx, "precheck_reason": unavailable_reason},
                 "execution_status": "completed",
             }
-        req = make_approval_request(state.get("user_id", ""), summary, get_settings().approval_expires_minutes)
+        facts, _ = approval_facts(
+            pending["tool"],
+            pending.get("args") or {},
+            precheck,
+            user_id,
+            profile=_user_profile(runtime, user_id),
+        )
+        req = make_approval_request(user_id, summary, get_settings().approval_expires_minutes)
+        # 审批单建好才知道时间窗，facts 在这里回填（坐席卡片的"申请时间/有效期"）。
+        facts = {**(facts or {}), "requested_at": req["created_at"], "expires_at": req["expires_at"]}
         return {
             "pending_approval": req,
-            "context": {**ctx, "approval_summary": summary},
+            "context": {**ctx, "approval_summary": summary, "approval_facts": facts},
             "execution_status": "waiting_approval",
         }
 
@@ -168,13 +190,33 @@ def make_high_risk_graph(
 
     def approval_pause(state: dict) -> dict:
         req = state.get("pending_approval") or {}
+        ctx = state.get("context") or {}
+        pending = ctx.get("pending_tool") or {}
+        # ``request_id`` 是内部幂等键，对坐席没有意义，不进载荷。
+        args = {
+            key: value
+            for key, value in (pending.get("args") or {}).items()
+            if key != "request_id"
+        }
+        tool = pending.get("tool", "")
         resume = _lg_types.interrupt({
+            # 顶层键保留（事件协议与既有消费方依赖）；下面是对齐官方 HITL 的部分。
             "type": "approval_required",
             "approval_id": req.get("approval_id", ""),
             "summary": req.get("summary", ""),
             "expires_at": req.get("expires_at", ""),
             "requester_user_id": req.get("requester_user_id", ""),
             "created_at": req.get("created_at", ""),
+            # 官方 HITL 词汇（ADR-0006）：动作 + 参数 + 允许的决策。坐席卡片、确认页
+            # 与将来的 Studio / Agent Inbox 消费同一份字段，不再各造一套结构。
+            "action_requests": [
+                {"name": tool, "args": args, "description": req.get("summary", "")}
+            ],
+            "review_configs": [
+                {"action_name": tool, "allowed_decisions": ["approve", "reject"]}
+            ],
+            # 业务扩展：官方没有，卡片与决策页要用
+            "x_approval": {"facts": ctx.get("approval_facts") or {}},
         })
         outcome = resolve_approval_outcome(resume)
         get_stream_writer()({"type": "approval_updated", "data": {"approval_id": req.get("approval_id", ""), "status": outcome}})

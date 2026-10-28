@@ -121,18 +121,15 @@ def approval_summary(
     Returns ``(summary, unavailable_reason)``. ``cancel_order`` without a matching
     ``paid`` snapshot yields a reason so the caller can end in ``safety_final``;
     ``refund_apply`` falls back to a generic summary instead (existing behaviour).
+
+    坐席审批卡改读 ``approval_facts``（结构化）；本函数保留给日志与审计，
+    两者共用 ``_facts_match`` 判定，避免"卡片说有、日志说没有"。
     """
     args = args or {}
-    order_id = args.get("order_id", "")
-    facts = facts if isinstance(facts, dict) else None
-    facts_match = (
-        facts is not None
-        and facts.get("order_id") == order_id
-        and facts.get("user_id") == user_id
-    )
+    facts = _facts_match(args, facts, user_id)
 
     if tool == "cancel_order":
-        if not (facts_match and facts.get("status") == "paid"):
+        if not (facts and facts.get("status") == "paid"):
             return None, "cancel_order_facts_unavailable"
         return (
             f"取消订单 {facts['order_id']}｜"
@@ -142,7 +139,7 @@ def approval_summary(
             f"状态 已付款"
         ), None
 
-    if tool == "refund_apply" and facts_match and facts.get("status") in ("paid", "signed"):
+    if tool == "refund_apply" and facts and facts.get("status") in ("paid", "signed"):
         amount = args.get("amount")
         occupied = float(facts.get("occupied_refund_amount", 0.0))
         resolved_amount = (
@@ -161,6 +158,129 @@ def approval_summary(
         ), None
 
     return f"即将执行「{tool}」，参数：{args}", None
+
+
+#: 订单状态 → 坐席卡片的可读状态。坐席判断"能不能批"靠的是发货与否，
+#: 所以 label 把这一层直接写出来，而不是让坐席自己去查状态码。
+_APPROVAL_ORDER_STATUS_LABELS = {
+    "paid": "已付款 · 未发货",
+    "shipped": "已发货 · 未签收",
+    "signed": "已签收",
+    "completed": "已完成",
+    "refunding": "退款中",
+    "refunded": "已退款",
+    "cancelled": "已取消",
+}
+
+#: 快照构造在缺商品行时填的占位串（数据侧缺口，另开单）。卡片不能把它当商品名展示。
+_PRODUCT_SUMMARY_PLACEHOLDER = "商品信息不可用"
+
+
+def _facts_match(args: dict, facts: dict | None, user_id: str) -> dict | None:
+    """快照是否可用于该用户这笔订单（``approval_summary`` / ``approval_facts`` 共用）。
+
+    ``order_id`` 缺失时不匹配——否则 ``facts.get("order_id")`` 同为 ``None`` 会误判。
+    """
+    if not isinstance(facts, dict):
+        return None
+    order_id = args.get("order_id")
+    if not order_id or facts.get("order_id") != order_id or facts.get("user_id") != user_id:
+        return None
+    return facts
+
+
+def _product_summary(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text or text == _PRODUCT_SUMMARY_PLACEHOLDER:
+        return None
+    return text
+
+
+def _phone_tail(phone: object) -> str | None:
+    """手机号后 4 位。``customers.phone`` 实测带尾随空格（``'15198775666 '``），先剔非数字。"""
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    return digits[-4:] if len(digits) >= 4 else None
+
+
+def _approval_customer(profile: dict | None) -> dict | None:
+    if not isinstance(profile, dict):
+        return None
+    name = str(profile.get("name") or "").strip() or None
+    tail = _phone_tail(profile.get("phone"))
+    if name is None and tail is None:
+        return None
+    return {"name": name, "phone_tail": tail}
+
+
+def _approval_customer_quote(args: dict) -> str | None:
+    for key in ("reason", "note"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def approval_facts(
+    tool: str,
+    args: dict,
+    facts: dict | None,
+    user_id: str,
+    profile: dict | None = None,
+) -> tuple[dict | None, str | None]:
+    """坐席审批卡的结构化事实（``approval_summary`` 的机器可读版本）。
+
+    卡片的每一行都来自这里——投影层不再从拼好的句子里反解，也不再自己猜
+    "订单号是哪个"、"金额带不带币种"。返回 ``(facts, unavailable_reason)``：
+    ``cancel_order`` 缺 ``paid`` 快照时 ``facts`` 为 ``None`` 且带 reason
+    （调用方走 ``safety_final``，与 ``approval_summary`` 语义一致）；其余工具
+    总能拿到一份事实，缺失的字段为 ``None``（渲染层负责兜底文案）。
+
+    ``requested_at`` / ``expires_at`` 由调用方在审批单建好后回填——此刻审批单
+    还不存在。
+    """
+    args = args or {}
+    matched = _facts_match(args, facts, user_id)
+    status = str((matched or {}).get("status") or "")
+
+    if tool == "cancel_order" and not (matched and status == "paid"):
+        return None, "cancel_order_facts_unavailable"
+
+    result: dict = {
+        "tool": tool,
+        "action_label": _label(tool),
+        "order_id": str(args.get("order_id") or "").strip() or None,
+        "amount": None,
+        "currency": "CNY",
+        "order_total": None,
+        "refunded": None,
+        "product_summary": None,
+        "order_status": status or None,
+        "order_status_label": _APPROVAL_ORDER_STATUS_LABELS.get(status),
+        "customer": _approval_customer(profile),
+        "customer_quote": _approval_customer_quote(args),
+        "requested_at": None,
+        "expires_at": None,
+    }
+
+    if matched:
+        total = float(matched.get("total_amount") or 0.0)
+        occupied = float(matched.get("occupied_refund_amount") or 0.0)
+        result["order_total"] = round(total, 2)
+        result["refunded"] = round(occupied, 2)
+        result["product_summary"] = _product_summary(matched.get("product_summary"))
+        result["currency"] = str(matched.get("currency") or "CNY")
+        if tool == "refund_apply":
+            amount = args.get("amount")
+            result["amount"] = (
+                round(float(amount), 2)
+                if amount is not None
+                else round(total - occupied, 2)
+            )
+        elif tool == "cancel_order":
+            # 取消整单 → 要退回的就是订单总额（扣掉已占用的退款额度）。
+            result["amount"] = round(total - occupied, 2)
+
+    return result, None
 
 
 def completion_text(tool: str, args: dict | None = None) -> str:
