@@ -223,3 +223,43 @@ def test_insert_persists_payload_and_marks_projected(tmp_path):
 
     store.mark_projected("A-2")  # 重复投影不刷新时间
     assert store.get("A-2")["projected_at"] == first
+
+
+# --- T8 客户侧文案 -----------------------------------------------------------
+
+
+def test_fund_moves_state_arrival_window():
+    """资金类结果必须交代到账时效，否则客户下一秒就来问钱什么时候到。"""
+    from ai_service_agent.graph.workflows.copy import approval_approved_text
+
+    assert "1–3 个工作日" in approval_approved_text("refund_apply")
+    assert "1–3 个工作日" in approval_approved_text("cancel_order")
+    assert "1–3 个工作日" not in approval_approved_text("update_address")
+
+
+# --- T7 留痕文案 -------------------------------------------------------------
+
+
+def test_failure_reference_is_extracted_from_customer_copy():
+    from ai_service_agent.graph.workflows.copy import (
+        approval_failed_text,
+        approval_failure_reference,
+    )
+
+    text = approval_failed_text("refund_apply", "db is locked")
+    reference = approval_failure_reference(text)
+    assert reference and len(reference) == 8
+    assert approval_failure_reference("一切正常") is None
+    assert approval_failure_reference(None) is None
+
+
+def test_seat_note_composition():
+    from ai_service_agent.graph.workflows.copy import approval_seat_decision_note
+
+    assert approval_seat_decision_note("approved", actor="王琦", at="17:52") == "已批准 · 王琦 · 17:52"
+    assert "理由：已发货" in approval_seat_decision_note(
+        "rejected", actor="王琦", at="17:52", reason="已发货"
+    )
+    assert "处理编号 8f3a1c2b" in approval_seat_decision_note(
+        "approved", actor="王琦", at="17:52", reference="8f3a1c2b"
+    )

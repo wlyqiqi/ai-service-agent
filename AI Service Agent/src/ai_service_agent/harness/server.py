@@ -6,10 +6,11 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from urllib.parse import parse_qs
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 
@@ -31,13 +32,23 @@ from ai_service_agent.graph.workflows.copy import (
 from ai_service_agent.harness.approvals import ApprovalService
 from ai_service_agent.harness.auth import UserStore, create_access_token, verify_bearer
 from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+from ai_service_agent.harness.approval_card import (
+    TokenExpired,
+    TokenInvalid,
+    derive_decision_secret,
+    render_decision_notice_page,
+    render_decision_page,
+    verify_decision_token,
+)
 from ai_service_agent.harness.approval_side_channel import (
     ApprovalExpiredError,
     ApprovalMissing,
     ApprovalProcessed,
     ApprovalSideChannel,
     SeatAction,
+    SeatActor,
     SeatAuthError,
+    approval_facts_from_payload,
 )
 from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.chatwoot import (
@@ -1059,6 +1070,175 @@ def create_app(
             return await seat.decide(approval_id, SeatAction.REJECT, actor=actor, note=note)
         except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError, SeatAuthError) as exc:
             raise _seat_http(exc) from exc
+
+    # --- 审批卡决策链接（ADR-0006）：GET 只渲染页面，决策只走 POST -----------
+
+    link_secret = (
+        derive_decision_secret(seat_secret or "", resolved_link_secret)
+        if (seat_secret or resolved_link_secret)
+        else None
+    )
+
+    def _approval_facts(record: dict) -> dict:
+        raw = record.get("payload_json")
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return approval_facts_from_payload(payload) if isinstance(payload, dict) else {}
+
+    def _record_for_token(approval_id: str, token: str) -> tuple[dict, dict]:
+        """校验决策 token 并取记录。错误向上抛，由调用方映射状态码。"""
+        if not link_secret:
+            # 没配密钥就 fail closed：卡片仍可读，但链接一律判无效。
+            raise TokenInvalid("approval link not configured")
+        payload = verify_decision_token(token, approval_id, secret=link_secret)
+        record = approvals.get(approval_id)
+        if record is None:
+            raise ApprovalMissing(approval_id)
+        if record["conversation_id"] != payload.get("c"):
+            raise TokenInvalid("conversation mismatch")
+        return record, payload
+
+    def _decided_message(record: dict) -> str:
+        return {
+            "approved": "已被批准并执行。",
+            "rejected": "已被拒绝，订单保持不变。",
+            "expired": "已超时自动取消，订单保持不变。",
+        }.get(record.get("status", ""), "已处理。")
+
+    def _decision_error(status: int, title: str, message: str, wants_html: bool):
+        if wants_html:
+            return HTMLResponse(
+                render_decision_notice_page(
+                    title=title, message=message, tone="bad" if status >= 400 else "mute"
+                ),
+                status_code=status,
+            )
+        return JSONResponse({"detail": message}, status_code=status)
+
+    async def _decision_form(request: Request) -> tuple[str, str, str]:
+        """原生 form 提交与 fetch(JSON) 都收：坐席页有 JS，但 JS 失败时不能丢功能。"""
+        raw = await request.body()
+        if "application/json" in (request.headers.get("content-type") or ""):
+            try:
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                body = {}
+            body = body if isinstance(body, dict) else {}
+            return (
+                str(body.get("t") or ""),
+                str(body.get("action") or ""),
+                str(body.get("note") or "").strip(),
+            )
+        form = parse_qs(raw.decode("utf-8", errors="replace"))
+        return (
+            (form.get("t") or [""])[0],
+            (form.get("action") or [""])[0],
+            (form.get("note") or [""])[0].strip(),
+        )
+
+    @app.get("/approvals/{approval_id}/decide", response_class=HTMLResponse)
+    def approval_decide_page(approval_id: str, t: str = ""):
+        """坐席确认页：只渲染，不产生副作用（决策只能 POST）。"""
+        try:
+            record, _payload = _record_for_token(approval_id, t)
+        except ApprovalMissing:
+            return HTMLResponse(
+                render_decision_notice_page(
+                    title="审批单不存在",
+                    message="这张审批单已被清理，或链接指向了别处。",
+                    tone="bad",
+                ),
+                status_code=404,
+            )
+        except TokenExpired:
+            return HTMLResponse(
+                render_decision_notice_page(
+                    title="链接已过期",
+                    message="决策链接的有效期是 15 分钟。请回到会话查看最新卡片，或让客户重新发起。",
+                ),
+                status_code=410,
+            )
+        except TokenInvalid:
+            return HTMLResponse(
+                render_decision_notice_page(
+                    title="链接无效",
+                    message="这个链接不完整或已被修改，不能用于决策。请回到会话重新点击卡片按钮。",
+                    tone="bad",
+                ),
+                status_code=400,
+            )
+        if record["status"] != "pending":
+            return HTMLResponse(
+                render_decision_notice_page(
+                    title="这张审批已处理",
+                    message=_decided_message(record),
+                    detail=f"单号 {approval_id[:6]}",
+                ),
+                status_code=409,
+            )
+        return HTMLResponse(
+            render_decision_page(
+                _approval_facts(record),
+                approval_id=approval_id,
+                expires_at=record["expires_at"],
+                token=t,
+                form_action=f"/approvals/{approval_id}/decide",
+            )
+        )
+
+    @app.post("/approvals/{approval_id}/decide")
+    async def decide_approval(approval_id: str, request: Request):
+        """签名链接决策：token → SeatActor → 与 webhook 表单共用 ``seat.decide``。"""
+        token, action, note = await _decision_form(request)
+        wants_html = "text/html" in (request.headers.get("accept") or "").lower()
+        if action not in ("approve", "reject"):
+            return _decision_error(400, "无法提交", "缺少有效的决策动作，请回到会话重新打开卡片。", wants_html)
+        if action == "reject" and not note:
+            return _decision_error(
+                422, "请填写拒绝理由", "拒绝时必须说明原因，客户会看到这段理由。", wants_html
+            )
+        try:
+            record, payload = _record_for_token(approval_id, token)
+        except ApprovalMissing:
+            return _decision_error(404, "审批单不存在", "这张审批单已被清理。", wants_html)
+        except TokenExpired:
+            return _decision_error(410, "链接已过期", "决策链接有效期 15 分钟，请让客户重新发起。", wants_html)
+        except TokenInvalid:
+            return _decision_error(400, "链接无效", "链接不完整或已被修改，不能用于决策。", wants_html)
+        if record["status"] != "pending":
+            return _decision_error(409, "这张审批已处理", _decided_message(record), wants_html)
+
+        actor = SeatActor(str(payload.get("s") or "link"))
+        try:
+            result = await seat.decide(
+                approval_id, SeatAction(action), actor=actor, note=note or None
+            )
+        except ApprovalMissing:
+            return _decision_error(404, "审批单不存在", "这张审批单已被清理。", wants_html)
+        except ApprovalProcessed:
+            return _decision_error(409, "这张审批已处理", "可能已被其他坐席处理。", wants_html)
+        except ApprovalExpiredError:
+            return _decision_error(410, "审批已过期", "请让客户重新发起申请。", wants_html)
+
+        if wants_html:
+            approved = action == "approve"
+            return HTMLResponse(
+                render_decision_notice_page(
+                    title="已批准" if approved else "已拒绝",
+                    message=(
+                        "已执行，客户会立即收到结果通知。"
+                        if approved
+                        else "订单保持不变，客户会收到拒绝理由。"
+                    ),
+                    tone="ok" if approved else "bad",
+                    detail=f"单号 {approval_id[:6]}",
+                )
+            )
+        return {"approval_id": approval_id, "status": result["status"]}
 
     @app.get("/approvals/{approval_id}")
     def get_approval(approval_id: str, _: None = Depends(_approval_read_access)):

@@ -16,14 +16,20 @@ FastAPI 单测。本模块是这条链的唯一归属：
 
 import hmac
 import json
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ai_service_agent.config import get_settings
+from ai_service_agent.graph.workflows.copy import (
+    approval_failure_reference,
+    approval_seat_decision_note,
+)
 from ai_service_agent.harness.approval_card import (
     default_base_url,
     derive_decision_secret,
+    now_hm,
     render_approval_card,
     sign_decision_token,
 )
@@ -50,6 +56,8 @@ _APPROVAL_FORM_NOTE_FIELD = "note"
 #: 决策链接的坐席身份。一期是共享口令，拿不到真实坐席 id；用 ``link`` 如实标记
 #: "通过签名链接决策、身份未绑定"，审计里能一眼区分。二期注入式按钮再绑 sender.id。
 _LINK_ACTOR = "link"
+
+logger = logging.getLogger(__name__)
 
 
 # --- 错误：模块不依赖 FastAPI，由 Transport 映射状态码 -----------------------
@@ -367,7 +375,38 @@ class ApprovalSideChannel:
                 thread_id, conversation_id, resume_payload
             )
             await self._deliver(conversation_id, spec, final, message_id)
+        # 锁外发留痕：发消息不该占着会话锁。
+        await self._note_decision(conversation_id, decided, actor=actor, note=note, final=final)
         return {"approval_id": approval_id, "status": decided}
+
+    async def _note_decision(
+        self,
+        conversation_id: str,
+        status: str,
+        *,
+        actor: SeatActor,
+        note: str | None,
+        final: str | None,
+    ) -> None:
+        """决策留痕私备注：下一位接手的坐席往上翻就知道这单谁批的。
+
+        只在决策真正生效后发一次——重复决策在 ``_precheck`` 就抛
+        ``ApprovalProcessed``，走不到这里。留痕失败不影响已完成的决策
+        （客户侧结果已经发出去了）。
+        """
+        if self._chatwoot is None:
+            return
+        text = approval_seat_decision_note(
+            status,
+            actor="审批链接" if actor.actor_id == _LINK_ACTOR else actor.actor_id,
+            at=now_hm(),
+            reason=note,
+            reference=approval_failure_reference(final),
+        )
+        try:
+            await self._chatwoot.send_bot_message(conversation_id, text, private=True)
+        except Exception:
+            logger.exception("approval decision note failed: conv=%s", conversation_id)
 
     async def decide_from_seat_form(
         self,

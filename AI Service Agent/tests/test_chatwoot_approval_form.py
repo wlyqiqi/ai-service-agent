@@ -379,4 +379,8 @@ def test_chatwoot_seat_approve_while_human_mode_no_outbound(tmp_path):
     assert any(row["role"] == "assistant" and "退款申请已提交" in row["content"] for row in rows)
     assert not any("通过审核" in (row["content"] or "") for row in rows if row["role"] == "assistant")
     # Projection may have used send_interactive_message earlier; outbound after resume must not send.
-    cw.send_bot_message.assert_not_awaited()
+    # 坐席私备注（private=True）不算出站，决策留痕仍要发。
+    public_messages = [
+        call for call in cw.send_bot_message.await_args_list if not call.kwargs.get("private")
+    ]
+    assert public_messages == []

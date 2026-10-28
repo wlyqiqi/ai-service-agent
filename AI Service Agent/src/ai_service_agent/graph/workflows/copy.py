@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -735,6 +736,12 @@ def handoff_returned_to_bot_text() -> str:
     return "已交回AI客服助手"
 
 def approval_approved_text(tool: str) -> str:
+    # 资金类结果要交代到账时效：否则客户下一秒就来问"钱什么时候到"（与审批卡结果句一致）。
+    if tool in ("refund_apply", "cancel_order"):
+        return (
+            f"您的{_label(tool)}申请已通过审核并执行完成，"
+            "退款预计 1–3 个工作日退回原支付方式，请留意到账通知。"
+        )
     return f"您的{_label(tool)}申请已通过审核并执行完成，相关结果可以在订单详情中查看。"
 
 
@@ -808,3 +815,35 @@ def precheck_reject_text(reason: str, status: str | None = None) -> str:
     if reason == "data_boundary":
         return "抱歉，您没有权限操作该订单。如该订单确属您的账号，请确认登录账号是否正确，或联系人工客服核实。"
     return "抱歉，该操作未能通过安全校验。如有疑问，请输入「转人工」联系人工客服为您核实。"
+
+
+_OPERATION_REFERENCE_RE = re.compile(r"处理编号[:：]\s*([0-9a-fA-F]{6,12})")
+
+
+def approval_failure_reference(text: str | None) -> str | None:
+    """从失败文案里取处理编号：坐席私备注要和客户看到的编号对得上。"""
+    if not text:
+        return None
+    match = _OPERATION_REFERENCE_RE.search(text)
+    return match.group(1) if match else None
+
+
+def approval_seat_decision_note(
+    status: str,
+    *,
+    actor: str,
+    at: str,
+    reason: str | None = None,
+    reference: str | None = None,
+) -> str:
+    """坐席侧决策留痕（私有备注）：谁、何时、批还是拒；执行失败补处理编号。
+
+    写在会话里而不是只进数据库：下一位接手的坐席往上翻就能看到"这单谁批的"。
+    """
+    head = {"approved": "已批准", "rejected": "已拒绝"}.get(status, "已处理")
+    parts = [head, actor, at]
+    if reason:
+        parts.append(f"理由：{reason}")
+    if reference:
+        parts.append(f"执行失败 · 处理编号 {reference}")
+    return " · ".join(parts)
