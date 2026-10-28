@@ -262,3 +262,38 @@ pytest tests --ignore=tests/evals
 - ❌ 不引入新 Python/npm 依赖
 - ❌ 不改 `product_summary` 的数据侧缺失问题（另开单）
 - ❌ 不自动合并 PR
+
+---
+
+## 9. 实现记录（2026-10-28，分支 `feat/seat-approval-card`）
+
+状态：**T1–T8 已实现；T9 只做了 CSS 部分（隐藏「无响应」+ 气泡底色）；T10 未做。**
+
+| 任务 | 落地 | 与计划的差异 |
+|---|---|---|
+| T1 | `copy.approval_facts()` + `domain.get_user_profile()` 补 `name` | 返回 `(facts, reason)` 元组（与 `approval_summary` 同签名），不是裸 dict——`cancel_order` 缺快照要能表达 |
+| T2 | `high_risk_agent.prepare_approval` 算 facts、`approval_pause` 载荷叠加 HITL 字段 | 顶层 `type/approval_id/expires_at/summary` **保留**：事件协议、`form_events` 白名单与 7 个测试文件都依赖它，删了要连带改一大片且无收益 |
+| T3 | `approvals.py` 幂等 `ALTER TABLE` 补 `payload_json` / `projected_at` | `SELECT` 改用具名 `_COLUMNS` 常量，避免 `SELECT *` 的列序耦合 |
+| T4 | `harness/approval_card.py`（渲染 + HMAC token + 确认页 + 提示页） | 卡片布局用 `table` 而非 flex/grid（气泡会继承 widget CSS）；确认页是独立页面，可用 grid 与 `<script>` |
+| T5 | `send_approval_form` → `send_approval_card`；`project()` 按 `projected_at` 幂等 | `approval_form_title_from_payload` 删除；`items` 保留 |
+| T6 | `GET/POST /approvals/{id}/decide` | POST 同时接受 JSON 与原生 form；`Accept: text/html` 时返回结果页（JS 失效也不丢功能） |
+| T7 | `ApprovalSideChannel._note_decision` | 锁外发送；失败只记日志不影响已完成的决策 |
+| T8 | `approval_approved_text` 按 tool 区分 | 计划说「只改这一条」，实现上按 tool 分流——给改地址也加「退款到账」是错的 |
+| T9 | `docs/ops/chatwoot/seat-approval.css` + 覆盖 `vueapp.html.erb` | **没做 JS 真按钮**：签名链接已能完成决策，注入 JS 换按钮收益有限、风险更高（需给 runtime 加 CORS） |
+
+### 真机验证（runtime 8766 + Chatwoot 3000，Chromium 1600×1000）
+
+- 卡片在坐席端渲染完整：424px 宽、`#FFFDF8` 底、12px 圆角、1px `#E6D8C6` 边框、所有内联样式生效
+  → **R1（DOMPurify 剥样式）实测不成立**，`style` 属性被保留
+- `FormBubble` 的「无响应」确认由 `isAWebWidgetInbox && !submittedValues.length` 触发；
+  卡片永远没有 `submittedValues`，故用坐席端 CSS 隐藏（`div:has(> span > div[style*="width:424px"])`）
+- 确认页用真实订单数据渲染：郑军 · 尾号 6375 / ORD-2026-10138 / ¥128.50 / 已付款 · 未发货 / 今天 17:00
+- 过期 token → 410 提示页；篡改 token → 400；未配置密钥 → 400（fail closed）
+- 截图：`docs/ops/chatwoot/approval-card-live{,-full}.png`、`approval-decide-{page,reject,expired}.png`
+
+### 遗留
+
+- **表单提交链路未在真机走通**：会话里残留多个历史 form 时，`form_gate` 的 implicit cancel 会让提交不进入图。
+  单测（`test_approval_decide_link.py` 用真实 TestClient 跑完整图）已覆盖决策链路，但「客户填表单 → 审批」这一段建议单独排查。
+- `expires_at` 已过时卡片抬头显示「限时有效」（`_ttl_minutes` 返回 0 的兜底）；真实卡片是发出时的快照，正常情况显示「N 分钟内有效」。
+- T9 的 JS 真按钮、T10 的 Agent Inbox 演示未做。

@@ -1,0 +1,31 @@
+/* 坐席端（Chatwoot Dashboard）审批卡样式补丁 —— 见 ai-service-agent/docs/ops/chatwoot-widget-form.md
+ *
+ * 卡片本身是 Runtime 生成的 HTML，全部内联样式（不依赖这份 CSS 也能看）。
+ * 这里只处理「HTML 进不去」的两件事：
+ *
+ * 1. FormBubble 在没有 submittedValues 时会渲染一句「无响应」
+ *    （app/javascript/dashboard/components-next/message/bubbles/Form.vue:
+ *     `<div v-else-if="isAWebWidgetInbox">{{ t('CONVERSATION.NO_RESPONSE') }}</div>`）。
+ *    审批卡永远不会有 submittedValues（决策走签名链接），这句话会被误读成
+ *    「客户没回复」，必须藏掉。
+ * 2. 私备注气泡的黄底与暖橙卡片撞色，压一档。
+ *
+ * 只作用于「含审批卡」的气泡：卡片是 424px 宽的 div，用 :has() 精确命中，
+ * 不影响其它 form / 私备注消息。
+ */
+
+/* 审批卡所在的气泡：隐藏「无响应」占位 */
+div:has(> span > div[style*="width:424px"]) > div.my-2.font-medium {
+  display: none !important;
+}
+
+/* 同一气泡：私备注黄底换成更浅的暖白，避免与卡片橙撞色 */
+div:has(> span > div[style*="width:424px"]) {
+  background-color: #fdfaf5 !important;
+  box-shadow: none !important;
+}
+
+/* 卡片自带圆角与边框，气泡内边距收一档，别让两层留白叠在一起 */
+div:has(> span > div[style*="width:424px"]) > span > div[style*="width:424px"] {
+  margin: 2px 0;
+}
