@@ -106,7 +106,7 @@
 
 ### 5.1 已定案（MVP）
 
-- **ID 映射**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 是 LangGraph checkpoint 内部标识，与 `conversation_id` 建立**一对一映射但不是同一个字段**。会话创建时生成 `thread_id`（如 uuid）并持久化映射；同一业务会话需要重置图执行状态时（如严重异常后清空 graph 重来），可更换 `thread_id` 而 `conversation_id` 不变。决策留痕见 `docs/decisions/2026-09-14-handoff-decisions.md`。
+- **ID 映射**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 是 LangGraph checkpoint 内部标识，与 `conversation_id` **不是同一个字段**。`POST /sessions` 只创建 conversation draft，不生成 thread；第一次进入 AI Graph 前才分配当前 `thread_id` 并先提交指针，显式 Handoff Request / human-only 消息不创建 checkpoint。同一业务会话需要重置图执行状态时可更换当前 `thread_id`，历史 thread 仅由离线清理工具按保护规则处理。实现细节见 `thread-lifecycle-spec.md`。
 - **pending 审批归宿（human → ai 切换时）**：
   > **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md)**（与 §1.3 归宿段同口径）。以下为历史 MVP 原文，仅供追溯。
   >

@@ -53,6 +53,9 @@ from ai_service_agent.harness.mutation_projection import (
 from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.resume import approval_dispatch, resolve_resume_payload
 from ai_service_agent.harness.streaming import event_stream
+from ai_service_agent.harness.threads import (
+    ThreadLifecycleService,
+)
 
 logger = logging.getLogger("ai_service_agent")
 
@@ -135,6 +138,7 @@ async def handle_agent_bot_message(
     on_handoff_created=None,
     on_approval_pending=None,
     handoff=None,
+    threads=None,
     context=None,
 ) -> dict[str, Any] | None:
     """处理 AgentBot incoming 消息，并回写 outgoing 消息。"""
@@ -201,6 +205,7 @@ async def handle_agent_bot_message(
         on_handoff_created=on_handoff_created,
         on_approval_pending=on_approval_pending,
         handoff=handoff,
+        threads=threads,
         context=context,
         conversation=conversation,
         cw_conv_id=cw_conv_id,
@@ -231,6 +236,7 @@ async def _handle_locked_agent_bot_message(
     on_handoff_created=None,
     on_approval_pending=None,
     handoff=None,
+    threads=None,
     context=None,
     conversation: dict[str, Any],
     cw_conv_id: int,
@@ -244,6 +250,9 @@ async def _handle_locked_agent_bot_message(
         # 无 validated Identity：拒绝建会话 / 跑图，不走匿名 chatwoot-* 回退
         return None
 
+    if threads is None and status is not None:
+        threads = ThreadLifecycleService(status)
+
     rec = mapping.find(cw_conv_id) if mapping is not None else None
     if rec is not None:
         conversation_id = rec["conversation_id"]
@@ -252,7 +261,7 @@ async def _handle_locked_agent_bot_message(
         if status is not None:
             session = status.create_session(user_id)
             conversation_id = session["conversation_id"]
-            thread_id = session["thread_id"]
+            thread_id = None
         else:
             conversation_id = str(uuid.uuid4())
             thread_id = conversation_id
@@ -274,30 +283,37 @@ async def _handle_locked_agent_bot_message(
             "response": None,
         }
 
-    if callbacks_factory is not None:
-        on_interrupt, on_handoff_requested, on_approval_pending = callbacks_factory(
-            conversation_id, thread_id
-        )
-    else:
-        on_handoff_requested = on_handoff_created
+    on_handoff_requested = on_handoff_created
 
     if messages_store is not None:
         message_id = chatwoot_message_id(payload)
         if message_id and messages_store.get_by_message_id(message_id):
             return None
         messages_store.append(conversation_id, "user", content, message_id=message_id or None)
-        history = messages_store.hydrate(conversation_id)
-    else:
-        history = [HumanMessage(content=content)]
+
+    if submitted_values is not None and thread_id is None:
+        notice = "会话恢复链接已过期；已保留本次表单内容，请重新发起操作。"
+        await _clear_agent_typing(chatwoot, conversation_id)
+        await chatwoot.send_bot_message(conversation_id, notice)
+        if messages_store is not None:
+            messages_store.append(conversation_id, "assistant", notice)
+        return {
+            "conversation_id": conversation_id,
+            "chatwoot_conversation_id": cw_conv_id,
+            "response": notice,
+        }
 
     # Seat-gated entry (handoff-spec §2): 与 /chat 共用 harness/handoff_entry.py 的
     # 同一策略；表单提交不是文本入站，不参与入口判定（form_gate 的职责）。
-    thread_config = {"configurable": {"thread_id": thread_id}}
+    thread_config = (
+        {"configurable": {"thread_id": thread_id}} if thread_id is not None else None
+    )
     offer_pending, offer_summary = False, ""
     if (
         handoff is not None
         and submitted_values is None
         and graph is not None
+        and thread_config is not None
         and not is_human_lane(mode)
     ):
         offer_pending, offer_summary = await read_complaint_offer(graph, thread_config)
@@ -326,7 +342,7 @@ async def _handle_locked_agent_bot_message(
             ev = handoff.request_handoff(
                 conversation_id, reason, (offer_summary or content)[:80]
             )
-            if offer_pending and graph is not None:
+            if offer_pending and graph is not None and thread_config is not None:
                 await clear_complaint_offer_flags(graph, thread_config)
             # created 是唯一判据（handoff-spec §2）：挂起期间重复申请只发短 tip。
             created = bool(ev.get("created", True))
@@ -350,6 +366,27 @@ async def _handle_locked_agent_bot_message(
                 "chatwoot_conversation_id": cw_conv_id,
                 "response": tip,
             }
+
+    if status is not None:
+        if messages_store is not None:
+            turn = threads.prepare_ai_turn(conversation_id, messages_store)
+            thread_id = turn.thread_id
+            history = turn.history
+        else:
+            allocation = threads.ensure_active_thread(conversation_id)
+            thread_id = allocation.thread_id
+            threads.touch_ai_execution(conversation_id, thread_id)
+            history = None
+    else:
+        thread_id = conversation_id
+        history = None
+    if callbacks_factory is not None:
+        on_interrupt, on_handoff_requested, on_approval_pending = callbacks_factory(
+            conversation_id, thread_id
+        )
+    thread_config = {"configurable": {"thread_id": thread_id}}
+    if history is None:
+        history = [HumanMessage(content=content)]
 
     mutation_form_data = None
     approval_form_data = None

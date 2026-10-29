@@ -468,23 +468,22 @@ def test_resolve_entrance_handoff_then_next_chat_is_answered(tmp_path):
     handoff_id = conn.execute("SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)).fetchone()[0]
     thread_id = ConversationStatusStore(conn).get_thread_id(session_id)
     conn.close()
+    # 显式入口转人工不进入 Graph：session 仍是 thread-less。
+    assert thread_id is None
 
     r = client.post(f"/handoffs/{handoff_id}/resolve")
     assert r.json()["mode"] == "ai"
-
-    # 入口层转人工不产生图内 checkpoint 中断（无子图可 resume）
-    async def check_no_interrupt():
-        async with AsyncSqliteSaver.from_conn_string(db) as saver:
-            graph = make_ai_graph(make_fake_model(), saver)
-            st = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-            return st.interrupts
-    assert not asyncio.run(check_no_interrupt())
 
     # resolve 后第一条消息走正常 Router 并得到回复（echo-2，两条 user）
     with client.stream("POST", "/chat", json={"session_id": session_id, "message": "你好"}) as r:
         text2 = "".join(r.iter_text())
     assert "echo-2" in text2
     assert '"error"' not in text2
+
+    conn = sqlite3.connect(db)
+    thread_id = ConversationStatusStore(conn).get_thread_id(session_id)
+    conn.close()
+    assert thread_id is not None
 
     # 该轮图执行正常完成
     async def check_completed():
@@ -1195,12 +1194,13 @@ def test_resolve_with_pending_approval_still_completes(tmp_path):
     conn = sqlite3.connect(db)
     status = ConversationStatusStore(conn)
     info = status.create_session("u1")
+    thread_id, _ = status.ensure_thread(info["conversation_id"])
     svc = HandoffService(conn, status)
     rec = svc.create_handoff(info["conversation_id"], "r", "s")
     svc.seat_takeover(info["conversation_id"])
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
-    ApprovalService(conn).insert_if_absent("A-D9", info["conversation_id"], info["thread_id"], {
+    ApprovalService(conn).insert_if_absent("A-D9", info["conversation_id"], thread_id, {
         "type": "approval_required", "approval_id": "A-D9", "summary": "挂起审批",
         "requester_user_id": "u1", "created_at": now.isoformat(),
         "expires_at": (now + timedelta(minutes=30)).isoformat(),
@@ -1232,8 +1232,10 @@ def test_chat_simulate_approval_resumes_approve(tmp_path):
     assert '"done"' in text2
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
+    approval = ApprovalService(conn).all()[0]
     conn.close()
     assert rows[-1]["content"]  # 审批通过后最终回复已落库
+    assert approval["execution_status"] == "succeeded"
 
 
 def test_approve_resume_persists_final_to_message_store(tmp_path):

@@ -45,6 +45,7 @@ from ai_service_agent.harness.approval_side_channel import (
     ApprovalExpiredError,
     ApprovalMissing,
     ApprovalProcessed,
+    ApprovalThreadConflict,
     ApprovalSideChannel,
     SeatAction,
     SeatActor,
@@ -94,13 +95,16 @@ from ai_service_agent.harness.resume import (
 )
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.harness.streaming import event_stream
+from ai_service_agent.harness.threads import (
+    ThreadLifecycleService,
+    ThreadResumeConflict,
+)
 from ai_service_agent.testing import make_fake_model
 
 logger = logging.getLogger("ai_service_agent")
 
 _locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
-
 
 class NoCacheStaticFiles(StaticFiles):
     """Serve frontend updates immediately in local development."""
@@ -123,6 +127,8 @@ class ChatBody(BaseModel):
 class ConfirmBody(BaseModel):
     conversation_id: str
     action: str
+    thread_id: str | None = None
+    task_id: str | None = None
     order_id: str | None = None
     fields: dict[str, Any] | None = None
 
@@ -284,6 +290,7 @@ def create_app(
     conn = sqlite3.connect(db_path, check_same_thread=False)
     users = UserStore(conn)
     status = ConversationStatusStore(conn)
+    threads = ThreadLifecycleService(status)
     handoff = HandoffService(conn, status)
     messages_store = MessageStore(conn)
     mapping = ChatwootMappingStore(conn)
@@ -391,6 +398,8 @@ def create_app(
             return HTTPException(status_code=404, detail="approval not found")
         if isinstance(exc, ApprovalProcessed):
             return HTTPException(status_code=409, detail="approval already processed")
+        if isinstance(exc, ApprovalThreadConflict):
+            return HTTPException(status_code=409, detail="approval thread is stale or missing")
         if isinstance(exc, ApprovalExpiredError):
             return HTTPException(status_code=410, detail="approval expired")
         return HTTPException(status_code=500, detail="approval failed")
@@ -824,8 +833,7 @@ def create_app(
     @app.post("/chat")
     async def chat(body: ChatBody, _: None = Depends(_chat_ownership)):
         conv_id = body.session_id
-        thread_id = status.get_thread_id(conv_id)
-        if thread_id is None:
+        if not status.conversation_exists(conv_id):
             # 无效会话 -> 归一化 error + done（mvp-spec 验收 #3）
             def unknown_stream():
                 yield {"type": "error", "data": {"code": "SessionNotFound", "message": "session not found"}}
@@ -833,11 +841,12 @@ def create_app(
 
             return _sse_response(unknown_stream())
 
+        thread_id = status.get_thread_id(conv_id)
         # 入口策略单点在 harness/handoff_entry.py（与 AgentBot 共用）。
         # detect_handoff 仍先于投诉询问肯定集；pending 来自上一轮 checkpoint。
         mode_now = status.get_mode(conv_id)
         offer_pending, offer_summary = False, ""
-        if not is_human_lane(mode_now):
+        if not is_human_lane(mode_now) and thread_id is not None:
             offer_pending, offer_summary = await _peek_complaint_offer(thread_id)
         decision = decide_entry(
             mode=mode_now,
@@ -894,26 +903,30 @@ def create_app(
             return _sse_response(explicit_handoff_stream())
 
         async def ai_stream():
-            # 先持久化用户消息（即便本 turn 失败也留痕），再水合历史作为 state.messages 输入
+            # 先持久化用户消息（即便本 turn 失败也留痕）；thread 只在 AI Graph 前分配。
             messages_store.append(conv_id, "user", body.message)
-            history = messages_store.hydrate(conv_id)
-            cb = _combined_interrupt_callback(
-                handoff.make_interrupt_callback(conv_id),
-                seat.interrupt_callback(conv_id, thread_id),
-            )
-            lock = await _thread_lock(thread_id)
-            async with lock:
+            conversation_lock = await _thread_lock(f"conversation:{conv_id}")
+            async with conversation_lock:
                 if status.get_mode(conv_id) != "ai":
                     # Takeover won the lock: do not start a graph turn or send a bot bubble.
                     yield {"type": "done", "data": {"final": None, "message_id": None}}
                     return
+                turn = threads.prepare_ai_turn(conv_id, messages_store)
+                active_thread_id = turn.thread_id
+                history = turn.history
+                cb = _combined_interrupt_callback(
+                    handoff.make_interrupt_callback(conv_id),
+                    seat.interrupt_callback(conv_id, active_thread_id),
+                )
                 async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                     graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
-                    cfg = {"configurable": {"thread_id": thread_id}}
+                    cfg = {"configurable": {"thread_id": active_thread_id}}
                     st = await graph.aget_state(cfg)
                     user_id = status.get_user_id(conv_id) or ""
                     resume_payload = None
                     implicit_cancel = False
+                    simulated_approval_id: str | None = None
+                    simulated_approval_finished = False
                     if st.interrupts:
                         it = st.interrupts[0].value
                         approval_state = approval_dispatch(it)
@@ -922,6 +935,8 @@ def create_app(
                             if sim and rec is not None and rec["status"] == "approved":
                                 # simulate_approval（approval-spec §5）：自动构造 approve 动作，走同一 resume 路径
                                 resume_payload = {"action": "approve"}
+                                simulated_approval_id = rec["approval_id"]
+                                approvals.mark_execution_started(simulated_approval_id)
                             else:
                                 # OQ-4：审批挂起 -> 不 resume、不新起 run（用户消息已落
                                 # Message Store），保持挂起。客户侧必须收到一句「还在
@@ -961,6 +976,9 @@ def create_app(
                         extra_state={"user_id": user_id},
                         context=_runtime_context(user_id),
                     ):
+                        if ev["type"] == "error" and simulated_approval_id and not simulated_approval_finished:
+                            approvals.mark_execution_finished(simulated_approval_id, "failed")
+                            simulated_approval_finished = True
                         if ev["type"] == "handoff_requested":
                             async for out in _emit_handoff_requested(conv_id, ev):
                                 yield out
@@ -972,6 +990,11 @@ def create_app(
                             except Exception:
                                 logger.exception("chatwoot approval form project failed: conv=%s", conv_id)
                         if ev["type"] == "done":
+                            if simulated_approval_id and not simulated_approval_finished:
+                                approvals.mark_execution_finished(
+                                    simulated_approval_id, "succeeded"
+                                )
+                                simulated_approval_finished = True
                             accepted = complaint_handoff_accept(
                                 (await graph.aget_state(cfg)).values
                             )
@@ -1013,23 +1036,38 @@ def create_app(
     async def action_confirm(body: ConfirmBody, _: None = Depends(_confirm_ownership)):
         """页面确认按钮的 Transport 入口；Graph 编排与 checkpoint resume 仍在图内。"""
         conv_id = body.conversation_id
-        thread_id = status.get_thread_id(conv_id)
-        if thread_id is None:
-            raise HTTPException(status_code=404, detail="conversation not found")
         if body.action not in ("confirm", "confirmed", "cancel", "canceled"):
             raise HTTPException(status_code=422, detail="invalid action")
+        if not status.conversation_exists(conv_id):
+            raise HTTPException(status_code=404, detail="conversation not found")
+        try:
+            thread_id = threads.resolve_resume_thread(
+                conv_id, expected_thread_id=body.thread_id
+            )
+        except ThreadResumeConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         normalized = "confirm" if body.action in ("confirm", "confirmed") else "cancel"
         if status.get_mode(conv_id) != "ai":
             raise HTTPException(status_code=409, detail="conversation is not in ai mode")
 
         lock = await _thread_lock(thread_id)
         async with lock:
+            try:
+                thread_id = threads.resolve_resume_thread(
+                    conv_id, expected_thread_id=body.thread_id
+                )
+            except ThreadResumeConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             if status.get_mode(conv_id) != "ai":
                 raise HTTPException(status_code=409, detail="conversation is not in ai mode")
             async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
                 graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                 cfg = {"configurable": {"thread_id": thread_id}}
                 state = await graph.aget_state(cfg)
+                if body.task_id is not None and all(
+                    getattr(task, "id", None) != body.task_id for task in state.tasks
+                ):
+                    raise HTTPException(status_code=409, detail="resume task mismatch")
                 pending = state.interrupts[0].value if state.interrupts else None
                 if not isinstance(pending, dict) or (
                     pending.get("type") != "confirmation_required" and not is_form_interrupt(pending)
@@ -1079,7 +1117,7 @@ def create_app(
 
     @app.get("/conversations/{conversation_id}/messages")
     def get_messages(conversation_id: str, _: None = Depends(_conversation_ownership)):
-        if status.get_thread_id(conversation_id) is None:
+        if not status.conversation_exists(conversation_id):
             raise HTTPException(status_code=404, detail="conversation not found")
         return {"items": messages_store.list(conversation_id), "mode": status.get_mode(conversation_id)}
 
@@ -1105,7 +1143,13 @@ def create_app(
         actor = _seat_actor(request)
         try:
             return await seat.decide(approval_id, SeatAction.APPROVE, actor=actor)
-        except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError, SeatAuthError) as exc:
+        except (
+            ApprovalMissing,
+            ApprovalProcessed,
+            ApprovalThreadConflict,
+            ApprovalExpiredError,
+            SeatAuthError,
+        ) as exc:
             raise _seat_http(exc) from exc
 
     @app.post("/approvals/{approval_id}/reject")
@@ -1116,7 +1160,13 @@ def create_app(
         note = body.note if body is not None else None
         try:
             return await seat.decide(approval_id, SeatAction.REJECT, actor=actor, note=note)
-        except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError, SeatAuthError) as exc:
+        except (
+            ApprovalMissing,
+            ApprovalProcessed,
+            ApprovalThreadConflict,
+            ApprovalExpiredError,
+            SeatAuthError,
+        ) as exc:
             raise _seat_http(exc) from exc
 
     # --- 审批卡决策链接（ADR-0006）：GET 只渲染页面，决策只走 POST -----------
@@ -1269,6 +1319,8 @@ def create_app(
             return _decision_error(404, "审批单不存在", "这张审批单已被清理。", wants_html)
         except ApprovalProcessed:
             return _decision_error(409, "这张审批已处理", "可能已被其他坐席处理。", wants_html)
+        except ApprovalThreadConflict:
+            return _decision_error(409, "会话已切换", "审批关联的 thread 已失效，请让客户重新发起。", wants_html)
         except ApprovalExpiredError:
             return _decision_error(410, "审批已过期", "请让客户重新发起申请。", wants_html)
 
@@ -1344,7 +1396,7 @@ def create_app(
         try:
             if await _seat_decide_from_chatwoot(data):
                 return {"ok": True}
-        except (ApprovalMissing, ApprovalProcessed, ApprovalExpiredError):
+        except (ApprovalMissing, ApprovalProcessed, ApprovalThreadConflict, ApprovalExpiredError):
             # 预检冲突 / 归属不符 → ack（避免 Chatwoot 重试风暴）。
             return {"ok": True}
         except SeatAuthError as exc:
@@ -1485,6 +1537,7 @@ def create_app(
                         handoff, seat, chatwoot, messages_store
                     ),
                     handoff=handoff,
+                    threads=threads,
                     context=_runtime_context(),
                 )
         except Exception:

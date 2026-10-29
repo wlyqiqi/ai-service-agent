@@ -76,6 +76,7 @@ def test_resolve_and_chat_race_no_double_processing(tmp_path):
     handoff_id = conn.execute("SELECT handoff_id FROM handoff_record WHERE conversation_id=?", (session_id,)).fetchone()[0]
     thread_id = ConversationStatusStore(conn).get_thread_id(session_id)
     conn.close()
+    assert thread_id is None
 
     async def race():
         transport = httpx.ASGITransport(app=app)
@@ -97,8 +98,11 @@ def test_resolve_and_chat_race_no_double_processing(tmp_path):
 
     # 最终一致性：mode=ai、无挂起图内中断（入口层转人工本就不产生图内中断）
     conn = sqlite3.connect(db)
-    assert ConversationStatusStore(conn).get_mode(session_id) == "ai"
+    status = ConversationStatusStore(conn)
+    assert status.get_mode(session_id) == "ai"
+    thread_id = status.get_thread_id(session_id)
     conn.close()
+    assert thread_id is not None
 
     async def final_no_interrupt():
         async with AsyncSqliteSaver.from_conn_string(db) as saver:

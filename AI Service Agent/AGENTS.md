@@ -36,6 +36,7 @@
 | Mutation Form / Form Interrupt | `docs/specs/mutation-form-interrupt-spec.md` + `CONTEXT.md` |
 | 安全预检 / handoff 触发 | `docs/specs/safety-spec.md` |
 | conversation_mode / Handoff 生命周期 | `docs/specs/handoff-spec.md` |
+| Thread 生命周期 / 惰性创建 / resume 保护 / checkpoint 清理 | `docs/specs/thread-lifecycle-spec.md` + `docs/ops/thread-checkpoint-cleanup.md` |
 | 持久化 / 错误 / harness hook / 测试基线 | `docs/specs/architecture.md` |
 | C 端入口（Widget / AgentBot） | `docs/adr/0001-widget-agentbot-form-contract.md`（`user-page-spec.md` 已废止） |
 | 架构决策留痕 | `docs/decisions/`（新决策优先 `docs/adr/`，见 `docs/agents/domain.md`） |
