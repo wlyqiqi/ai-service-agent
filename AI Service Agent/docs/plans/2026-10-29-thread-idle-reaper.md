@@ -1,5 +1,9 @@
 # Thread 空闲回收（#151）Implementation Plan
 
+- 日期：2026-10-29
+- 状态：**已实现**（分支 `feat/thread-idle-reaper`，6 个 commit）
+- 关联：issue #151、父 spec #148、`docs/specs/thread-lifecycle-spec.md`
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 在单进程 Demo 里提供一个可测的 `cleanup_once(now)`，自动回收 24 小时无 AI 请求的 thread，失败可退避重试，且绝不删除在途 / 挂起 / 人工接管中的 thread。
@@ -1447,3 +1451,63 @@ git commit -m "docs: document runtime thread reaper scope and known Form-interru
 - 多 worker 租约 / Postgres 行锁
 - checkpoint 部分 pruning
 - 单 worker 运行时探测（`uvicorn.run(app)` 本身就不支持 `--workers`）
+
+## 实现记录（2026-10-29）
+
+### 提交
+
+| commit | 内容 |
+|---|---|
+| `84e771e7` | `feat(session)`: 队列退避 `next_retry_at`（Task 1） |
+| `0bede7d4` | `feat(thread)`: 候选排除 human + Form 中断标记（Task 2） |
+| `c8cce701` | `feat(thread)`: reaper 引擎（双锁 + 锁后重查）（Task 3） |
+| `2b38ac4a` | `refactor(ops)`: CLI 改成薄入口（Task 4） |
+| `d2850a1f` | `feat(server)`: lifespan 接线与配置（Task 5） |
+| `5e54ca1b` | `docs`: spec / runbook / `.env.example`（Task 6） |
+
+### 执行时偏离计划的地方（均已确认）
+
+1. **Task 3 用例的时间锚点**：`test_cleanup_once_rechecks_blockers_after_locks` 原写
+   `expires_at = NOW + 20min`，会挂。原因：`ApprovalService.get()` 用**真实墙钟**做惰性过期，
+   而 `insert_if_absent` 末尾 `return self.get(...)` 会立刻把固定 `NOW` 派生的审批落成 `expired`。
+   改为 `datetime.now(timezone.utc) + timedelta(minutes=20)`。
+2. **Task 2 的 Form 判据**：计划写 `"form_session_id" in value`，实际复用仓库既有的单点谓词
+   `form_events.is_form_interrupt(value)`（要求 `tool` 为 str 且 `order_candidates` 为 list）；
+   测试 fixture 相应补 `order_candidates`。
+3. **Task 4 与 Task 1 冲突**：退避会让「删除失败后立刻重跑」的既有用例
+   （`test_cleanup_clears_pointer_before_delete_and_failure_is_retryable`）拿不到候选。
+   解法：`cleanup_once(..., respect_backoff: bool = True)`，**离线 CLI 传 `False`**（人工重试不该等 30 分钟），
+   lifespan 保持 `True`。既有用例一行未改。
+4. **Task 4 冒烟库**：worktree 内没有 `data/ai_service.db`，临时建空库跑通 dry-run 后删除。
+5. **`server.py` 导入**：`sqlite_lifecycle_probes` 已存在（:103），未重复添加；补的是
+   `asynccontextmanager/suppress`、`datetime/timezone`、`Callable`、`ThreadReaper`。
+6. **`AGENTS.md` 未改**：§5 表格已有「Thread 生命周期 → `thread-lifecycle-spec.md`」一行。
+
+### 验证
+
+- 全量 `pytest tests --ignore=tests/evals -q -p no:randomly`：**1220 passed / 2 skipped / 3 failed**，
+  31m34s；`--collect-only` = **1225** = 1220 + 3 + 2，数量对齐。
+- 3 个 failed 是**既有**失败，与本单无关：`test_thread_rotation.py` 的
+  `test_approval_execution_gap_blocks_rotation` / `test_expired_pending_approval_still_blocks_rotation` /
+  `test_unexpired_pending_approval_blocks_rotation`。根因是该文件把 `NOW` 写死为
+  `2026-10-29 12:00 UTC`，而审批的惰性过期用真实墙钟；日期一过就必然失败（干净树上同样 3 红）。
+- 相邻回归（`test_server` / `test_agent_bot` / `test_chatwoot_webhook` / `test_thread_rotation`）：
+  95 passed / 3 failed（同上 3 例）。
+
+### 副本演练（主库 215 MB 快照，`sqlite3.Connection.backup()`）
+
+```
+dry-run: candidates=205  deletable=191  protected=14
+apply  : deleted=191  protected=14  failed=0  queue=0  integrity=ok
+protected_by: blocked_by_form=7 / handoff_awaiting_or_active=6 / approval_execution_incomplete=2
+业务表不变: conversation_message 868 / users 122 / approval_record 10 / handoff_record 24 / chatwoot_conversation 38
+文件大小 215,576,576 → 215,576,576（未 VACUUM，符合预期）
+human 模式且空闲 >24h 的会话 2 条：已被排除，未被删除
+```
+
+`blocked_by_form` 在真实数据上命中 7 次，确认 Task 2 的标签在真实 checkpoint 上生效。
+
+### 已知缺口（不在本单）
+
+- Form Interrupt 的 24 小时自动过期 → **#155**；在此之前 `blocked_by_form` 的会话永不回收。
+- 多 worker 租约、checkpoint 部分 pruning、单 worker 运行时探测。
