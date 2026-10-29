@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 
@@ -126,6 +127,48 @@ def _build_examples(tier_tools: list, registry: ToolRegistry, mode: str) -> str:
     return "\n\n".join(parts)
 
 
+_NOT_NEGATED = r"(?<!不)(?<!不要)(?<!不用)(?<!别)"
+_CANCEL_RE = re.compile(_NOT_NEGATED + r"(?:取消|撤销)")
+_REFUND_RE = re.compile(_NOT_NEGATED + r"(?:退款|退钱|退个款|退一下款|退我|申请退)")
+
+
+def latest_user_text(state: dict) -> str:
+    """本轮用户原话（只看最后一条 human，不读模型输出）。"""
+    for message in reversed(state.get("messages") or []):
+        if isinstance(message, dict):
+            role = message.get("type", message.get("role", ""))
+            content = message.get("content", "")
+        else:
+            role = getattr(message, "type", "")
+            content = getattr(message, "content", "")
+        if role in ("human", "user"):
+            return str(content or "")
+    return ""
+
+
+def unique_high_risk_tool(user_text: str, allowed) -> str | None:
+    """模型没发 tool_call 时的确定性兜底：这句话唯一指向哪个高风险工具。
+
+    前提是路由已经判成执行意图（否则不会进 high_risk_graph），所以这里只看
+    「取消 / 退款」这类明确动词。命中两个（「取消订单再退款」）就返回 None，
+    交给澄清；命中零个也返回 None。
+
+    为什么需要：实测（2026-10-29）客户说「取消订单」，模型因为"这单在退款中"
+    自行判断不该执行、不发 tool_call，系统就回「无法确定要执行哪一项」——
+    意图明明很清楚，等于没听懂。
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return None
+    allowed_names = {str(name) for name in (allowed or ())}
+    hits = []
+    if "cancel_order" in allowed_names and _CANCEL_RE.search(text):
+        hits.append("cancel_order")
+    if "refund_apply" in allowed_names and _REFUND_RE.search(text):
+        hits.append("refund_apply")
+    return hits[0] if len(hits) == 1 else None
+
+
 def _visible_text(state: dict) -> str:
     parts: list[str] = []
     for message in state.get("messages", []):
@@ -184,11 +227,28 @@ def make_high_risk_select_node(
             "execution_status": "completed",
         }
 
-    def _clarify(state: dict, missing: list[str]) -> dict:
-        return {"context": {**state.get("context", {}), "clarify_missing": missing}}
+    def _clarify(state: dict, missing: list[str], candidates: list | None = None) -> dict:
+        """缺参澄清。
+
+        ``tier_clarify`` 必须一起清掉：两个标记同时存在时 clarify 节点优先渲染
+        「无法确定要执行哪一项」，会把「缺订单号 / 无候选订单」说成"听不懂"
+        （实测 2026-10-29：客户明确说「取消订单」，却连续收到三条"无法确定"）。
+        ``candidates=[]`` 用来表达"查过了，没有可操作订单"，与"还没查"区分开。
+        """
+        ctx = {**state.get("context", {})}
+        ctx.pop("tier_clarify", None)
+        ctx["clarify_missing"] = missing
+        if candidates is not None:
+            ctx["cancellation_candidates"] = candidates
+        return {"context": ctx}
 
     def _tier_clarify(state: dict, tool_name: str) -> dict:
-        return {"context": {**state.get("context", {}), "tier_clarify": tool_name}}
+        """档不匹配：反过来也要清掉缺参标记，否则下次仍按旧 missing 渲染。"""
+        ctx = {**state.get("context", {})}
+        ctx.pop("clarify_missing", None)
+        ctx.pop("cancellation_candidates", None)
+        ctx["tier_clarify"] = tool_name
+        return {"context": ctx}
 
     def _no_tool_clarify(state: dict, content: str = "") -> dict:
         """tool_choice=auto 且模型未发起 tool_call：写 tier_clarify，由 clarify 节点产出话术。"""
@@ -253,10 +313,14 @@ def make_high_risk_select_node(
                 payload = json.loads(resp.content)
                 tool_name = payload.get("tool")
                 if not tool_name:
-                    return _no_tool_clarify(
-                        state, str(payload.get("content") or payload.get("clarify") or "")
-                    )
-                args = dict(payload.get("args") or {})
+                    forced = unique_high_risk_tool(latest_user_text(state), allowed)
+                    if forced is None:
+                        return _no_tool_clarify(
+                            state, str(payload.get("content") or payload.get("clarify") or "")
+                        )
+                    tool_name, args = forced, {}
+                else:
+                    args = dict(payload.get("args") or {})
             except Exception:
                 return _reject(state, "select_parse_failed")
         else:
@@ -273,10 +337,16 @@ def make_high_risk_select_node(
             )
             result = await bound.ainvoke(messages, config=config)
             if not result.tool_calls:
-                return _no_tool_clarify(state, str(result.content or ""))
-            tool_call = result.tool_calls[0]
-            tool_name = tool_call["name"]
-            args = dict(tool_call.get("args") or {})
+                # 意图明确、模型却没发 tool_call（常见于"这单状态不允许，模型自行
+                # 判断不该执行"）——先按确定性关键词兜底，兜不住才澄清。
+                forced = unique_high_risk_tool(latest_user_text(state), allowed)
+                if forced is None:
+                    return _no_tool_clarify(state, str(result.content or ""))
+                tool_name, args = forced, {}
+            else:
+                tool_call = result.tool_calls[0]
+                tool_name = tool_call["name"]
+                args = dict(tool_call.get("args") or {})
 
         if tool_name in ("cancel_order", "refund_apply"):
             if args.get("order_id") and str(args["order_id"]) not in _visible_text(state):
@@ -295,7 +365,14 @@ def make_high_risk_select_node(
                 except (OrderRepositoryUnavailable, ValueError):
                     candidates = []
             if not candidates:
-                return _clarify(state, ["order_id"])
+                # 明确告诉客户"没有可操作订单"，而不是"请补充订单号"。
+                # 只有 cancel 场景用这个键（键名就是 cancellation_candidates），
+                # refund 留空以免污染它自己的澄清语义。
+                return _clarify(
+                    state,
+                    ["order_id"],
+                    candidates=[] if tool_name == "cancel_order" else None,
+                )
             meta = registry.meta_for(tool_name)
             if meta is not None and meta.schema is not None:
                 return _pending_for_form(
