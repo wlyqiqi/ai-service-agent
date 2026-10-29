@@ -10,7 +10,7 @@ from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.chatwoot import ChatwootMappingStore
 from ai_service_agent.harness.handoff import HandoffService
 from ai_service_agent.harness.messages import MessageStore
-from ai_service_agent.harness.session import ConversationStatusStore
+from ai_service_agent.harness.session import ConversationStatusStore, retry_backoff
 from ai_service_agent.ops.thread_cleanup import ThreadCleanupService
 
 
@@ -281,6 +281,55 @@ async def test_vacuum_rehearsal_reduces_copy_and_preserves_protected_thread(tmp_
     assert protected_thread in report.protected
     assert _count(db, "checkpoints", "thread_id = ?", (protected_thread,)) == 20
     assert after_size < before_size
+
+
+# --- #151：队列退避 ---------------------------------------------------------
+
+
+def test_retry_backoff_doubles_then_caps():
+    assert retry_backoff(1) == timedelta(minutes=30)
+    assert retry_backoff(2) == timedelta(hours=1)
+    assert retry_backoff(3) == timedelta(hours=2)
+    assert retry_backoff(4) == timedelta(hours=4)
+    assert retry_backoff(9) == timedelta(hours=4)
+
+
+def test_record_cleanup_failure_sets_next_retry_at(tmp_path):
+    db = str(tmp_path / "backoff.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    now = datetime.now(timezone.utc)
+    status.enqueue_thread("t1", "c1", "idle_timeout", at=now)
+
+    status.record_cleanup_failure("t1", "disk busy", at=now)
+
+    row = status.list_cleanup_queue()[0]
+    assert row["retry_count"] == 1
+    assert row["last_error"] == "disk busy"
+    assert row["next_retry_at"] == (now + timedelta(minutes=30)).isoformat()
+
+    status.record_cleanup_failure("t1", "disk busy", at=now)
+    row = status.list_cleanup_queue()[0]
+    assert row["retry_count"] == 2
+    assert row["next_retry_at"] == (now + timedelta(hours=1)).isoformat()
+    conn.close()
+
+
+def test_list_cleanup_queue_respects_next_retry_at(tmp_path):
+    db = str(tmp_path / "backoff-filter.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    now = datetime.now(timezone.utc)
+    status.enqueue_thread("t-due", "c1", "idle_timeout", at=now - timedelta(hours=2))
+    status.enqueue_thread("t-wait", "c2", "idle_timeout", at=now)
+    status.record_cleanup_failure("t-wait", "boom", at=now)  # 30 分钟后才该重试
+
+    due = [row["thread_id"] for row in status.list_cleanup_queue(now=now)]
+    everything = [row["thread_id"] for row in status.list_cleanup_queue()]
+
+    assert due == ["t-due"]
+    assert everything == ["t-due", "t-wait"]  # 不给 now 时保持旧行为（CLI 报告要看全部）
+    conn.close()
 
 
 def _count(db: str, table: str, where: str, params: tuple) -> int:

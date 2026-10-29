@@ -1,7 +1,7 @@
 import logging
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("ai_service_agent")
 
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS thread_cleanup_queue (
     reason TEXT NOT NULL,
     queued_at TEXT NOT NULL,
     retry_count INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT
+    last_error TEXT,
+    next_retry_at TEXT
 );
 """
 
@@ -59,6 +60,17 @@ def parse_utc_timestamp(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+#: 队列删除失败后的退避：30 分钟起，翻倍，4 小时封顶。
+RETRY_BACKOFF_BASE = timedelta(minutes=30)
+RETRY_BACKOFF_MAX = timedelta(hours=4)
+
+
+def retry_backoff(retry_count: int) -> timedelta:
+    """``retry_count`` 是**本次失败后**的累计次数（>= 1）。"""
+    exponent = max(0, retry_count - 1)
+    return min(RETRY_BACKOFF_BASE * (2**exponent), RETRY_BACKOFF_MAX)
 
 
 class ConversationNotFound(LookupError):
@@ -111,6 +123,12 @@ class ConversationStatusStore:
             self.conn.execute(
                 "ALTER TABLE conversation_status ADD COLUMN last_completed_turn_id TEXT"
             )
+        queue_columns = {
+            item[1]
+            for item in self.conn.execute("PRAGMA table_info(thread_cleanup_queue)").fetchall()
+        }
+        if queue_columns and "next_retry_at" not in queue_columns:
+            self.conn.execute("ALTER TABLE thread_cleanup_queue ADD COLUMN next_retry_at TEXT")
 
     def _has_leftover_rebuild_table(self) -> bool:
         return (
@@ -375,32 +393,59 @@ class ConversationStatusStore:
         )
         self.conn.commit()
 
-    def list_cleanup_queue(self) -> list[dict]:
+    def list_cleanup_queue(self, *, now: datetime | None = None) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT thread_id, conversation_id, reason, queued_at, retry_count, last_error "
-            "FROM thread_cleanup_queue ORDER BY queued_at, thread_id"
+            "SELECT thread_id, conversation_id, reason, queued_at, retry_count, last_error, "
+            "next_retry_at FROM thread_cleanup_queue ORDER BY queued_at, thread_id"
         ).fetchall()
-        return [
-            {
-                "thread_id": row[0],
-                "conversation_id": row[1],
-                "reason": row[2],
-                "queued_at": row[3],
-                "retry_count": row[4],
-                "last_error": row[5],
-            }
-            for row in rows
-        ]
+        result: list[dict] = []
+        for row in rows:
+            next_retry_at = row[6]
+            if now is not None:
+                due = parse_utc_timestamp(next_retry_at)
+                if due is not None and due > now:
+                    continue
+            result.append(
+                {
+                    "thread_id": row[0],
+                    "conversation_id": row[1],
+                    "reason": row[2],
+                    "queued_at": row[3],
+                    "retry_count": row[4],
+                    "last_error": row[5],
+                    "next_retry_at": next_retry_at,
+                }
+            )
+        return result
 
     def remove_cleanup_item(self, thread_id: str) -> None:
         self.conn.execute("DELETE FROM thread_cleanup_queue WHERE thread_id = ?", (thread_id,))
         self.conn.commit()
 
-    def record_cleanup_failure(self, thread_id: str, error: str) -> None:
+    def record_cleanup_failure(
+        self,
+        thread_id: str,
+        error: str,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        """记一次删除失败并安排下次重试。
+
+        退避用 Python 侧算好再写：``queued_at`` / ``next_retry_at`` 都是
+        ``isoformat()`` 产物，在 SQL 里做字符串比较会在同一秒内判错
+        （``+00:00`` 与 ``.123456+00:00`` 的字典序不等于时间序）。
+        """
+        row = self.conn.execute(
+            "SELECT retry_count FROM thread_cleanup_queue WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        if row is None:
+            return
+        next_count = int(row[0] or 0) + 1
+        next_at = (at or datetime.now(timezone.utc)) + retry_backoff(next_count)
         self.conn.execute(
             "UPDATE thread_cleanup_queue "
-            "SET retry_count = retry_count + 1, last_error = ? WHERE thread_id = ?",
-            (error[:2000], thread_id),
+            "SET retry_count = ?, last_error = ?, next_retry_at = ? WHERE thread_id = ?",
+            (next_count, error[:2000], _utc_now_iso(next_at), thread_id),
         )
         self.conn.commit()
 
