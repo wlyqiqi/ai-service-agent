@@ -131,6 +131,8 @@ class ThreadLifecycleService:
         use_bounded = allocation.created
 
         if not allocation.created:
+            # 安全性来自下面的 collect_blockers，**不是**来自会话锁：seat 审批 / handoff
+            # resolve 的 resume 只持有 thread:{id} 锁，不持有 conversation:{id}。
             reason = await self._rotation_reason(conversation_id, now)
             if reason is not None:
                 old_context = await self._read_context(thread_id)
@@ -154,9 +156,10 @@ class ThreadLifecycleService:
                         thread_id = self.ensure_active_thread(
                             conversation_id, at=now
                         ).thread_id
-                        use_bounded = True
                     else:
                         thread_id = current
+                    # 两种情况都是「别人刚换了 thread」，对本次执行而言等同新 thread。
+                    use_bounded = True
                 else:
                     rotated_from = thread_id
                     rotation_reason = reason
@@ -205,6 +208,9 @@ class ThreadLifecycleService:
             conversation_id=conversation_id,
             now=now,
             interrupt_loader=self._interrupt_loader,
+            # 轮换会删旧 thread：checkpoint 上还挂着 approval_required 就说明
+            # 「审批已过期」的收尾还没跑，此时不能轮换（否则该路径永远不可达）。
+            block_expired_approvals=True,
         )
         if blockers:
             logger.info(
@@ -226,7 +232,10 @@ class ThreadLifecycleService:
             return None
 
     async def _delete_old_thread(self, thread_id: str) -> None:
-        """best-effort：失败只记账，绝不影响本轮用户请求。"""
+        """best-effort：失败只记账，绝不影响本轮用户请求。
+
+        记账本身也可能失败（库被锁 / 磁盘满）——那时只记日志，仍不抛给调用方。
+        """
         if self._delete_thread is None:
             return
         try:
@@ -237,9 +246,15 @@ class ThreadLifecycleService:
                 thread_id,
                 exc,
             )
-            self.status.record_cleanup_failure(thread_id, str(exc))
+            try:
+                self.status.record_cleanup_failure(thread_id, str(exc))
+            except Exception:
+                logger.exception("record cleanup failure failed: thread=%s", thread_id)
         else:
-            self.status.remove_cleanup_item(thread_id)
+            try:
+                self.status.remove_cleanup_item(thread_id)
+            except Exception:
+                logger.exception("remove cleanup item failed: thread=%s", thread_id)
 
     @staticmethod
     def _bounded_history(

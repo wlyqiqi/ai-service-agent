@@ -75,8 +75,18 @@ def approval_protection(record: dict, now: datetime) -> str | None:
 
 
 def interrupt_protection(
-    value: object, approvals: list[dict], now: datetime
+    value: object,
+    approvals: list[dict],
+    now: datetime,
+    *,
+    block_expired_approvals: bool = False,
 ) -> str | None:
+    """checkpoint 里仍有中断时的保护原因。
+
+    ``block_expired_approvals``：轮换用 True——checkpoint 上挂着 ``approval_required``
+    就说明「审批已过期」的收尾回复还没发出去，此时删 thread 会让该路径永远不可达
+    （spec §4.1）。清理用 False——已过期的审批视为可回收。
+    """
     if not isinstance(value, dict):
         return "checkpoint_interrupt"
     if value.get("type") != "approval_required":
@@ -86,11 +96,16 @@ def interrupt_protection(
         (row for row in approvals if row.get("approval_id") == approval_id), None
     )
     if record is not None:
-        return approval_protection(record, now)
+        reason = approval_protection(record, now)
+        if reason is None and block_expired_approvals and record.get("status") == "pending":
+            return "approval_pending_expired"
+        return reason
     expires = parse_utc_timestamp(value.get("expires_at"))
     if expires is None:
         return "approval_interrupt_unexpired_or_unknown"
-    return "approval_pending" if now < expires else None
+    if now < expires:
+        return "approval_pending"
+    return "approval_pending_expired" if block_expired_approvals else None
 
 
 async def collect_blockers(
@@ -100,6 +115,7 @@ async def collect_blockers(
     conversation_id: str,
     now: datetime,
     interrupt_loader: Callable[[str], Awaitable[list]] | None,
+    block_expired_approvals: bool = False,
 ) -> list[str]:
     """返回阻止「轮换 / 删除」的保护原因；空列表表示安全。
 
@@ -124,7 +140,9 @@ async def collect_blockers(
         blockers.append(INSPECTION_FAILED)
         return blockers
     for value in interrupts:
-        reason = interrupt_protection(value, approvals, now)
+        reason = interrupt_protection(
+            value, approvals, now, block_expired_approvals=block_expired_approvals
+        )
         if reason:
             blockers.append(reason)
     return blockers

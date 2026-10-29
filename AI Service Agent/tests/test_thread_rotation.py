@@ -3,6 +3,8 @@
 存储层与纯判定先行；Transport 接线用例在文件后半段。
 """
 
+import asyncio
+import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -600,3 +602,235 @@ async def test_rotation_race_with_cleanup_never_reuses_detached_thread(tmp_path)
     assert turn.thread_id != old_thread
     assert harness.store.get_thread_id(conversation_id) == turn.thread_id
     harness.conn.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_pending_approval_still_blocks_rotation(tmp_path):
+    """review I1：checkpoint 里还有 approval_required 中断时，即使审批已过期也不得轮换。
+
+    轮换会删掉旧 thread，导致「审批已过期」的收尾回复永远发不出去（spec §4.1）。
+    """
+    harness = _Harness(tmp_path)
+    conversation_id, thread_id = harness.seed(completed_turns=DEFAULT_ROTATION_MAX_TURNS)
+    approvals = ApprovalService(harness.conn)
+    approvals.insert_if_absent(
+        "ap-expired",
+        conversation_id,
+        thread_id,
+        {"summary": "退款", "expires_at": (NOW - timedelta(minutes=5)).isoformat()},
+    )
+    harness.interrupts = [
+        {"type": "approval_required", "approval_id": "ap-expired",
+         "expires_at": (NOW - timedelta(minutes=5)).isoformat()}
+    ]
+
+    turn = await harness.service.prepare_ai_turn(conversation_id, harness.messages, at=NOW)
+
+    assert turn.thread_id == thread_id
+    assert turn.rotated_from is None
+    assert harness.deleted == []
+    harness.conn.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpired_pending_approval_blocks_rotation(tmp_path):
+    harness = _Harness(tmp_path)
+    conversation_id, thread_id = harness.seed(completed_turns=DEFAULT_ROTATION_MAX_TURNS)
+    ApprovalService(harness.conn).insert_if_absent(
+        "ap-live",
+        conversation_id,
+        thread_id,
+        {"summary": "退款", "expires_at": (NOW + timedelta(minutes=10)).isoformat()},
+    )
+
+    turn = await harness.service.prepare_ai_turn(conversation_id, harness.messages, at=NOW)
+
+    assert turn.thread_id == thread_id
+    assert turn.rotated_from is None
+    harness.conn.close()
+
+
+# --- 端到端：context_seed 真的进了新 thread 的 state -------------------------
+
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.testing import make_fake_model
+
+
+def _write_thread_context(db: str, thread_id: str, context: dict) -> None:
+    async def run():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(make_fake_model(), saver)
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": thread_id}},
+                {"context": context},
+                as_node="complaint_graph",
+            )
+
+    asyncio.run(run())
+
+
+def _read_thread_context(db: str, thread_id: str) -> dict:
+    async def run():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(make_fake_model(), saver)
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return dict(state.values.get("context") or {})
+
+    return asyncio.run(run())
+
+
+def test_rotation_seeds_preserved_context_into_new_thread_state(tmp_path):
+    """AC #10 的端到端接线：白名单键要真的落到新 thread 的图 state 里。"""
+    db = str(tmp_path / "seed-e2e.db")
+    client = TestClient(create_app(db, model="fake"))
+    conversation_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    _chat(client, conversation_id)
+    old_thread = _row(db, conversation_id)["thread_id"]
+    _write_thread_context(
+        db, old_thread, {"fallback_count": 2, "pending_tool": "cancel_order"}
+    )
+    _set_completed_turns(db, conversation_id, DEFAULT_ROTATION_MAX_TURNS)
+
+    _chat(client, conversation_id, "再问一句")
+
+    new_thread = _row(db, conversation_id)["thread_id"]
+    assert new_thread != old_thread
+    context = _read_thread_context(db, new_thread)
+    assert context.get("fallback_count") == 2  # 白名单键跨代保留
+    assert "pending_tool" not in context  # 非白名单键不复制
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_takes_the_conversation_level_lock(tmp_path):
+    """AC #12/#13：AgentBot 与 /chat 共用 conversation:{id} 锁。"""
+    from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+
+    conn = sqlite3.connect(tmp_path / "agent-bot-lock.db")
+    store = ConversationStatusStore(conn)
+    messages = MessageStore(conn)
+    conversation_id = store.create_session("u-lock")["conversation_id"]
+    ChatwootMappingStore(conn).put(conversation_id, 5252)
+    keys: list[str] = []
+
+    async def factory(key):
+        keys.append(key)
+        return asyncio.Lock()
+
+    class _Chatwoot:
+        async def send_bot_message(self, *args, **kwargs):
+            return None
+
+    await handle_agent_bot_message(
+        {
+            "event": "message_created",
+            "id": "901",
+            "content": "你好",
+            "message_type": "incoming",
+            "content_type": "text",
+            "conversation": {"id": 5252},
+            "contact": {"id": 9, "identifier": "u-lock", "name": "lock-user"},
+        },
+        _Chatwoot(),
+        status=store,
+        messages_store=messages,
+        mapping=ChatwootMappingStore(conn),
+        conversation_lock_factory=factory,
+    )
+
+    assert keys == [f"conversation:{conversation_id}"]
+    conn.close()
+
+
+# --- 端到端：context_seed 真的进了新 thread 的 state -------------------------
+
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from ai_service_agent.harness.graph import make_ai_graph
+from ai_service_agent.testing import make_fake_model
+
+
+def _write_thread_context(db: str, thread_id: str, context: dict) -> None:
+    async def run():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(make_fake_model(), saver)
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": thread_id}},
+                {"context": context},
+                as_node="complaint_graph",
+            )
+
+    asyncio.run(run())
+
+
+def _read_thread_context(db: str, thread_id: str) -> dict:
+    async def run():
+        async with AsyncSqliteSaver.from_conn_string(db) as saver:
+            graph = make_ai_graph(make_fake_model(), saver)
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return dict(state.values.get("context") or {})
+
+    return asyncio.run(run())
+
+
+def test_rotation_seeds_preserved_context_into_new_thread_state(tmp_path):
+    """AC #10 的端到端接线：白名单键要真的落到新 thread 的图 state 里。"""
+    db = str(tmp_path / "seed-e2e.db")
+    client = TestClient(create_app(db, model="fake"))
+    conversation_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    _chat(client, conversation_id)
+    old_thread = _row(db, conversation_id)["thread_id"]
+    _write_thread_context(
+        db, old_thread, {"fallback_count": 2, "pending_tool": "cancel_order"}
+    )
+    _set_completed_turns(db, conversation_id, DEFAULT_ROTATION_MAX_TURNS)
+
+    _chat(client, conversation_id, "再问一句")
+
+    new_thread = _row(db, conversation_id)["thread_id"]
+    assert new_thread != old_thread
+    context = _read_thread_context(db, new_thread)
+    assert context.get("fallback_count") == 2  # 白名单键跨代保留
+    assert "pending_tool" not in context  # 非白名单键不复制
+
+
+@pytest.mark.asyncio
+async def test_agent_bot_takes_the_conversation_level_lock(tmp_path):
+    """AC #12/#13：AgentBot 与 /chat 共用 conversation:{id} 锁。"""
+    from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+
+    conn = sqlite3.connect(tmp_path / "agent-bot-lock.db")
+    store = ConversationStatusStore(conn)
+    messages = MessageStore(conn)
+    conversation_id = store.create_session("u-lock")["conversation_id"]
+    ChatwootMappingStore(conn).put(conversation_id, 5252)
+    keys: list[str] = []
+
+    async def factory(key):
+        keys.append(key)
+        return asyncio.Lock()
+
+    class _Chatwoot:
+        async def send_bot_message(self, *args, **kwargs):
+            return None
+
+    await handle_agent_bot_message(
+        {
+            "event": "message_created",
+            "id": "901",
+            "content": "你好",
+            "message_type": "incoming",
+            "content_type": "text",
+            "conversation": {"id": 5252},
+            "contact": {"id": 9, "identifier": "u-lock", "name": "lock-user"},
+        },
+        _Chatwoot(),
+        status=store,
+        messages_store=messages,
+        mapping=ChatwootMappingStore(conn),
+        conversation_lock_factory=factory,
+    )
+
+    assert keys == [f"conversation:{conversation_id}"]
+    conn.close()

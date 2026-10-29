@@ -38,12 +38,29 @@
 ## 验证
 
 ```
-tests/test_thread_rotation.py                         26 passed
+tests/test_thread_rotation.py                         32 passed
+tests/test_session.py                                 9 passed（含迁移事务/恢复）
 tests/test_server.py::test_approval_turn_and_resume_…  passed
 全量 tests --ignore=tests/evals                       见 PR 描述
 ```
 
-覆盖：阈值边界（29 不轮换 / 30 轮换）、幂等计数、原子轮换、指针已被移动时不重复切、四类挂起阻止轮换、删除失败仍返回本轮且留队列可重试、只带白名单 context、有界 hydration、Widget/AgentBot 同阈值、并发只建一个 thread。
+覆盖：阈值边界（29 不轮换 / 30 轮换）、幂等计数、原子轮换、指针已被移动时不重复切、
+五类挂起阻止轮换（pending Form Interrupt、**未过期** approval、**已过期但 checkpoint 仍挂着**的 approval、
+approval 执行缺口、awaiting handoff）、删除失败仍返回本轮且留队列可重试、
+只带白名单 context、有界 hydration、**context_seed 真的落到新 thread 的图 state**、
+Widget/AgentBot 同阈值 + 同一把会话锁、并发只建一个 thread、清理竞态不复活旧 thread。
+
+### Code review 后的修正（2026-10-29）
+
+| 级别 | 问题 | 修法 |
+|---|---|---|
+| Important | checkpoint 上挂着**已过期**的 `approval_required` 时仍会轮换 → 旧 thread 被删，「审批已过期」收尾路径永远不可达，审批行永久 pending | `collect_blockers(block_expired_approvals=True)`：轮换模式下一个 pending 审批无论是否过期都挡；清理模式保持「过期可回收」 |
+| Important | `conversation_status` 重建未包事务，崩溃会留下「新表空、数据在旧表」并静默丢全部会话 | 重建放进 `BEGIN IMMEDIATE`；另加残留表恢复逻辑 |
+| Important | `context_seed` 与 AgentBot 会话锁零端到端覆盖（删掉接线测试仍全绿） | 加 `/chat` 断言新 thread 图 state 含 `fallback_count`；加 AgentBot 锁 key 断言 |
+| Important | `complete_turn` 幂等窗口只有上一条；Widget turn_id 是每请求 uuid | 记为已知边界（两条路径实际都不可达重复），写进 docstring 与 spec |
+| Minor | `rotated is None / current 非空` 分支仍全量水合 | 该分支也置 `use_bounded=True` |
+| Minor | `_delete_old_thread` 的记账本身失败会抛出，反而让用户轮失败 | 记账再包一层 try/except，只记日志 |
+| Minor | `messages_store is None` 时仍计完成轮次 | 改为以「确实落库」为准 |
 
 ## 明确不做（属 #151）
 

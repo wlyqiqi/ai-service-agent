@@ -692,7 +692,7 @@ async def _handle_agent_bot_turn(
             messages_store.append(
                 conversation_id, "assistant", delivery.persist, message_id=final_message_id
             )
-        turn_completed = True
+        turn_completed = messages_store is not None
 
     if mutation_form_data is not None:
         await send_mutation_form(chatwoot, conversation_id, mutation_form_data)

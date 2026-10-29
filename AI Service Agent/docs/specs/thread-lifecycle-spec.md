@@ -119,6 +119,7 @@
 - 探测能力（`interrupt_loader`）未注入时 **fail closed**：无法证明无挂起就不轮换。
 - 旧 thread 在轮换点**立即 best-effort 删除**；失败只 `retry_count` / `last_error` 记账，队列留待 #151 的调度器重试，不影响本轮用户请求。
 - 后台 idle reaper、`cleanup_once(now)` 运行时入口与周期调度属 #151，本切片不实现。
+- **idle 轮换的实际覆盖面比字面窄**：任何 checkpoint 中断都会钉住 thread，而 Form Interrupt 的 24 小时自动过期本切片未实现，所以「以 Form 中断收尾」的会话（mutation 流程的常见终态）永远不会因空闲而轮换。idle 轮换实际只对以纯聊天收尾的会话生效。
 
 ### Conversation-level concurrency
 
@@ -133,12 +134,12 @@
 - A completed turn is one persisted user request that reaches a terminal response with no pending resume task and whose final assistant message is accepted for persistence.
 - Clarification and fallback responses count as completed turns when they reach a terminal response.
 - Form Resume, approval resume, Handoff Resolve, duplicate webhook delivery, and duplicate completion callbacks do not increment the counter.
-- Idempotency uses `last_completed_turn_id`; AgentBot uses the Chatwoot message identity, while Widget uses a server-generated stable inbound turn identity.
+- Idempotency uses `last_completed_turn_id`; AgentBot uses the Chatwoot message identity, while Widget uses a server-generated **per-request** inbound turn identity (`chat:{uuid}`). The idempotency window is therefore the immediately preceding turn only, and a Widget client retry of the same message counts as a new turn; both are unreachable duplicates in practice (AgentBot early-returns on `message_id`, Widget ids are per request).
 - `completed_turns` resets when a new thread becomes current.
 
 ### Pending-task protection and expiry
 
-- Any valid checkpoint interrupt pins its thread.
+- Any valid checkpoint interrupt pins its thread. For rotation this includes an already-expired `approval_required` interrupt: deleting the thread would make the official expired-resume path unreachable, so rotation blocks until that resume runs (`collect_blockers(block_expired_approvals=True)`). Offline cleanup keeps the opposite rule — expired approvals are reclaimable.
 - Form Interrupt default protection window is 24 hours after the last AI execution. In the Demo, expiry may be implemented by resuming the pending form with official `Command(resume={"action":"cancel"})` under the conversation lock, then allowing cleanup. A late form callback must return expired/conflict and must not attach to a newer form.
 - Approval TTL reuses the existing Approval Service `expires_at` (default 30 minutes). Do not introduce a second 24-hour approval TTL.
 - An expired pending approval may be finalized through the existing official expired-resume path.
