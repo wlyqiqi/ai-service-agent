@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sqlite3
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs
 from typing import Any
@@ -99,6 +100,7 @@ from ai_service_agent.harness.threads import (
     ThreadLifecycleService,
     ThreadResumeConflict,
 )
+from ai_service_agent.harness.thread_probes import sqlite_lifecycle_probes
 from ai_service_agent.testing import make_fake_model
 
 logger = logging.getLogger("ai_service_agent")
@@ -290,7 +292,7 @@ def create_app(
     conn = sqlite3.connect(db_path, check_same_thread=False)
     users = UserStore(conn)
     status = ConversationStatusStore(conn)
-    threads = ThreadLifecycleService(status)
+    threads = ThreadLifecycleService(status, **sqlite_lifecycle_probes(db_path))
     handoff = HandoffService(conn, status)
     messages_store = MessageStore(conn)
     mapping = ChatwootMappingStore(conn)
@@ -902,6 +904,8 @@ def create_app(
 
             return _sse_response(explicit_handoff_stream())
 
+        inbound_turn_id = f"chat:{uuid.uuid4()}"
+
         async def ai_stream():
             # 先持久化用户消息（即便本 turn 失败也留痕）；thread 只在 AI Graph 前分配。
             messages_store.append(conv_id, "user", body.message)
@@ -911,9 +915,14 @@ def create_app(
                     # Takeover won the lock: do not start a graph turn or send a bot bubble.
                     yield {"type": "done", "data": {"final": None, "message_id": None}}
                     return
-                turn = threads.prepare_ai_turn(conv_id, messages_store)
+                user_id = status.get_user_id(conv_id) or ""
+                turn = await threads.prepare_ai_turn(conv_id, messages_store)
                 active_thread_id = turn.thread_id
                 history = turn.history
+                turn_extra_state: dict = {"user_id": user_id}
+                if turn.context_seed:
+                    # 轮换后新 thread 的初始 state：只带白名单里的会话级状态。
+                    turn_extra_state["context"] = turn.context_seed
                 cb = _combined_interrupt_callback(
                     handoff.make_interrupt_callback(conv_id),
                     seat.interrupt_callback(conv_id, active_thread_id),
@@ -922,7 +931,6 @@ def create_app(
                     graph = make_ai_graph(_resolve_model(model), saver, order_repository=resolved_order_repository)
                     cfg = {"configurable": {"thread_id": active_thread_id}}
                     st = await graph.aget_state(cfg)
-                    user_id = status.get_user_id(conv_id) or ""
                     resume_payload = None
                     implicit_cancel = False
                     simulated_approval_id: str | None = None
@@ -965,7 +973,7 @@ def create_app(
                         async for _ev in event_stream(
                             graph, cfg, [], on_interrupt=cb,
                             resume_payload={"action": "cancel"},
-                            extra_state={"user_id": user_id},
+                            extra_state=turn_extra_state,
                             context=_runtime_context(user_id),
                         ):
                             pass
@@ -973,7 +981,7 @@ def create_app(
                     async for ev in event_stream(
                         graph, cfg, history, on_interrupt=cb,
                         resume_payload=resume_payload,
-                        extra_state={"user_id": user_id},
+                        extra_state=turn_extra_state,
                         context=_runtime_context(user_id),
                     ):
                         if ev["type"] == "error" and simulated_approval_id and not simulated_approval_finished:
@@ -1027,6 +1035,10 @@ def create_app(
                                 return
                             if delivery.persist is not None:
                                 messages_store.append(conv_id, "assistant", delivery.persist, message_id=ev["data"].get("message_id"))
+                                # 只有全新 AI 轮才计数：resume（表单 / 审批）不算完成轮次，
+                                # 重复回调由 turn_id 幂等挡住。
+                                if resume_payload is None:
+                                    threads.complete_turn(conv_id, inbound_turn_id)
                             yield ev
                             return
                         yield ev
@@ -1533,6 +1545,7 @@ def create_app(
                     orders_loader=_address_editable_orders_for_agent_bot,
                     thread_lock_factory=_thread_lock,
                     chatwoot_lock_factory=_thread_lock,
+                    conversation_lock_factory=_thread_lock,
                     callbacks_factory=_agent_bot_callbacks_factory(
                         handoff, seat, chatwoot, messages_store
                     ),

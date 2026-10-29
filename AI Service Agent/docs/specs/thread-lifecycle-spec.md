@@ -1,7 +1,7 @@
 # Demo Thread 生命周期规格
 
 - 日期：2026-10-29
-- 状态：Demo 范围定稿，替代 Issue #148 原完整生命周期方案。#149 已实现懒创建、复用、有界 hydration、消息索引与离线清理；30 轮 / 24 小时轮换阈值、后台 reaper 与生产调度仍明确延后。
+- 状态：Demo 范围定稿，替代 Issue #148 原完整生命周期方案。已实现：#149 懒创建、复用、有界 hydration、消息索引与离线清理；#150 安全边界上的自动轮换（30 轮 / 24 小时、会话级计数跨代保留、best-effort 删除）。仍明确延后：#151 后台 idle reaper 与生产调度、Form Interrupt 的 24 小时自动过期、14 天最大年龄规则。
 - 关联：`architecture.md`、`handoff-spec.md`、`approval-spec.md`、`state-spec.md`、`mutation-form-interrupt-spec.md`
 - 环境基线：LangGraph 1.2.14、langgraph-checkpoint 4.2.0、langgraph-checkpoint-sqlite 3.1.1
 
@@ -111,6 +111,14 @@
 - Under one conversation-level critical section, the service verifies safety, generates the next `thread_id`, atomically switches the conversation pointer, and inserts the old thread into `thread_cleanup_queue`.
 - The new thread hydrates only the current user message, at most the recent context allowed by the existing context policies, required authoritative business data, and externalized conversation-level counters.
 - The new thread must not copy the old checkpoint State or full message history.
+
+实现记录（#150）：
+
+- 判定纯函数 `harness/threads.decide_rotation`（`turn_limit` 优先于 `idle_timeout`）；保护判定单点 `harness/thread_guard.collect_blockers`，与离线清理共用。
+- 「会话级计数跨代保留」用**读旧 checkpoint 的 `context` + 白名单键注入新 thread 初始 state** 实现，不引入计数表、不改 clarify / fallback 节点。白名单见 `threads.PRESERVED_CONTEXT_KEYS`。
+- 探测能力（`interrupt_loader`）未注入时 **fail closed**：无法证明无挂起就不轮换。
+- 旧 thread 在轮换点**立即 best-effort 删除**；失败只 `retry_count` / `last_error` 记账，队列留待 #151 的调度器重试，不影响本轮用户请求。
+- 后台 idle reaper、`cleanup_once(now)` 运行时入口与周期调度属 #151，本切片不实现。
 
 ### Conversation-level concurrency
 

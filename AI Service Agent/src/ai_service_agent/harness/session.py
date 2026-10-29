@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS conversation_status (
     mode TEXT NOT NULL DEFAULT 'ai',
     user_id TEXT,
     created_at TEXT DEFAULT (datetime('now')),
-    last_ai_execution_at TEXT
+    last_ai_execution_at TEXT,
+    completed_turns INTEGER NOT NULL DEFAULT 0,
+    last_completed_turn_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS thread_cleanup_queue (
@@ -82,7 +84,9 @@ class ConversationStatusStore:
                     mode TEXT NOT NULL DEFAULT 'ai',
                     user_id TEXT,
                     created_at TEXT DEFAULT (datetime('now')),
-                    last_ai_execution_at TEXT
+                    last_ai_execution_at TEXT,
+                    completed_turns INTEGER NOT NULL DEFAULT 0,
+                    last_completed_turn_id TEXT
                 )
                 """
             )
@@ -99,6 +103,14 @@ class ConversationStatusStore:
             }
         if "last_ai_execution_at" not in columns:
             self.conn.execute("ALTER TABLE conversation_status ADD COLUMN last_ai_execution_at TEXT")
+        if "completed_turns" not in columns:
+            self.conn.execute(
+                "ALTER TABLE conversation_status ADD COLUMN completed_turns INTEGER NOT NULL DEFAULT 0"
+            )
+        if "last_completed_turn_id" not in columns:
+            self.conn.execute(
+                "ALTER TABLE conversation_status ADD COLUMN last_completed_turn_id TEXT"
+            )
 
     def create_session(self, user_id: str) -> dict:
         conversation_id = str(uuid.uuid4())
@@ -178,6 +190,66 @@ class ConversationStatusStore:
             (_utc_now_iso(at), conversation_id, thread_id),
         )
         self.conn.commit()
+
+    def turn_state(self, conversation_id: str) -> dict:
+        row = self.conn.execute(
+            "SELECT completed_turns, last_completed_turn_id, last_ai_execution_at "
+            "FROM conversation_status WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            raise ConversationNotFound(conversation_id)
+        return {
+            "completed_turns": int(row[0] or 0),
+            "last_completed_turn_id": row[1],
+            "last_ai_execution_at": row[2],
+        }
+
+    def complete_turn(self, conversation_id: str, turn_id: str) -> bool:
+        """记一个已完成轮次；同一 turn_id 重复投递不重复计数（幂等）。"""
+        if not turn_id:
+            raise ValueError("turn_id is required")
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE conversation_status "
+                "SET completed_turns = completed_turns + 1, last_completed_turn_id = ? "
+                "WHERE conversation_id = ? "
+                "AND (last_completed_turn_id IS NULL OR last_completed_turn_id != ?)",
+                (turn_id, conversation_id, turn_id),
+            )
+        return cursor.rowcount == 1
+
+    def rotate_thread(
+        self,
+        conversation_id: str,
+        *,
+        expected_thread_id: str,
+        reason: str,
+        at: datetime | None = None,
+    ) -> str | None:
+        """同一事务内切换当前指针、清零轮次计数、把旧 thread 入清理队列。
+
+        指针已被他人改动时返回 ``None``，不做任何写入。
+        """
+        candidate = str(uuid.uuid4())
+        timestamp = _utc_now_iso(at)
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE conversation_status "
+                "SET thread_id = ?, completed_turns = 0, last_completed_turn_id = NULL, "
+                "last_ai_execution_at = ? "
+                "WHERE conversation_id = ? AND thread_id = ?",
+                (candidate, timestamp, conversation_id, expected_thread_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self.conn.execute(
+                "INSERT INTO thread_cleanup_queue "
+                "(thread_id, conversation_id, reason, queued_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(thread_id) DO NOTHING",
+                (expected_thread_id, conversation_id, reason, timestamp),
+            )
+        return candidate
 
     def clear_thread_pointer(
         self,
