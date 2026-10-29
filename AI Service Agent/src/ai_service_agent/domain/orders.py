@@ -65,7 +65,11 @@ class OrderRepository(ABC):
 
     @abstractmethod
     def get_user_profile(self, user_id: str) -> dict | None:
-        """Customer profile for Transport presentation. None when the user is unknown."""
+        """Customer profile for Transport presentation. None when the user is unknown.
+
+        Keys: ``user_id`` / ``phone`` / ``address`` / ``name``. ``name`` 供坐席审批卡
+        展示可读的客户身份（``u0034`` 这类内部 id 对坐席没有意义）；数据缺失时为 ``None``。
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -232,7 +236,7 @@ class SQLiteOrderRepository(OrderRepository):
             raise OrderRepositoryUnavailable(str(exc)) from exc
         try:
             row = conn.execute(
-                "SELECT phone, address FROM customers WHERE customer_id = ?",
+                "SELECT phone, address, name FROM customers WHERE customer_id = ?",
                 (user_id,),
             ).fetchone()
         except sqlite3.Error as exc:
@@ -241,7 +245,12 @@ class SQLiteOrderRepository(OrderRepository):
             conn.close()
         if row is None:
             return None
-        return {"user_id": user_id, "phone": row[0], "address": row[1]}
+        return {
+            "user_id": user_id,
+            "phone": row[0],
+            "address": row[1],
+            "name": (row[2] or "").strip() or None,
+        }
 
     def list_user_orders(self, user_id: str, *, address_editable: bool = False) -> list[dict] | None:
         if not user_id:

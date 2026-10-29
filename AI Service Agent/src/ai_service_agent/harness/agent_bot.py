@@ -16,7 +16,7 @@ from ai_service_agent.graph.workflows.copy import (
 )
 from ai_service_agent.harness.approval_side_channel import (
     parse_approval_form_submission,
-    send_approval_form,
+    send_approval_card,
 )
 from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.form_gate import (
@@ -574,7 +574,7 @@ async def _handle_locked_agent_bot_message(
         if on_approval_pending is not None:
             await on_approval_pending(approval_form_data)
         else:
-            await send_approval_form(chatwoot, conversation_id, approval_form_data)
+            await send_approval_card(chatwoot, conversation_id, approval_form_data)
 
     return {
         "conversation_id": conversation_id,

@@ -17,6 +17,15 @@ from ai_service_agent.harness.server import create_app
 from ai_service_agent.harness.session import ConversationStatusStore
 from ai_service_agent.testing import ApprovalFlowFakeModel
 
+
+def _public_messages(cw) -> list[str]:
+    """客户可见的 bot 消息（private=True 是坐席私备注，不算出站）。"""
+    return [
+        call.args[1]
+        for call in cw.send_bot_message.await_args_list
+        if not call.kwargs.get("private")
+    ]
+
 SEAT_SECRET = "test-seat-approval-secret"
 SEAT_HEADERS = {
     "X-Seat-Approval-Credential": SEAT_SECRET,
@@ -71,7 +80,7 @@ def _pending_approval_via_chat(client: TestClient, db: str) -> tuple[str, str]:
 
 def test_seat_approve_while_human_mode_persists_message_store_without_outbound(tmp_path):
     """conversation_mode=human: resume + Message Store OK; no Chatwoot outbound."""
-    cw = SimpleNamespace(send_bot_message=AsyncMock())
+    cw = SimpleNamespace(send_bot_message=AsyncMock(), send_interactive_message=AsyncMock())
     db = str(tmp_path / "human-gate.db")
     client = TestClient(
         create_app(
@@ -95,12 +104,13 @@ def test_seat_approve_while_human_mode_persists_message_store_without_outbound(t
     assert any(row["role"] == "assistant" and "退款申请已提交" in row["content"] for row in rows)
     # D1=A：human 期间落库文案与 ai 同源（此前落长 done.final「通过审核」）。
     assert not any("通过审核" in (row["content"] or "") for row in rows if row["role"] == "assistant")
-    cw.send_bot_message.assert_not_awaited()
+    # human 期间不出站给客户；坐席私备注（private=True）不属于出站，仍要留痕
+    assert _public_messages(cw) == []
 
 
 def test_seat_reject_while_human_mode_persists_message_store_without_outbound(tmp_path):
     """conversation_mode=human: reject resume + Message Store OK; no Chatwoot outbound."""
-    cw = SimpleNamespace(send_bot_message=AsyncMock())
+    cw = SimpleNamespace(send_bot_message=AsyncMock(), send_interactive_message=AsyncMock())
     db = str(tmp_path / "human-reject.db")
     client = TestClient(
         create_app(
@@ -126,7 +136,7 @@ def test_seat_reject_while_human_mode_persists_message_store_without_outbound(tm
 
     rows = MessageStore(sqlite3.connect(db)).list(session_id)
     assert any(row["role"] == "assistant" for row in rows)
-    cw.send_bot_message.assert_not_awaited()
+    assert _public_messages(cw) == []
 
 
 def test_seat_approve_while_ai_mode_still_sends_outbound(tmp_path):
@@ -153,8 +163,8 @@ def test_seat_approve_while_ai_mode_still_sends_outbound(tmp_path):
     assert not any("通过审核" in (row["content"] or "") for row in rows if row["role"] == "assistant")
     cw.send_interactive_message.assert_awaited_once()
     assert cw.send_interactive_message.await_args.args[2] == "cards"
-    cw.send_bot_message.assert_awaited_once()
-    assert "退款申请已提交" in cw.send_bot_message.call_args.args[1]
+    public = _public_messages(cw)
+    assert any("退款申请已提交" in text for text in public)
 
 
 def test_approval_resume_follow_on_handoff_interrupt_is_persisted(tmp_path, monkeypatch):

@@ -15,31 +15,59 @@ from ai_service_agent.harness.approval_side_channel import (
     SeatActor,
     SeatAuthError,
     approval_form_items_from_payload,
-    approval_form_title_from_payload,
     parse_approval_form_submission,
-    send_approval_form,
+    send_approval_card,
 )
 from ai_service_agent.harness.approvals import ApprovalService
 
 SEAT_SECRET = "test-seat-approval-secret"
 
+APPROVAL_FACTS = {
+    "tool": "refund_apply",
+    "action_label": "退款申请",
+    "order_id": "ORD-PAID-1",
+    "amount": 100.0,
+    "currency": "CNY",
+    "order_total": 100.0,
+    "refunded": 0.0,
+    "product_summary": "破壁机 ×1",
+    "order_status_label": "已付款 · 未发货",
+    "customer": {"name": "张伟", "phone_tail": "4567"},
+    "customer_quote": "不想要了",
+}
 
-def test_title_carries_summary_approval_id_and_expiry():
-    title = approval_form_title_from_payload(
-        {
-            "approval_id": "A-42",
-            "summary": "退款 ORD-PAID-1 · ¥100",
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        }
+
+def test_card_renders_readable_facts_instead_of_raw_summary():
+    """卡片给坐席看的是结构化事实，不是拼好的 summary 串。"""
+    from ai_service_agent.harness.approval_card import render_approval_card
+
+    content = render_approval_card(
+        APPROVAL_FACTS,
+        approval_id="A-42",
+        expires_at="2099-01-01T00:00:00+00:00",
+        base_url="http://127.0.0.1:8766",
+        token="tok",
     )
-    assert "高风险审批 · 退款 ORD-PAID-1 · ¥100" in title
-    assert "单号 A-42" in title
-    assert "截止 2099-01-01T00:00:00+00:00" in title
+    assert "高风险审批" in content
+    assert "退款申请 ¥100.00" in content
+    assert "张伟" in content and "尾号 4567" in content
+    assert "ORD-PAID-1" in content
+    assert "已付款 · 未发货" in content
+    assert "不想要了" in content
+    assert "批准并退款" in content
+    # 按钮指向 Runtime 确认页，而不是死链
+    assert 'href="http://127.0.0.1:8766/approvals/A-42/decide?t=tok&amp;action=approve"' in content
 
 
-def test_title_falls_back_when_summary_missing():
-    title = approval_form_title_from_payload({})
-    assert title == "高风险审批 · 高风险操作待审批"
+def test_card_degrades_without_facts():
+    from ai_service_agent.harness.approval_card import render_approval_card
+
+    content = render_approval_card(
+        {}, approval_id="A-1", expires_at="", base_url="http://h", token="t"
+    )
+    assert "高风险操作" in content
+    assert "客户信息暂缺" in content
+    assert "None" not in content
 
 
 def test_items_expose_approval_id_decision_and_note():
@@ -111,18 +139,26 @@ def test_parse_rejects_non_seat_submissions(submitted):
 
 
 @pytest.mark.asyncio
-async def test_send_approval_form_is_private_interactive():
+async def test_send_approval_card_is_private_interactive():
     chatwoot = AsyncMock()
-    await send_approval_form(
+    await send_approval_card(
         chatwoot,
         "c1",
-        {"approval_id": "A-1", "summary": "cancel ORD-1", "expires_at": "2099-01-01T00:00:00+00:00"},
+        {
+            "approval_id": "A-1",
+            "summary": "cancel ORD-1",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "x_approval": {"facts": APPROVAL_FACTS},
+        },
+        base_url="http://127.0.0.1:8766",
+        secret=SEAT_SECRET,
     )
 
     chatwoot.send_interactive_message.assert_awaited_once()
     args, kwargs = chatwoot.send_interactive_message.call_args
     assert args[0] == "c1"
-    assert "cancel ORD-1" in args[1]
+    assert "高风险审批" in args[1]
+    assert "ORD-PAID-1" in args[1]
     assert args[2] == "form"
     assert {item["name"] for item in args[3]["items"]} == {"approval_id", "decision", "note"}
     assert kwargs.get("private") is True or (len(args) > 4 and args[4] is True)
@@ -167,6 +203,16 @@ def _insert(store: ApprovalService, approval_id: str = "A-1", conversation_id: s
             "expires_at": "2099-01-01T00:00:00+00:00",
         },
     )
+
+
+def _bot_messages(chatwoot, *, private: bool | None = None) -> list[str]:
+    """按可见性取 bot 消息：private=True 是坐席私备注，否则是客户可见文案。"""
+    out = []
+    for call in chatwoot.send_bot_message.await_args_list:
+        is_private = bool(call.kwargs.get("private"))
+        if private is None or is_private is private:
+            out.append(call.args[1])
+    return out
 
 
 _WRITE_EVENTS = [
@@ -260,7 +306,7 @@ async def test_approve_in_ai_mode_resumes_persists_and_sends_card():
     chatwoot.send_interactive_message.assert_awaited_once()
     persisted = [row[2] for row in channel._messages.rows]
     assert persisted and "通过审核" not in persisted[0]
-    assert chatwoot.send_bot_message.await_args.args[1] == persisted[0]
+    assert persisted[0] in _bot_messages(chatwoot, private=False)
 
 
 @pytest.mark.asyncio
@@ -278,7 +324,7 @@ async def test_reject_carries_note_and_skips_card():
     assert store.get("A-1")["status"] == "rejected"
     chatwoot.send_interactive_message.assert_not_awaited()
     assert channel._messages.rows[0][2] == "未通过审核"
-    assert chatwoot.send_bot_message.await_args.args[1] == "未通过审核"
+    assert _bot_messages(chatwoot, private=False) == ["未通过审核"]
 
 
 @pytest.mark.asyncio
@@ -291,7 +337,8 @@ async def test_human_mode_persists_without_outbound():
     await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
 
     chatwoot.send_interactive_message.assert_not_awaited()
-    chatwoot.send_bot_message.assert_not_awaited()
+    # human 模式不出站给客户；坐席私备注不属于出站，仍要留痕
+    assert _bot_messages(chatwoot, private=False) == []
     assert channel._messages.rows, "Message Store 必须始终落库（ADR-0002）"
     assert "通过审核" not in channel._messages.rows[0][2]
 
@@ -456,3 +503,112 @@ async def test_follow_on_approval_without_chatwoot_is_silent_not_fatal():
     await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
 
     assert channel._messages.rows[0][2] == "ok"
+
+
+# --- 投影幂等（T5：修掉实测的同一审批连发 3 条） ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_project_is_idempotent_per_approval():
+    store = _store()
+    _insert(store, "A-1")
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=[], chatwoot=chatwoot)
+    payload = {
+        "approval_id": "A-1",
+        "summary": "s",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }
+
+    await channel.project("c1", payload)
+    await channel.project("c1", payload)
+    await channel.project("c1", payload)
+
+    assert chatwoot.send_interactive_message.await_count == 1
+    assert store.get("A-1")["projected_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_project_prefers_stored_payload_for_richer_card():
+    """库里存的原始载荷含 facts；事件 data 只有 summary —— 卡片要用前者。"""
+    store = _store()
+    store.insert_if_absent(
+        "A-9",
+        "c1",
+        "t1",
+        {
+            "approval_id": "A-9",
+            "summary": "退款申请 ORD-PAID-9",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "x_approval": {
+                "facts": {
+                    "tool": "refund_apply",
+                    "action_label": "退款申请",
+                    "order_id": "ORD-PAID-9",
+                    "amount": 88.0,
+                }
+            },
+        },
+    )
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=[], chatwoot=chatwoot)
+
+    await channel.project("c1", {"approval_id": "A-9", "summary": "只有摘要"})
+
+    content = chatwoot.send_interactive_message.call_args[0][1]
+    assert "ORD-PAID-9" in content
+    assert "退款申请 ¥88.00" in content
+
+
+# --- 决策留痕（T7） ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decision_leaves_exactly_one_seat_note():
+    store = _store()
+    _insert(store)
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=_WRITE_EVENTS, chatwoot=chatwoot)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("7"))
+
+    notes = _bot_messages(chatwoot, private=True)
+    assert len(notes) == 1
+    assert notes[0].startswith("已批准")
+    assert "7" in notes[0]
+
+    with pytest.raises(ApprovalProcessed):
+        await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("8"))
+    # 重复决策不再发第二条留痕
+    assert len(_bot_messages(chatwoot, private=True)) == 1
+
+
+@pytest.mark.asyncio
+async def test_reject_note_carries_reason():
+    store = _store()
+    _insert(store)
+    chatwoot = AsyncMock()
+    channel = _channel(
+        store=store,
+        events=[{"type": "done", "data": {"final": "未通过审核", "message_id": "m2"}}],
+        chatwoot=chatwoot,
+    )
+
+    await channel.decide("A-1", SeatAction.REJECT, actor=SeatActor("7"), note="商品已发货")
+
+    notes = _bot_messages(chatwoot, private=True)
+    assert len(notes) == 1
+    assert "已拒绝" in notes[0] and "商品已发货" in notes[0]
+
+
+@pytest.mark.asyncio
+async def test_link_actor_is_labelled_honestly():
+    """共享口令下拿不到真实坐席 id：留痕写「审批链接」，不编一个名字。"""
+    store = _store()
+    _insert(store)
+    chatwoot = AsyncMock()
+    channel = _channel(store=store, events=_WRITE_EVENTS, chatwoot=chatwoot)
+
+    await channel.decide("A-1", SeatAction.APPROVE, actor=SeatActor("link"))
+
+    assert "审批链接" in _bot_messages(chatwoot, private=True)[0]

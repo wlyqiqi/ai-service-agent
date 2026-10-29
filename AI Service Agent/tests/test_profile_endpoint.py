@@ -43,11 +43,12 @@ def test_me_profile_returns_caller_profile(tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "user_id": "u0001",
-        "phone": "+84-92722552",
-        "address": "No. 1, Chengyuan VN",
-    }
+    body = response.json()
+    assert body["user_id"] == "u0001"
+    assert body["phone"] == "+84-92722552"
+    assert body["address"] == "No. 1, Chengyuan VN"
+    # name 供坐席审批卡展示可读身份
+    assert body["name"]
 
 
 def test_me_profile_requires_bearer_token(tmp_path):

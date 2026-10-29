@@ -205,6 +205,16 @@ class Settings(BaseSettings):
     jwt_expires_minutes: int = Field(default=60, validation_alias="JWT_EXPIRES_MINUTES")
     # Seat HTTP badge（approval-spec §3.2.1 / ADR-0002）：人工 approve/reject 的内部服务口令
     seat_approval_secret: str | None = Field(default=None, validation_alias="SEAT_APPROVAL_SECRET")
+    # 审批卡决策链接（ADR-0006）：卡片按钮指向 Runtime 的确认页。
+    # base_url 缺省按 AI_SERVICE_PORT 推本机地址；生产必须配成对外可达的地址。
+    approval_link_base_url: str | None = Field(default=None, validation_alias="APPROVAL_LINK_BASE_URL")
+    # 缺省由 seat_approval_secret 派生（不新增必填 env）；换密钥即让旧链接全部失效。
+    approval_link_secret: str | None = Field(default=None, validation_alias="APPROVAL_LINK_SECRET")
+    # 坐席端注入脚本会在 Chatwoot 页面里 fetch Runtime 的决策端点（跨源）。
+    # 逗号分隔；留空则用 CHATWOOT_BASE_URL（并自动补 localhost/127.0.0.1 变体）。
+    approval_link_cors_origins: str | None = Field(
+        default=None, validation_alias="APPROVAL_LINK_CORS_ORIGINS"
+    )
     # LangSmith 观测（architecture.md §8.1 tracing → LangSmith；SDK 只认 os.environ，
     # pydantic-settings 不导出 .env，故由 _sync_langsmith_env 显式回写。默认关闭。）
     langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")

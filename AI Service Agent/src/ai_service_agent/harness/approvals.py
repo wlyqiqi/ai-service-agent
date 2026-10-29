@@ -7,6 +7,7 @@
 线程锁与 checkpointer 迁移（类比 checkpointer SQLite→Postgres）。
 """
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -28,6 +29,27 @@ CREATE TABLE IF NOT EXISTS approval_record (
 );
 """
 
+#: 后续追加的列。``CREATE TABLE IF NOT EXISTS`` 不会给已存在的表补列，
+#: 这里按 ``PRAGMA table_info`` 幂等补齐（可空，回滚代码后旧逻辑照常工作）。
+APPROVAL_ADDED_COLUMNS = {
+    "payload_json": "TEXT",   # 原始 interrupt 载荷：投影卡片、确认页都要用
+    "projected_at": "TEXT",   # 坐席侧已投影时间：同一审批只发一次
+}
+
+#: 显式列名（不写 ``SELECT *``：加列不会打乱索引，回滚也不会读错位）。
+_COLUMNS = (
+    "approval_id, conversation_id, thread_id, type, summary, requester_user_id, "
+    "status, decision, decided_by, created_at, expires_at, decided_at, "
+    "payload_json, projected_at"
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(approval_record)")}
+    for name, decl in APPROVAL_ADDED_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE approval_record ADD COLUMN {name} {decl}")
+
 
 class ApprovalNotFound(Exception):
     pass
@@ -47,6 +69,7 @@ class ApprovalService:
         self.simulate_approval = simulate_approval
         self.lock = threading.RLock()
         self.conn.execute(APPROVAL_SCHEMA)
+        _migrate(self.conn)
         self.conn.commit()
 
     @staticmethod
@@ -65,19 +88,19 @@ class ApprovalService:
                 return existing
             with self.conn:
                 self.conn.execute(
-                    "INSERT INTO approval_record (approval_id, conversation_id, thread_id, type, summary, requester_user_id, created_at, expires_at) "
-                    "VALUES (?, ?, ?, 'high_risk', ?, ?, ?, ?)",
+                    "INSERT INTO approval_record (approval_id, conversation_id, thread_id, type, summary, requester_user_id, created_at, expires_at, payload_json) "
+                    "VALUES (?, ?, ?, 'high_risk', ?, ?, ?, ?, ?)",
                     (approval_id, conversation_id, thread_id,
                      payload.get("summary", ""), payload.get("requester_user_id", ""),
-                     payload.get("created_at", ""), payload.get("expires_at", "")),
+                     payload.get("created_at", ""), payload.get("expires_at", ""),
+                     json.dumps(payload, ensure_ascii=False, default=str)),
                 )
             return self.get(approval_id)
 
     def get(self, approval_id: str) -> dict | None:
         with self.lock:
             row = self.conn.execute(
-                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-                "FROM approval_record WHERE approval_id = ?",
+                f"SELECT {_COLUMNS} FROM approval_record WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone()
             if row is None:
@@ -100,6 +123,15 @@ class ApprovalService:
         """幂等：仅 pending 可写（approval-spec §2，重复 decision 不覆盖）。"""
         self._set_status(approval_id, status, decided_by)
 
+    def mark_projected(self, approval_id: str) -> None:
+        """记录坐席侧已投影。只有第一次写入生效（重复投影不再刷新时间）。"""
+        with self.lock, self.conn:
+            self.conn.execute(
+                "UPDATE approval_record SET projected_at = datetime('now') "
+                "WHERE approval_id = ? AND projected_at IS NULL",
+                (approval_id,),
+            )
+
     def precheck(self, approval_id: str) -> dict:
         """前置有效性检查（approval-spec §3.2，只读 + 惰性过期）：存在 / pending / 未过期。
 
@@ -118,8 +150,7 @@ class ApprovalService:
     def pending_for_conversation(self, conversation_id: str) -> list[dict]:
         with self.lock:
             rows = self.conn.execute(
-                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-                "FROM approval_record WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at",
+                f"SELECT {_COLUMNS} FROM approval_record WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at",
                 (conversation_id,),
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
@@ -127,16 +158,14 @@ class ApprovalService:
     def list_pending(self) -> list[dict]:
         with self.lock:
             rows = self.conn.execute(
-                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-                "FROM approval_record WHERE status = 'pending' ORDER BY created_at",
+                f"SELECT {_COLUMNS} FROM approval_record WHERE status = 'pending' ORDER BY created_at",
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
     def all(self) -> list[dict]:
         with self.lock:
             rows = self.conn.execute(
-                "SELECT approval_id, conversation_id, thread_id, type, summary, requester_user_id, status, decision, decided_by, created_at, expires_at, decided_at "
-                "FROM approval_record ORDER BY created_at",
+                f"SELECT {_COLUMNS} FROM approval_record ORDER BY created_at",
             ).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
@@ -146,4 +175,5 @@ class ApprovalService:
             "approval_id": row[0], "conversation_id": row[1], "thread_id": row[2], "type": row[3],
             "summary": row[4], "requester_user_id": row[5], "status": row[6], "decision": row[7],
             "decided_by": row[8], "created_at": row[9], "expires_at": row[10], "decided_at": row[11],
+            "payload_json": row[12], "projected_at": row[13],
         }
