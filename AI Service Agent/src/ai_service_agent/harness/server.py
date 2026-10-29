@@ -10,6 +10,7 @@ from urllib.parse import parse_qs
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
@@ -205,6 +206,26 @@ async def _approval_pending_events(it: dict):
     yield {"type": "done", "data": {"final": None, "message_id": None}}
 
 
+def _approval_link_cors_origins(
+    configured: str | None, chatwoot_base_url: str | None
+) -> list[str]:
+    """决策端点的 CORS 白名单：显式配置优先，否则用 Chatwoot 自身地址。
+
+    回环地址自动补 ``localhost`` / ``127.0.0.1`` 变体——坐席浏览器用哪个都能通；
+    生产域名不做变体，避免意外放宽。
+    """
+    raw = [item.strip() for item in (configured or "").split(",") if item.strip()]
+    if not raw and chatwoot_base_url:
+        raw = [chatwoot_base_url.strip().rstrip("/")]
+    origins = set(raw)
+    for origin in raw:
+        if "//localhost" in origin:
+            origins.add(origin.replace("//localhost", "//127.0.0.1"))
+        elif "//127.0.0.1" in origin:
+            origins.add(origin.replace("//127.0.0.1", "//localhost"))
+    return sorted(origins)
+
+
 # Seat HTTP badge headers（approval-spec §3.2.1）：口令 + 坐席 actor id，缺一不可。
 _SEAT_CREDENTIAL_HEADER = "X-Seat-Approval-Credential"
 _SEAT_ACTOR_HEADER = "X-Seat-Actor-Id"
@@ -227,6 +248,7 @@ def create_app(
     chatwoot_bot_error_open_grace_seconds: float | None = None,
     approval_link_base_url: str | None = None,
     approval_link_secret: str | None = None,
+    approval_link_cors_origins: str | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -295,6 +317,21 @@ def create_app(
         )
 
     app = FastAPI()
+
+    # 坐席端注入脚本（docs/ops/chatwoot/seat-approval.js）从 Chatwoot 页面 fetch 决策端点，
+    # 属跨源请求，必须放行。只放行 POST/OPTIONS 且只针对配置的 origin（默认 Chatwoot 自身）。
+    _cors_origins = _approval_link_cors_origins(
+        approval_link_cors_origins or settings.approval_link_cors_origins,
+        settings.chatwoot_base_url,
+    )
+    if _cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_cors_origins,
+            allow_methods=["POST", "OPTIONS"],
+            allow_headers=["Content-Type"],
+            max_age=600,
+        )
 
     def _profile_for_agent_bot(user_id: str | None):
         if not user_id:

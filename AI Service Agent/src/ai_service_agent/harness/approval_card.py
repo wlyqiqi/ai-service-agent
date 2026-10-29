@@ -306,7 +306,13 @@ def render_approval_card(
 
     ref = f"#{approval_id[:6]}" if approval_id else ""
     ttl = _ttl_minutes(expires_at, now=now)
-    ttl_text = f"{ttl} 分钟内有效" if ttl else "限时有效"
+    if ttl is None:
+        ttl_text = "限时有效"
+    elif ttl <= 0:
+        # 渲染时就已经超时（重放旧消息、时钟偏差）：别写「限时有效」糊过去
+        ttl_text = "已过期"
+    else:
+        ttl_text = f"{ttl} 分钟内有效"
 
     base = (base_url or "").rstrip("/")
     approve_href = f"{base}/approvals/{approval_id}/decide?t={token}&action=approve"

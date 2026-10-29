@@ -70,6 +70,8 @@ def _pending(tmp_path) -> tuple[TestClient, str, str, object]:
             chatwoot=cw,
             chatwoot_webhook_secret="cw-webhook-sec",
             seat_approval_secret=SEAT_SECRET,
+            # 显式给 CORS 白名单，测试不依赖 .env 里的 CHATWOOT_BASE_URL
+            approval_link_cors_origins="http://127.0.0.1:3000",
         )
     )
     session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
@@ -268,3 +270,52 @@ def test_link_disabled_when_no_secret(tmp_path):
     r = client.get("/approvals/whatever/decide", params={"t": "whatever"})
 
     assert r.status_code == 400
+
+
+# --- CORS：坐席端注入脚本从 Chatwoot 页面 fetch，属跨源 ----------------------
+
+
+def test_cors_preflight_allows_chatwoot_origin(tmp_path):
+    """坐席端 JS 在 :3000 里 fetch :8766，preflight 必须放行。"""
+    client, approval_id, _conversation_id, _cw = _pending(tmp_path)
+
+    r = client.options(
+        f"/approvals/{approval_id}/decide",
+        headers={
+            "Origin": "http://127.0.0.1:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "http://127.0.0.1:3000"
+    assert "POST" in r.headers.get("access-control-allow-methods", "")
+
+
+def test_cors_does_not_allow_foreign_origin(tmp_path):
+    client, approval_id, _conversation_id, _cw = _pending(tmp_path)
+
+    r = client.options(
+        f"/approvals/{approval_id}/decide",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert r.headers.get("access-control-allow-origin") is None
+
+
+def test_cors_origins_helper_adds_loopback_variants():
+    from ai_service_agent.harness.server import _approval_link_cors_origins
+
+    origins = _approval_link_cors_origins(None, "http://localhost:3000")
+    assert "http://localhost:3000" in origins
+    assert "http://127.0.0.1:3000" in origins
+
+    # 显式配置优先，且生产域名不做变体
+    assert _approval_link_cors_origins("https://chat.example.com", "http://localhost:3000") == [
+        "https://chat.example.com"
+    ]
+    assert _approval_link_cors_origins(None, None) == []

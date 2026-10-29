@@ -29,3 +29,20 @@ div:has(> span > div[style*="width:424px"]) {
 div:has(> span > div[style*="width:424px"]) > span > div[style*="width:424px"] {
   margin: 2px 0;
 }
+
+/* 卡片里的批准/拒绝按钮：由 seat-approval.js 接管点击（视觉仍是 <a>，语义变成按钮） */
+div[style*="width:424px"] a[data-approval-action] {
+  cursor: pointer;
+  transition: filter .16s ease, opacity .16s ease;
+}
+div[style*="width:424px"] a[data-approval-action]:hover {
+  filter: brightness(.94);
+}
+div[style*="width:424px"] a[data-approval-action][aria-busy="true"] {
+  opacity: .55;
+  pointer-events: none;
+}
+/* 就地展开的拒绝理由面板里，按钮不吃消息气泡的 a 样式 */
+div[style*="width:424px"] [data-cy-note] button {
+  font-family: inherit;
+}

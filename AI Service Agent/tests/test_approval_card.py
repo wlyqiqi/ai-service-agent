@@ -89,7 +89,8 @@ def test_card_falls_back_for_missing_product_and_customer():
 
 def test_card_never_leaks_iso_microseconds():
     """ISO 微秒串坐席读不懂；解析不了就不展示，绝不原样输出。"""
-    html = _render({**FACTS, "requested_at": "2026-10-28T09:49:28.287790+00:00"})
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+    html = _render({**FACTS, "requested_at": "2026-10-28T09:49:28.287790+00:00"}, now=now)
     assert "287790" not in html
     assert "今天 17:49" in html
 
@@ -196,3 +197,11 @@ def test_secret_derives_from_seat_secret_without_new_env():
     assert derived == derive_decision_secret("seat-secret")
     assert derived != derive_decision_secret("other")
     assert derive_decision_secret("seat-secret", "explicit") == "explicit"
+
+
+def test_expired_card_says_expired_not_limited():
+    """渲染时已超时（重放旧消息 / 时钟偏差）不能糊成「限时有效」。"""
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+    html = _render(expires_at="2026-10-28T10:19:00+00:00", now=now)
+    assert "已过期" in html
+    assert "限时有效" not in html

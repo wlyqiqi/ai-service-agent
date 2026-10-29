@@ -267,7 +267,7 @@ pytest tests --ignore=tests/evals
 
 ## 9. 实现记录（2026-10-28，分支 `feat/seat-approval-card`）
 
-状态：**T1–T8 已实现；T9 只做了 CSS 部分（隐藏「无响应」+ 气泡底色）；T10 未做。**
+状态：**T1–T9 已实现（T9 含注入式真按钮）；T10 未做。**
 
 | 任务 | 落地 | 与计划的差异 |
 |---|---|---|
@@ -279,7 +279,7 @@ pytest tests --ignore=tests/evals
 | T6 | `GET/POST /approvals/{id}/decide` | POST 同时接受 JSON 与原生 form；`Accept: text/html` 时返回结果页（JS 失效也不丢功能） |
 | T7 | `ApprovalSideChannel._note_decision` | 锁外发送；失败只记日志不影响已完成的决策 |
 | T8 | `approval_approved_text` 按 tool 区分 | 计划说「只改这一条」，实现上按 tool 分流——给改地址也加「退款到账」是错的 |
-| T9 | `docs/ops/chatwoot/seat-approval.css` + 覆盖 `vueapp.html.erb` | **没做 JS 真按钮**：签名链接已能完成决策，注入 JS 换按钮收益有限、风险更高（需给 runtime 加 CORS） |
+| T9 | `seat-approval.css` + `seat-approval.js` + 覆盖 `vueapp.html.erb` + runtime 加 CORS | 用户要求「操作在聊天框内完成」，补齐了 JS：按钮就地 fetch 决策、就地换结果态；拒绝就地展开理由。顺带按用户反馈隐藏了重复的客户侧表单消息（`您即将进行…`） |
 
 ### 真机验证（runtime 8766 + Chatwoot 3000，Chromium 1600×1000）
 
@@ -297,3 +297,36 @@ pytest tests --ignore=tests/evals
   单测（`test_approval_decide_link.py` 用真实 TestClient 跑完整图）已覆盖决策链路，但「客户填表单 → 审批」这一段建议单独排查。
 - `expires_at` 已过时卡片抬头显示「限时有效」（`_ttl_minutes` 返回 0 的兜底）；真实卡片是发出时的快照，正常情况显示「N 分钟内有效」。
 - T9 的 JS 真按钮、T10 的 Agent Inbox 演示未做。
+
+### 9.1 追加：坐席端就地决策（2026-10-29，用户反馈）
+
+用户指出两点：①坐席端既有审批卡，就不该再出现同样的文字；②操作应在聊天框内完成，不该跳页。
+
+**重复信息的根因**：客户在 Widget 里填表时，Chatwoot 会把同一条 `form` 消息同步到坐席视图
+（「您即将进行「订单取消」操作，参数：{'order_id': ..., 'request_id': ...}」）。这是客户侧交互的
+中间态，带内部 `request_id`，审批卡已把同一笔单讲清楚 —— 属纯噪音。只能前端隐藏（投影层不能不发，
+客户需要它）。
+
+**就地决策的实现**：`seat-approval.js` 挂在 Dashboard layout 上（不是消息内容，所以不受 DOMPurify 限制）：
+
+| 环节 | 做法 |
+|---|---|
+| 绑定 | `MutationObserver` + 3s 兜底扫描，找 `div[style*="width:424px"]` 里的 `a[data-approval-action]` |
+| 批准 | `preventDefault` → `fetch POST /approvals/{id}/decide` → 就地替换卡片为结果态 |
+| 拒绝 | 就地展开理由输入（必填）→ 提交 → 同上 |
+| 状态 | `localStorage["cy-approval-state"]`，Vue 重渲染 / 刷新后重放 |
+| 降级 | JS 不加载时链接仍可点（确认页），功能不丢 |
+
+**runtime 侧改动**：加 `CORSMiddleware`（只放行 `POST`/`OPTIONS`，白名单 `APPROVAL_LINK_CORS_ORIGINS`
+缺省用 `CHATWOOT_BASE_URL` 并补 `localhost`/`127.0.0.1` 变体）。
+
+**真机验证（会话 862）**：点「批准并退款」→ `POST /decide 200` → 卡片就地变成
+「已批准 / 今天 08:11 / 已执行，客户会立即收到结果通知。」，URL 未跳转；
+客户侧收到「退款申请已提交」，坐席侧收到留痕私备注「已批准 · 审批链接 · 08:11」。
+
+**顺带修**：卡片 `expires_at` 已过时抬头从「限时有效」改为「已过期」（渲染时即超时的情况，
+如重放旧消息或时钟偏差）。
+
+**注意**：`FormBubble`/消息行的 class 随 Chatwoot 版本变化（新版是
+`div.message-bubble-container[data-message-id]`，没有 `.chat-bubble`）。选择器写在 JS 顶部常量里，
+升级后若隐藏失效，先查这里。
