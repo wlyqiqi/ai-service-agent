@@ -1,0 +1,340 @@
+/* 澄元智能家电 · Chatwoot Widget 商业级视觉（主题 + 表单 + 卡片 + pre-chat）
+ *
+ * 基调：家居产品的「温暖」——陶土橙主色 + 米白纸感 + 暖黑文字。
+ * 不用绿色做主色（绿色只是品牌辅助色，留给落地页的植物感），不用 Chatwoot
+ * 默认的 #E07E00（偏黄、饱和度高，在白底上刺眼），改用深一档的陶土橙。
+ *
+ * 落地方式：Chatwoot 容器 layout 的 <link>，只作用于 widget iframe 内部。
+ * 结构依据（Chatwoot 内置组件，写死在 widget 包里）：
+ *   表单  div.form.chat-bubble > form > div.pb-2.w-full > label + select|input + span.error-message
+ *   卡片  div.card-message.chat-bubble > img + div.card-body > h4 + p + button.action-button
+ *   prechat form.formkit-form > .formkit-label / .formkit-input
+ * 所以这里只做「样式 + 有限的文案替换」，不改行为。见
+ * docs/ops/chatwoot-widget-form.md 的「做不到的事」。
+ */
+
+:root,
+:host {
+  /* 主色：陶土橙。要换回 Chatwoot 默认橙，只改 --cy-accent / --cy-accent-strong 两行。 */
+  --cy-accent: #c0562b;
+  --cy-accent-strong: #a2461f;
+  --cy-tint: #fbf0e6;
+  --cy-surface: #fffdf8;
+  --cy-paper: #f9f4ee;
+  --cy-line: #e6d8c6;
+  --cy-line-strong: #d5c2ac;
+  --cy-text: #2a211b;
+  --cy-muted: #6f6357;
+  --cy-danger: #b4442e;
+  --cy-ring: rgba(192, 86, 43, 0.16);
+}
+
+/* ── 主题色：覆盖 Chatwoot 的 --widget-color 与行内 style ───────────── */
+:root {
+  --widget-color: #c0562b !important;
+}
+.chat-bubble.user {
+  background: var(--cy-accent) !important;
+  color: #fffdf8 !important;
+}
+.chat-bubble.user p {
+  color: #fffdf8 !important;
+}
+
+/* ── 全局排版：widget 默认用 -apple-system，与落地页字体栈不一致 ───── */
+.conversation--container {
+  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 滚动区底部留白：否则最后一张卡片/表单的按钮会被 composer 压住 */
+  padding-bottom: 12px !important;
+}
+.chat-bubble.agent .message-content p {
+  line-height: 1.68 !important;
+  letter-spacing: 0.005em;
+}
+/* ══ 表单（mutation form） ══════════════════════════════════════════ */
+div.form.chat-bubble {
+  width: 100% !important;
+  padding: 20px 20px 18px !important;
+  border: 1px solid var(--cy-line) !important;
+  border-radius: 16px !important; /* 覆盖聊天气泡尾巴的 4px/20px 不对称圆角 */
+  background: var(--cy-surface) !important;
+  box-shadow: 0 10px 30px -24px rgba(83, 60, 40, 0.5) !important;
+  color: var(--cy-text) !important;
+  margin-bottom: 4px;
+}
+div.form.chat-bubble form {
+  display: flex !important;
+  flex-direction: column;
+  gap: 18px;
+}
+/* Chatwoot 每个字段容器是 .pb-2.w-full（8px 底距）——改由 gap 统一节奏 */
+div.form.chat-bubble form > div {
+  padding-bottom: 0 !important;
+  margin: 0 !important;
+}
+
+/* 标签：12px / 600 / 字距，与落地页小标签同一语气 */
+div.form.chat-bubble label {
+  display: block;
+  margin: 0 0 8px !important;
+  padding: 0 !important;
+  color: var(--cy-muted) !important;
+  font-size: 12px !important;
+  line-height: 16px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em;
+}
+
+/* 控件：默认无边框（border:0 + #fdfdfd），在米白卡片上几乎看不见 */
+div.form.chat-bubble select,
+div.form.chat-bubble input[type="text"],
+div.form.chat-bubble input[type="email"],
+div.form.chat-bubble input[type="number"],
+div.form.chat-bubble input[type="tel"],
+div.form.chat-bubble textarea {
+  width: 100% !important;
+  min-height: 46px !important;
+  height: 46px !important;
+  padding: 0 14px !important;
+  border: 1px solid var(--cy-line) !important;
+  border-radius: 10px !important;
+  background: var(--cy-paper) !important;
+  color: var(--cy-text) !important;
+  font-family: inherit !important;
+  font-size: 15px !important;
+  line-height: 44px !important;
+  box-shadow: none !important;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+  -webkit-appearance: none;
+  appearance: none;
+}
+div.form.chat-bubble textarea {
+  height: auto !important;
+  min-height: 88px !important;
+  padding: 12px 14px !important;
+  line-height: 1.55 !important;
+  resize: vertical;
+}
+div.form.chat-bubble select:hover,
+div.form.chat-bubble input:hover,
+div.form.chat-bubble textarea:hover {
+  border-color: var(--cy-line-strong) !important;
+  background: var(--cy-surface) !important;
+}
+div.form.chat-bubble select:focus,
+div.form.chat-bubble input:focus,
+div.form.chat-bubble textarea:focus {
+  outline: none !important;
+  border-color: var(--cy-accent) !important;
+  background: var(--cy-surface) !important;
+  box-shadow: 0 0 0 3px var(--cy-ring) !important;
+}
+
+/* select 原生箭头在 46px 控件里偏小偏灰，换主色 chevron */
+div.form.chat-bubble select {
+  padding-right: 40px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23c0562b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 14px center !important;
+  background-size: 16px 16px !important;
+  cursor: pointer;
+}
+
+/* 提交按钮：与落地页主按钮同规格（46px / 600 / 10px 圆角） */
+div.form.chat-bubble button[type="submit"],
+div.form.chat-bubble button.button {
+  display: block;
+  width: 100% !important;
+  min-height: 46px !important;
+  height: 46px !important;
+  margin: 4px 0 0 !important;
+  padding: 0 18px !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: var(--cy-accent) !important; /* 覆盖行内 #E07E00 */
+  color: #fffdf8 !important;
+  font-family: inherit !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color 0.18s ease, transform 0.18s ease;
+}
+div.form.chat-bubble button[type="submit"]:hover,
+div.form.chat-bubble button.button:hover {
+  background: var(--cy-accent-strong) !important;
+}
+div.form.chat-bubble button[type="submit"]:active,
+div.form.chat-bubble button.button:active {
+  transform: translateY(1px);
+}
+div.form.chat-bubble button[type="submit"]:focus-visible,
+div.form.chat-bubble button.button:focus-visible {
+  outline: 2px solid var(--cy-accent);
+  outline-offset: 2px;
+}
+
+/* 错误态：Chatwoot 预置 <span class="error-message">无效字段</span>（默认
+   display:none，出错时由组件显示）。保留组件显隐逻辑，只换文案与颜色。 */
+div.form.chat-bubble .error-message {
+  margin: 6px 0 0 !important;
+  color: var(--cy-danger) !important;
+  font-size: 0 !important;
+  line-height: 1.5;
+}
+div.form.chat-bubble .error-message::after {
+  content: "请检查这一项";
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+/* 出错字段边框同步转红（组件用 inline display 切换，:has 反查；不匹配即失效） */
+div.form.chat-bubble form > div:has(.error-message[style*="display: block"]) select,
+div.form.chat-bubble form > div:has(.error-message[style*="display: block"]) input,
+div.form.chat-bubble form > div:has(.error-message[style*="display: block"]) textarea {
+  border-color: var(--cy-danger) !important;
+  background: var(--cy-surface) !important;
+}
+div.form.chat-bubble form > div:has(.error-message[style*="display: block"]) label {
+  color: var(--cy-danger) !important;
+}
+
+/* ══ 卡片（成功 / 失败卡） ══════════════════════════════════════════
+ * 现状问题：
+ *  1. 卡片没有卡片感——透明底、无边框、无内边距分层，标题/正文/按钮直接铺在气泡上；
+ *  2. 描述里的 "• a\n\n• b" 被 white-space:normal 折叠成一行（内容全挤在一起）；
+ *  3. 动作按钮是 40px 橙色描边，比正文还弱；
+ *  4. 卡片顶部有一个空 <img>（无 media_url 时仍渲染），撑出空白。
+ */
+div.card-message.chat-bubble {
+  display: block !important; /* Tailwind 的 chat-bubble 是 inline-block：宽度会缩到内容宽，右侧留白 */
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: 20px 20px 18px !important;
+  border: 1px solid var(--cy-line) !important;
+  border-radius: 16px !important;
+  background: var(--cy-surface) !important;
+  box-shadow: 0 10px 30px -24px rgba(83, 60, 40, 0.5) !important;
+  overflow: visible !important;
+  color: var(--cy-text) !important;
+}
+/* 卡片所在的两层容器都是 w-fit / flex:0 1 auto（宽度随内容收缩），
+   卡片要撑满会话宽度，得把这两层一起拉开。 */
+.chat-bubble-wrap:has(div.card-message),
+.space-y-2:has(div.card-message) {
+  width: 100% !important;
+}
+.space-y-2:has(div.card-message) {
+  flex: 1 1 auto !important;
+}
+/* 无 media_url 时 Chatwoot 仍渲染 <img src="">，会占一条空白 */
+div.card-message.chat-bubble > img:not([src]),
+div.card-message.chat-bubble > img[src=""] {
+  display: none !important;
+}
+div.card-message .card-body {
+  padding: 0 !important;
+}
+
+/* 标题：15px / 650，暖黑 */
+div.card-message .card-body h4 {
+  margin: 0 0 10px !important;
+  font-size: 15px !important;
+  line-height: 1.45 !important;
+  font-weight: 650 !important;
+  letter-spacing: 0.01em;
+  color: var(--cy-text) !important;
+}
+
+/* 描述：关键——pre-line 让投影里的 "\n\n" 真正换行，bullet 一条一行 */
+div.card-message .card-body p {
+  margin: 0 0 14px !important;
+  white-space: pre-line !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  color: var(--cy-muted) !important;
+}
+
+/* 动作按钮：与表单提交按钮同一规格，主色实底 */
+div.card-message .card-body button.action-button,
+div.card-message .card-body button {
+  width: 100% !important;
+  min-height: 44px !important;
+  height: 44px !important;
+  margin: 2px 0 0 !important;
+  padding: 0 16px !important;
+  border: 0 !important; /* 覆盖行内 border-color */
+  border-radius: 10px !important;
+  background: var(--cy-accent) !important; /* 覆盖行内 #fdfdfd + 橙字 */
+  color: #fffdf8 !important;
+  font-family: inherit !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color 0.18s ease, transform 0.18s ease;
+}
+div.card-message .card-body button.action-button:hover,
+div.card-message .card-body button:hover {
+  background: var(--cy-accent-strong) !important;
+  color: #fffdf8 !important;
+}
+div.card-message .card-body button.action-button:active,
+div.card-message .card-body button:active {
+  transform: translateY(1px);
+}
+
+/* 卡片之间、卡片与普通气泡之间留出节奏（默认紧贴） */
+.chat-bubble-wrap + .chat-bubble-wrap {
+  margin-top: 8px;
+}
+
+/* 连续 agent 消息每条都重复「澄元AI助手」，只留第一条 */
+.agent-message-wrap + .agent-message-wrap .agent-name {
+  display: none !important;
+}
+
+/* ══ Pre-chat 表单（访客看到的第一个表单） ═══════════════════════════
+   文案（英文引导语、默认区号）属于 Inbox 配置，CSS 改不了，见 runbook §5。 */
+/* Pre-chat 表单：默认顶对齐 + 全宽，在 620px 高度里显得头重脚轻 */
+form.formkit-form {
+  justify-content: center !important;
+  max-width: 460px;
+  margin-inline: auto;
+  padding: 20px 4px 40px !important;
+}
+/* Chatwoot 把字段名当 placeholder（"phoneNumber"），CSS 改不了文本，只能隐藏 */
+input[name="phoneNumber"]::placeholder {
+  color: transparent !important;
+}
+
+form.formkit-form .formkit-label {
+  color: var(--cy-muted) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em;
+}
+form.formkit-form .formkit-input,
+form.formkit-form .phone-input {
+  min-height: 46px;
+  border: 1px solid var(--cy-line) !important;
+  border-radius: 10px !important;
+  background: var(--cy-paper) !important;
+  color: var(--cy-text) !important;
+  font-size: 15px !important;
+}
+form.formkit-form .formkit-input:focus,
+form.formkit-form .phone-input:focus-within {
+  border-color: var(--cy-accent) !important;
+  box-shadow: 0 0 0 3px var(--cy-ring);
+}
+form.formkit-form > button {
+  min-height: 46px;
+  border-radius: 10px !important;
+  background: var(--cy-accent) !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+form.formkit-form > button:hover {
+  background: var(--cy-accent-strong) !important;
+}
