@@ -1,7 +1,23 @@
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 
+logger = logging.getLogger("ai_service_agent")
+
+
+CONVERSATION_STATUS_DDL = """
+CREATE TABLE conversation_status (
+    conversation_id TEXT PRIMARY KEY,
+    thread_id TEXT,
+    mode TEXT NOT NULL DEFAULT 'ai',
+    user_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_ai_execution_at TEXT,
+    completed_turns INTEGER NOT NULL DEFAULT 0,
+    last_completed_turn_id TEXT
+)
+"""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversation_status (
@@ -10,7 +26,9 @@ CREATE TABLE IF NOT EXISTS conversation_status (
     mode TEXT NOT NULL DEFAULT 'ai',
     user_id TEXT,
     created_at TEXT DEFAULT (datetime('now')),
-    last_ai_execution_at TEXT
+    last_ai_execution_at TEXT,
+    completed_turns INTEGER NOT NULL DEFAULT 0,
+    last_completed_turn_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS thread_cleanup_queue (
@@ -64,6 +82,11 @@ class ConversationStatusStore:
         row = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_status'"
         ).fetchone()
+        if self._has_leftover_rebuild_table():
+            self._recover_interrupted_rebuild(has_current=row is not None)
+            row = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_status'"
+            ).fetchone()
         if row is None:
             return
         columns = {
@@ -73,19 +96,72 @@ class ConversationStatusStore:
         thread_column = columns.get("thread_id")
         if thread_column is not None and bool(thread_column[3]):
             # SQLite 无法直接删除 NOT NULL；重建表以保留既有会话与 thread 映射。
-            self.conn.execute("ALTER TABLE conversation_status RENAME TO conversation_status_not_null_old")
+            self._rebuild_without_not_null()
+            columns = {
+                item[1]: item
+                for item in self.conn.execute("PRAGMA table_info(conversation_status)").fetchall()
+            }
+        if "last_ai_execution_at" not in columns:
+            self.conn.execute("ALTER TABLE conversation_status ADD COLUMN last_ai_execution_at TEXT")
+        if "completed_turns" not in columns:
             self.conn.execute(
-                """
-                CREATE TABLE conversation_status (
-                    conversation_id TEXT PRIMARY KEY,
-                    thread_id TEXT,
-                    mode TEXT NOT NULL DEFAULT 'ai',
-                    user_id TEXT,
-                    created_at TEXT DEFAULT (datetime('now')),
-                    last_ai_execution_at TEXT
-                )
-                """
+                "ALTER TABLE conversation_status ADD COLUMN completed_turns INTEGER NOT NULL DEFAULT 0"
             )
+        if "last_completed_turn_id" not in columns:
+            self.conn.execute(
+                "ALTER TABLE conversation_status ADD COLUMN last_completed_turn_id TEXT"
+            )
+
+    def _has_leftover_rebuild_table(self) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='conversation_status_not_null_old'"
+            ).fetchone()
+            is not None
+        )
+
+    def _recover_interrupted_rebuild(self, *, has_current: bool) -> None:
+        """收拾旧版本（重建未包事务）崩溃后留下的残留表。
+
+        旧表有数据而新表为空/不存在 = 数据只在旧表里，搬回来；否则丢弃残留。
+        """
+        leftover_rows = self.conn.execute(
+            "SELECT COUNT(*) FROM conversation_status_not_null_old"
+        ).fetchone()[0]
+        current_rows = 0
+        if has_current:
+            current_rows = self.conn.execute(
+                "SELECT COUNT(*) FROM conversation_status"
+            ).fetchone()[0]
+        if leftover_rows and not current_rows:
+            logger.warning(
+                "recovering conversation_status from interrupted migration: rows=%s",
+                leftover_rows,
+            )
+            self.conn.execute("DROP TABLE IF EXISTS conversation_status")
+            self.conn.execute(
+                "ALTER TABLE conversation_status_not_null_old RENAME TO conversation_status"
+            )
+        else:
+            logger.warning("dropping stale conversation_status_not_null_old")
+            self.conn.execute("DROP TABLE conversation_status_not_null_old")
+        self.conn.commit()
+
+    def _rebuild_without_not_null(self) -> None:
+        """重建 conversation_status 去掉 thread_id 的 NOT NULL。
+
+        整个重建放进一个显式事务：SQLite 的 DDL 默认自动提交，裸跑会出现
+        「新表已建、数据还在旧表」的窗口，此时进程崩溃会让下次启动读到空表、
+        静默丢掉全部会话映射。
+        """
+        self.conn.commit()  # 确保不落在隐式事务里
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                "ALTER TABLE conversation_status RENAME TO conversation_status_not_null_old"
+            )
+            self.conn.execute(CONVERSATION_STATUS_DDL)
             self.conn.execute(
                 "INSERT INTO conversation_status "
                 "(conversation_id, thread_id, mode, user_id, created_at) "
@@ -93,12 +169,10 @@ class ConversationStatusStore:
                 "FROM conversation_status_not_null_old"
             )
             self.conn.execute("DROP TABLE conversation_status_not_null_old")
-            columns = {
-                item[1]: item
-                for item in self.conn.execute("PRAGMA table_info(conversation_status)").fetchall()
-            }
-        if "last_ai_execution_at" not in columns:
-            self.conn.execute("ALTER TABLE conversation_status ADD COLUMN last_ai_execution_at TEXT")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def create_session(self, user_id: str) -> dict:
         conversation_id = str(uuid.uuid4())
@@ -178,6 +252,70 @@ class ConversationStatusStore:
             (_utc_now_iso(at), conversation_id, thread_id),
         )
         self.conn.commit()
+
+    def turn_state(self, conversation_id: str) -> dict:
+        row = self.conn.execute(
+            "SELECT completed_turns, last_completed_turn_id, last_ai_execution_at "
+            "FROM conversation_status WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            raise ConversationNotFound(conversation_id)
+        return {
+            "completed_turns": int(row[0] or 0),
+            "last_completed_turn_id": row[1],
+            "last_ai_execution_at": row[2],
+        }
+
+    def complete_turn(self, conversation_id: str, turn_id: str) -> bool:
+        """记一个已完成轮次；同一 turn_id 重复投递不重复计数（幂等）。
+
+        幂等窗口只有「上一条」：``A, B, A`` 会让 A 计两次。实际不可达——
+        AgentBot 在更早处按 ``message_id`` 早退，Widget 的 turn_id 是每请求新 uuid。
+        """
+        if not turn_id:
+            raise ValueError("turn_id is required")
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE conversation_status "
+                "SET completed_turns = completed_turns + 1, last_completed_turn_id = ? "
+                "WHERE conversation_id = ? "
+                "AND (last_completed_turn_id IS NULL OR last_completed_turn_id != ?)",
+                (turn_id, conversation_id, turn_id),
+            )
+        return cursor.rowcount == 1
+
+    def rotate_thread(
+        self,
+        conversation_id: str,
+        *,
+        expected_thread_id: str,
+        reason: str,
+        at: datetime | None = None,
+    ) -> str | None:
+        """同一事务内切换当前指针、清零轮次计数、把旧 thread 入清理队列。
+
+        指针已被他人改动时返回 ``None``，不做任何写入。
+        """
+        candidate = str(uuid.uuid4())
+        timestamp = _utc_now_iso(at)
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE conversation_status "
+                "SET thread_id = ?, completed_turns = 0, last_completed_turn_id = NULL, "
+                "last_ai_execution_at = ? "
+                "WHERE conversation_id = ? AND thread_id = ?",
+                (candidate, timestamp, conversation_id, expected_thread_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self.conn.execute(
+                "INSERT INTO thread_cleanup_queue "
+                "(thread_id, conversation_id, reason, queued_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(thread_id) DO NOTHING",
+                (expected_thread_id, conversation_id, reason, timestamp),
+            )
+        return candidate
 
     def clear_thread_pointer(
         self,

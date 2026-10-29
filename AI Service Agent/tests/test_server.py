@@ -1238,6 +1238,38 @@ def test_chat_simulate_approval_resumes_approve(tmp_path):
     assert approval["execution_status"] == "succeeded"
 
 
+def test_approval_turn_and_resume_do_not_increment_completed_turns(tmp_path):
+    """#150 AC：审批挂起轮与审批恢复轮都不计入 completed_turns。"""
+
+    def completed_turns() -> int:
+        conn = sqlite3.connect(db)
+        try:
+            return conn.execute(
+                "SELECT completed_turns FROM conversation_status WHERE conversation_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    db = str(tmp_path / "rotation-count.db")
+    client = TestClient(
+        create_app(db, model=ApprovalFlowFakeModel(responses=[]), simulate_approval=True)
+    )
+    session_id = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+
+    with client.stream(
+        "POST", "/chat", json={"session_id": session_id, "message": "给 ORD-PAID-1 申请退款"}
+    ) as r:
+        text1 = "".join(r.iter_text())
+    assert '"approval_required"' in text1
+    assert completed_turns() == 0  # 挂起不是完成轮次
+
+    with client.stream("POST", "/chat", json={"session_id": session_id, "message": "好的"}) as r:
+        text2 = "".join(r.iter_text())
+    assert '"done"' in text2
+    assert completed_turns() == 0  # 审批恢复轮也不计
+
+
 def test_approve_resume_persists_final_to_message_store(tmp_path):
     """D7：/approvals/{id}/approve 直接 ainvoke 后 diff 提取本轮新增 assistant 文本并落 Message Store。"""
     db = str(tmp_path / "d7.db")

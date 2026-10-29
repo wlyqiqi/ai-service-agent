@@ -77,6 +77,7 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 - `POST /sessions` 创建会话时**显式写入 `conversation_mode = "ai"`**，不依赖存储层隐式默认值；入口判断为两态：`mode == "human" ? 进入人工车道 : 进入 AI 路径`。
 - 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在连接级内存，仅在 `handoff_created` / `handoff_resolved` 事件发生时主动更新，不要求每条用户消息重新查库（见 `handoff-spec.md` §2）。
 - **Message Store 唯一真相源（2026-09-14 定案）**：会话 user / assistant 轮次以 `conversation_message` 表为权威；入口层（Conversation Runtime）每个 AI turn 先持久化用户消息、再从 Store 水合 `state.messages` 工作视图输入图，正常发送（发送前复检 `mode==ai`）后才持久化 assistant 回复；人工车道只写 Store。新 thread 使用有界近期上下文；`(conversation_id, id)` 复合索引服务会话内历史定位。工具 / Router 内部消息不入 Store（见 `handoff-spec.md` §5.2、`docs/decisions/2026-09-14-message-store-truth-source.md`）。
+- **轮换（#150）**：新 AI 轮开始前判定，`completed_turns >= 30` 或 `last_ai_execution_at` 超过 24 小时即轮换（OR）。有 pending Form Interrupt、审批执行缺口、awaiting/active handoff 时不轮换；探测能力缺失时 fail closed。轮换在同一事务里切换指针、清零计数、把旧 thread 入清理队列，随后 best-effort 删除旧 checkpoint（失败留队列，不影响本轮）。新 thread 只带 `PRESERVED_CONTEXT_KEYS` 白名单里的会话级状态，历史仍在 Message Store。后台 idle reaper 与周期调度属 #151，未实现。
 - **Checkpoint 清理**：Demo 仅提供离线、默认 dry-run 的 `python -m ai_service_agent.ops.thread_cleanup`；apply 前先清空当前指针并入队，删除只调用官方 `AsyncSqliteSaver.adelete_thread()`。pending interrupt、当前指针、awaiting/active handoff、未过期 approval 与 approved-but-not-terminal 执行均受保护。操作步骤见 `docs/ops/thread-checkpoint-cleanup.md`。
 - 会话管理：创建 / 续期 / 历史查询（`get_state` / `aget_state`）。
 - Store（用户记忆）：`InMemoryStore` 起步，命名空间 `("users", user_id)`，接口按 `BaseStore` 抽象。

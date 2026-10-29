@@ -1,7 +1,7 @@
 # Demo Thread 生命周期规格
 
 - 日期：2026-10-29
-- 状态：Demo 范围定稿，替代 Issue #148 原完整生命周期方案。#149 已实现懒创建、复用、有界 hydration、消息索引与离线清理；30 轮 / 24 小时轮换阈值、后台 reaper 与生产调度仍明确延后。
+- 状态：Demo 范围定稿，替代 Issue #148 原完整生命周期方案。已实现：#149 懒创建、复用、有界 hydration、消息索引与离线清理；#150 安全边界上的自动轮换（30 轮 / 24 小时、会话级计数跨代保留、best-effort 删除）。仍明确延后：#151 后台 idle reaper 与生产调度、Form Interrupt 的 24 小时自动过期、14 天最大年龄规则。
 - 关联：`architecture.md`、`handoff-spec.md`、`approval-spec.md`、`state-spec.md`、`mutation-form-interrupt-spec.md`
 - 环境基线：LangGraph 1.2.14、langgraph-checkpoint 4.2.0、langgraph-checkpoint-sqlite 3.1.1
 
@@ -112,6 +112,15 @@
 - The new thread hydrates only the current user message, at most the recent context allowed by the existing context policies, required authoritative business data, and externalized conversation-level counters.
 - The new thread must not copy the old checkpoint State or full message history.
 
+实现记录（#150）：
+
+- 判定纯函数 `harness/threads.decide_rotation`（`turn_limit` 优先于 `idle_timeout`）；保护判定单点 `harness/thread_guard.collect_blockers`，与离线清理共用。
+- 「会话级计数跨代保留」用**读旧 checkpoint 的 `context` + 白名单键注入新 thread 初始 state** 实现，不引入计数表、不改 clarify / fallback 节点。白名单见 `threads.PRESERVED_CONTEXT_KEYS`。
+- 探测能力（`interrupt_loader`）未注入时 **fail closed**：无法证明无挂起就不轮换。
+- 旧 thread 在轮换点**立即 best-effort 删除**；失败只 `retry_count` / `last_error` 记账，队列留待 #151 的调度器重试，不影响本轮用户请求。
+- 后台 idle reaper、`cleanup_once(now)` 运行时入口与周期调度属 #151，本切片不实现。
+- **idle 轮换的实际覆盖面比字面窄**：任何 checkpoint 中断都会钉住 thread，而 Form Interrupt 的 24 小时自动过期本切片未实现，所以「以 Form 中断收尾」的会话（mutation 流程的常见终态）永远不会因空闲而轮换。idle 轮换实际只对以纯聊天收尾的会话生效。
+
 ### Conversation-level concurrency
 
 - Use a ref-counted process-local lock keyed by `conversation_id`.
@@ -125,12 +134,12 @@
 - A completed turn is one persisted user request that reaches a terminal response with no pending resume task and whose final assistant message is accepted for persistence.
 - Clarification and fallback responses count as completed turns when they reach a terminal response.
 - Form Resume, approval resume, Handoff Resolve, duplicate webhook delivery, and duplicate completion callbacks do not increment the counter.
-- Idempotency uses `last_completed_turn_id`; AgentBot uses the Chatwoot message identity, while Widget uses a server-generated stable inbound turn identity.
+- Idempotency uses `last_completed_turn_id`; AgentBot uses the Chatwoot message identity, while Widget uses a server-generated **per-request** inbound turn identity (`chat:{uuid}`). The idempotency window is therefore the immediately preceding turn only, and a Widget client retry of the same message counts as a new turn; both are unreachable duplicates in practice (AgentBot early-returns on `message_id`, Widget ids are per request).
 - `completed_turns` resets when a new thread becomes current.
 
 ### Pending-task protection and expiry
 
-- Any valid checkpoint interrupt pins its thread.
+- Any valid checkpoint interrupt pins its thread. For rotation this includes an already-expired `approval_required` interrupt: deleting the thread would make the official expired-resume path unreachable, so rotation blocks until that resume runs (`collect_blockers(block_expired_approvals=True)`). Offline cleanup keeps the opposite rule — expired approvals are reclaimable.
 - Form Interrupt default protection window is 24 hours after the last AI execution. In the Demo, expiry may be implemented by resuming the pending form with official `Command(resume={"action":"cancel"})` under the conversation lock, then allowing cleanup. A late form callback must return expired/conflict and must not attach to a newer form.
 - Approval TTL reuses the existing Approval Service `expires_at` (default 30 minutes). Do not introduce a second 24-hour approval TTL.
 - An expired pending approval may be finalized through the existing official expired-resume path.

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import inspect
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, field
@@ -20,8 +19,8 @@ from typing import Awaitable, Callable
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from ai_service_agent.harness.graph import make_ai_graph
-from ai_service_agent.harness.approvals import APPROVAL_EXECUTION_TERMINAL_STATUSES
-from ai_service_agent.harness.session import ConversationStatusStore, parse_utc_timestamp
+from ai_service_agent.harness.session import ConversationStatusStore
+from ai_service_agent.harness.thread_guard import collect_blockers
 from ai_service_agent.testing import make_fake_model
 
 
@@ -206,102 +205,14 @@ class ThreadCleanupService:
         conversation_id: str,
         now: datetime,
     ) -> list[str]:
-        protections: list[str] = []
-        if self._has_active_handoff(conn, conversation_id):
-            protections.append("handoff_awaiting_or_active")
-        approvals = self._approval_records(conn, thread_id, conversation_id)
-        for record in approvals:
-            reason = self._approval_protection(record, now)
-            if reason:
-                protections.append(reason)
-
-        try:
-            loaded = self._interrupt_loader(thread_id)
-            interrupts = await loaded if inspect.isawaitable(loaded) else loaded
-        except Exception:
-            protections.append("checkpoint_inspection_failed")
-        else:
-            for value in interrupts:
-                reason = self._interrupt_protection(value, approvals, now)
-                if reason:
-                    protections.append(reason)
-        return protections
-
-    @staticmethod
-    def _has_active_handoff(conn: sqlite3.Connection, conversation_id: str) -> bool:
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM handoff_record WHERE conversation_id = ? "
-                "AND status IN ('awaiting_seat', 'active') LIMIT 1",
-                (conversation_id,),
-            ).fetchone()
-        except sqlite3.OperationalError:
-            return False
-        return row is not None
-
-    @staticmethod
-    def _approval_records(
-        conn: sqlite3.Connection, thread_id: str, conversation_id: str
-    ) -> list[dict]:
-        try:
-            columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(approval_record)")
-            }
-            execution_expr = (
-                "execution_status" if "execution_status" in columns else "'not_started'"
-            )
-            rows = conn.execute(
-                f"SELECT approval_id, status, expires_at, {execution_expr} "
-                "FROM approval_record WHERE thread_id = ? AND conversation_id = ?",
-                (thread_id, conversation_id),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            return []
-        return [
-            {
-                "approval_id": row[0],
-                "status": row[1],
-                "expires_at": row[2],
-                "execution_status": row[3],
-            }
-            for row in rows
-        ]
-
-    @staticmethod
-    def _approval_protection(record: dict, now: datetime) -> str | None:
-        status = record.get("status")
-        if status == "pending":
-            expires = parse_utc_timestamp(record.get("expires_at"))
-            if expires is None:
-                return "approval_expiry_invalid"
-            if now < expires:
-                return "approval_pending"
-        if (
-            status == "approved"
-            and record.get("execution_status")
-            not in APPROVAL_EXECUTION_TERMINAL_STATUSES
-        ):
-            return "approval_execution_incomplete"
-        return None
-
-    def _interrupt_protection(
-        self, value: object, approvals: list[dict], now: datetime
-    ) -> str | None:
-        if not isinstance(value, dict):
-            return "checkpoint_interrupt"
-        if value.get("type") != "approval_required":
-            return "checkpoint_interrupt"
-        approval_id = str(value.get("approval_id") or "")
-        record = next(
-            (row for row in approvals if row.get("approval_id") == approval_id),
-            None,
+        # 判定单点在 harness/thread_guard.py：轮换与清理必须同一套规则。
+        return await collect_blockers(
+            conn=conn,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            now=now,
+            interrupt_loader=self._interrupt_loader,
         )
-        if record is not None:
-            return self._approval_protection(record, now)
-        expires = parse_utc_timestamp(value.get("expires_at"))
-        if expires is None:
-            return "approval_interrupt_unexpired_or_unknown"
-        return "approval_pending" if now < expires else None
 
     def _vacuum(self) -> None:
         conn = sqlite3.connect(self.db_path)

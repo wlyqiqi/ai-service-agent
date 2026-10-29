@@ -122,6 +122,14 @@ def _contact_identifier(contact: dict[str, Any]) -> str | None:
     return identifier or None
 
 
+def _turn_identity(payload: dict[str, Any]) -> str:
+    """完成轮次的幂等键：Chatwoot 消息身份；非法 id 退回 uuid。"""
+    try:
+        return chatwoot_message_id(payload)
+    except (KeyError, TypeError, ValueError):
+        return str(uuid.uuid4())
+
+
 async def handle_agent_bot_message(
     payload: dict[str, Any],
     chatwoot: ChatwootClient,
@@ -134,6 +142,7 @@ async def handle_agent_bot_message(
     on_interrupt=None,
     thread_lock_factory=None,
     chatwoot_lock_factory=None,
+    conversation_lock_factory=None,
     callbacks_factory=None,
     on_handoff_created=None,
     on_approval_pending=None,
@@ -201,6 +210,7 @@ async def handle_agent_bot_message(
         orders_loader=orders_loader,
         on_interrupt=on_interrupt,
         thread_lock_factory=thread_lock_factory,
+        conversation_lock_factory=conversation_lock_factory,
         callbacks_factory=callbacks_factory,
         on_handoff_created=on_handoff_created,
         on_approval_pending=on_approval_pending,
@@ -224,6 +234,61 @@ async def _handle_locked_agent_bot_message(
     *,
     payload: dict[str, Any],
     chatwoot: ChatwootClient,
+    conversation: dict[str, Any],
+    cw_conv_id: int,
+    contact: dict[str, Any],
+    contact_id: Any,
+    content: str,
+    submitted_values: dict[str, Any] | None,
+    conversation_lock_factory=None,
+    **kwargs,
+) -> dict[str, Any] | None:
+    """会话身份解析 + 会话级串行化，然后进入 AI turn。
+
+    会话级锁（``conversation:{id}``）与 ``/chat`` 同 key，覆盖 thread 解析到图执行
+    完成——轮换与清理不得与在途执行并发（thread-lifecycle-spec §Conversation-level
+    concurrency）。
+    """
+    user_id = _contact_identifier(contact)
+    if user_id is None:
+        # 无 validated Identity：拒绝建会话 / 跑图，不走匿名 chatwoot-* 回退
+        return None
+
+    status = kwargs.get("status")
+    mapping = kwargs.get("mapping")
+    rec = mapping.find(cw_conv_id) if mapping is not None else None
+    if rec is not None:
+        conversation_id = rec["conversation_id"]
+    elif status is not None:
+        conversation_id = status.create_session(user_id)["conversation_id"]
+    else:
+        conversation_id = str(uuid.uuid4())
+    if rec is None and mapping is not None:
+        mapping.put(conversation_id, cw_conv_id, contact_id)
+
+    turn_kwargs = dict(
+        kwargs,
+        payload=payload,
+        chatwoot=chatwoot,
+        conversation=conversation,
+        cw_conv_id=cw_conv_id,
+        contact=contact,
+        contact_id=contact_id,
+        content=content,
+        submitted_values=submitted_values,
+        user_id=user_id,
+        resolved_conversation_id=conversation_id,
+    )
+    if conversation_lock_factory is None:
+        return await _handle_agent_bot_turn(**turn_kwargs)
+    async with await conversation_lock_factory(f"conversation:{conversation_id}"):
+        return await _handle_agent_bot_turn(**turn_kwargs)
+
+
+async def _handle_agent_bot_turn(
+    *,
+    payload: dict[str, Any],
+    chatwoot: ChatwootClient,
     graph=None,
     status=None,
     messages_store=None,
@@ -244,29 +309,15 @@ async def _handle_locked_agent_bot_message(
     contact_id: Any,
     content: str,
     submitted_values: dict[str, Any] | None,
+    user_id: str,
+    resolved_conversation_id: str,
 ) -> dict[str, Any] | None:
-    user_id = _contact_identifier(contact)
-    if user_id is None:
-        # 无 validated Identity：拒绝建会话 / 跑图，不走匿名 chatwoot-* 回退
-        return None
-
+    conversation_id = resolved_conversation_id
     if threads is None and status is not None:
         threads = ThreadLifecycleService(status)
-
-    rec = mapping.find(cw_conv_id) if mapping is not None else None
-    if rec is not None:
-        conversation_id = rec["conversation_id"]
-        thread_id = status.get_thread_id(conversation_id) if status is not None else conversation_id
-    else:
-        if status is not None:
-            session = status.create_session(user_id)
-            conversation_id = session["conversation_id"]
-            thread_id = None
-        else:
-            conversation_id = str(uuid.uuid4())
-            thread_id = conversation_id
-        if mapping is not None:
-            mapping.put(conversation_id, cw_conv_id, contact_id)
+    thread_id = (
+        status.get_thread_id(conversation_id) if status is not None else conversation_id
+    )
 
     mode = status.get_mode(conversation_id) if status is not None else "ai"
     if is_human_lane(mode):
@@ -367,11 +418,13 @@ async def _handle_locked_agent_bot_message(
                 "response": tip,
             }
 
+    context_seed: dict | None = None
     if status is not None:
         if messages_store is not None:
-            turn = threads.prepare_ai_turn(conversation_id, messages_store)
+            turn = await threads.prepare_ai_turn(conversation_id, messages_store)
             thread_id = turn.thread_id
             history = turn.history
+            context_seed = turn.context_seed
         else:
             allocation = threads.ensure_active_thread(conversation_id)
             thread_id = allocation.thread_id
@@ -395,6 +448,10 @@ async def _handle_locked_agent_bot_message(
     write_failure = WriteFailureCapture()
     form_rejected = False
     aborted_for_human = False
+    turn_completed = False
+    resume_turn = False
+    # 完成轮次计数幂等键：Chatwoot 消息身份（重复投递不重复计数）。
+    turn_id = _turn_identity(payload)
 
     if graph is None:
         final_text = (
@@ -405,6 +462,10 @@ async def _handle_locked_agent_bot_message(
     else:
         # Contact identifier is the session user_id (create_session(user_id) above).
         context = bind_graph_context_user_id(context, user_id)
+        turn_extra_state: dict[str, Any] = {"user_id": user_id}
+        if context_seed:
+            # 轮换后新 thread 的初始 state：只带白名单里的会话级状态。
+            turn_extra_state["context"] = context_seed
         config = {"configurable": {"thread_id": thread_id}}
         final_text = None
         resume_payload = None
@@ -458,6 +519,9 @@ async def _handle_locked_agent_bot_message(
                     # #48: legacy confirmation_required interactive retired; no special resume.
                     resume_payload = resolve_resume_payload(interrupt_value, content)
 
+        # resume 轮（Form Resume / 审批恢复）不是「完成轮次」。
+        resume_turn = resume_payload is not None
+
         async def _consume_graph_events(*, messages, resume):
             nonlocal final_text, mutation_form_data, approval_form_data, final_message_id
             nonlocal form_rejected
@@ -467,7 +531,7 @@ async def _handle_locked_agent_bot_message(
                 messages,
                 on_interrupt=on_interrupt,
                 resume_payload=resume,
-                extra_state={"user_id": user_id},
+                extra_state=turn_extra_state,
                 context=context,
             ):
                 write_success.observe(event)
@@ -515,7 +579,7 @@ async def _handle_locked_agent_bot_message(
                     [],
                     on_interrupt=on_interrupt,
                     resume_payload={"action": "cancel"},
-                    extra_state={"user_id": user_id},
+                    extra_state=turn_extra_state,
                     context=context,
                 ):
                     pass
@@ -621,12 +685,14 @@ async def _handle_locked_agent_bot_message(
             messages_store.append(
                 conversation_id, "assistant", final_text, message_id=final_message_id
             )
+        turn_completed = final_text is not None
     elif delivery.persist is not None and delivery.outbound:
         await chatwoot.send_bot_message(conversation_id, delivery.persist)
         if messages_store is not None:
             messages_store.append(
                 conversation_id, "assistant", delivery.persist, message_id=final_message_id
             )
+        turn_completed = messages_store is not None
 
     if mutation_form_data is not None:
         await send_mutation_form(chatwoot, conversation_id, mutation_form_data)
@@ -646,6 +712,10 @@ async def _handle_locked_agent_bot_message(
         if messages_store is not None:
             messages_store.append(conversation_id, "assistant", notice)
         final_text = notice
+
+    if turn_completed and not resume_turn and status is not None and threads is not None:
+        # 只有「已交付给客户的终态回复」才计入完成轮次；Form / 审批挂起不计。
+        threads.complete_turn(conversation_id, turn_id)
 
     return {
         "conversation_id": conversation_id,
