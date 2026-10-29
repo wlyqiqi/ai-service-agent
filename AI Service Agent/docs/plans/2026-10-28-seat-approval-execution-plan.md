@@ -363,3 +363,40 @@ pytest tests --ignore=tests/evals
 客户侧；此前「你好」完全无回应，现在正常回复。截图 `docs/ops/chatwoot/approval-{pending,still-pending}-notice.png`。
 
 **规格**：`approval-spec.md` §4.1 新增「挂起期间的客户可见性（硬要求）」。
+
+### 9.3 追加：HighRisk 澄清误报「无法确定要执行哪一项」（2026-10-29，用户报障）
+
+用户报障：退款之后再说「取消订单」，意图非常明确，却连续收到三条
+「您的请求涉及较高风险操作，但我无法确定具体要执行哪一项」。
+
+**根因是澄清标记没有互斥**（实测会话 283a8834 的 checkpoint）：
+
+`context` 里同时存在 `tier_clarify: True` 与 `clarify_missing: ["order_id"]`。
+
+1. 某轮模型没发 tool_call → `_no_tool_clarify` 写 `tier_clarify = True`
+2. 后续轮模型发了 `cancel_order`（无 order_id）→ 查候选为空 → `_clarify(state, ["order_id"])`
+3. **`_clarify` 没有清 `tier_clarify`**，而 clarify 节点优先渲染 tier → 把「没有可取消订单」
+   说成「无法确定你要做什么」
+
+顺带两个次生问题：
+
+- 无候选时 `_clarify` 不设 `cancellation_candidates`，clarify 节点判 `candidates is not None`
+  为假 → 退化成「请补充：订单号」，同样误导。
+- 「查过了没有可操作订单」是有效业务结果，却计入 `clarify_count`（上限 3）；客户再问一次
+  就会收到「我没有完全理解您的需求」。
+
+**修法**：
+
+| 位置 | 改动 |
+|---|---|
+| `high_risk_select._clarify` | pop `tier_clarify`；新增 `candidates` 参数，cancel 场景传 `[]` 表示"查过没单" |
+| `high_risk_select._tier_clarify` | 反向 pop `clarify_missing` / `cancellation_candidates` |
+| `clarify` 节点 | 缺参优先于档不匹配（防历史脏 context）；`cancellation_candidates` 场景不计入 `clarify_count` |
+| `high_risk_select.unique_high_risk_tool`（新） | 模型没发 tool_call 时的确定性兜底：本轮用户话唯一命中「取消/退款」就按该工具走，兜不住才澄清。带否定前瞻（`不要取消` / `先别退款` 不命中），命中两个（「取消订单再退款」）仍交给澄清 |
+
+**真机验证**（runtime 8766）：
+
+- u0034 旧会话（脏 context、`clarify_count` 已到 3）说「取消订单」→
+  「当前没有查询到可取消的已付款订单。您可以确认一下订单状态，或告诉我订单号，我再帮您查一次。」
+- u0100 新会话（有 paid 订单）说「取消订单」→ 正常 `form_required`，列出
+  ORD-2026-10099 / ORD-2026-10354 两笔候选

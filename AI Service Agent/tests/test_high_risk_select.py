@@ -177,3 +177,230 @@ def test_high_risk_select_uses_system_template_for_fake():
     )
     assert "高风险操作选择器" in model.seen_system
     assert "只输出 JSON" in model.seen_system
+
+
+# --- 澄清标记互斥（2026-10-29 实测：明确说「取消订单」却一直回「无法确定」） -----
+
+
+def test_clarify_clears_stale_tier_flag_when_missing_order_id():
+    """先无 tool_call（写 tier_clarify），后发 tool_call 缺单号：不得残留 tier 标记。"""
+    from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    registry = make_tool_registry(MagicMock())
+    model = ToolCallingFakeModel(
+        responses=[AIMessage(content='{"tool": "cancel_order", "args": {}}')],
+    )
+    repository = MagicMock()
+    repository.list_actionable_orders.return_value = []
+    node = make_high_risk_select_node(
+        model,
+        registry.for_risk_level("high_risk"),
+        registry,
+        order_repository=repository,
+    )
+
+    output = _select_result(
+        node(
+            {
+                "messages": [HumanMessage(content="取消订单")],
+                "user_id": "u1",
+                # 上一轮模型没发 tool_call 留下的标记
+                "context": {"tier_clarify": True},
+            }
+        )
+    )
+
+    ctx = output["context"]
+    assert "tier_clarify" not in ctx
+    assert ctx["clarify_missing"] == ["order_id"]
+    # 查过了没有可取消订单：要说「没有符合条件的订单」，不是「请补充订单号」
+    assert ctx["cancellation_candidates"] == []
+
+
+def test_tier_clarify_clears_stale_missing():
+    from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    registry = make_tool_registry(MagicMock())
+    model = ToolCallingFakeModel(responses=[AIMessage(content='{"tool": "", "args": {}}')])
+    node = make_high_risk_select_node(
+        model,
+        registry.for_risk_level("high_risk"),
+        registry,
+    )
+
+    output = _select_result(
+        node(
+            {
+                "messages": [HumanMessage(content="帮我处理一下")],
+                "context": {"clarify_missing": ["order_id"], "cancellation_candidates": []},
+            }
+        )
+    )
+
+    ctx = output["context"]
+    assert ctx["tier_clarify"] is True
+    assert "clarify_missing" not in ctx
+    assert "cancellation_candidates" not in ctx
+
+
+def test_clarify_node_prefers_missing_over_stale_tier_flag(monkeypatch):
+    """两个标记都残留时，按「没有可取消订单」说话，而不是「无法确定要执行哪一项」。"""
+    from ai_service_agent.graph.workflows import clarify as clarify_module
+    from ai_service_agent.graph.workflows.copy import clarify_no_candidates_text
+
+    monkeypatch.setattr(clarify_module, "get_stream_writer", lambda: (lambda _ev: None))
+    node = clarify_module.make_clarify_node()
+
+    output = node(
+        {
+            "context": {
+                "tier_clarify": True,
+                "clarify_missing": ["order_id"],
+                "cancellation_candidates": [],
+                "clarify_count": 0,
+            }
+        }
+    )
+
+    assert output["messages"][0].content == clarify_no_candidates_text()
+    assert "无法确定" not in output["messages"][0].content
+
+
+def test_no_tool_call_falls_back_to_unique_keyword():
+    """模型没发 tool_call（自己判断"这单不该执行"）时，按关键词兜底而不是澄清。"""
+    from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    registry = make_tool_registry(MagicMock())
+    model = ToolCallingFakeModel(responses=[AIMessage(content='{"tool": "", "args": {}}')])
+    repository = MagicMock()
+    repository.list_actionable_orders.return_value = []
+    node = make_high_risk_select_node(
+        model,
+        registry.for_risk_level("high_risk"),
+        registry,
+        order_repository=repository,
+    )
+
+    output = _select_result(
+        node({"messages": [HumanMessage(content="取消订单")], "user_id": "u1", "context": {}})
+    )
+
+    ctx = output["context"]
+    assert "tier_clarify" not in ctx
+    assert ctx["clarify_missing"] == ["order_id"]
+    assert ctx["cancellation_candidates"] == []
+
+
+def test_ambiguous_keywords_still_clarify():
+    """一句话同时点了取消和退款，仍交给澄清（不猜）。"""
+    from ai_service_agent.graph.workflows.high_risk_select import make_high_risk_select_node
+    from ai_service_agent.testing import ToolCallingFakeModel
+
+    registry = make_tool_registry(MagicMock())
+    model = ToolCallingFakeModel(responses=[AIMessage(content='{"tool": "", "args": {}}')])
+    node = make_high_risk_select_node(
+        model,
+        registry.for_risk_level("high_risk"),
+        registry,
+        order_repository=MagicMock(),
+    )
+
+    output = _select_result(
+        node(
+            {
+                "messages": [HumanMessage(content="帮我取消订单然后退款")],
+                "user_id": "u1",
+                "context": {},
+            }
+        )
+    )
+
+    assert output["context"]["tier_clarify"] is True
+
+
+def test_negated_keyword_does_not_force_a_tool():
+    from ai_service_agent.graph.workflows.high_risk_select import unique_high_risk_tool
+
+    assert unique_high_risk_tool("不要取消订单", ["cancel_order"]) is None
+    assert unique_high_risk_tool("先别退款", ["refund_apply"]) is None
+    assert unique_high_risk_tool("取消订单", ["cancel_order"]) == "cancel_order"
+    assert unique_high_risk_tool("我要退个款", ["refund_apply"]) == "refund_apply"
+    # 工具不在本档允许集合里时不得兜底
+    assert unique_high_risk_tool("取消订单", ["refund_apply"]) is None
+
+
+def test_no_candidates_clarify_does_not_burn_clarify_budget(monkeypatch):
+    """「没有可取消的已付款订单」是有效结果，不该被轮次上限换成"我没理解"。"""
+    from ai_service_agent.graph.workflows import clarify as clarify_module
+    from ai_service_agent.graph.workflows.copy import clarify_no_candidates_text
+
+    monkeypatch.setattr(clarify_module, "get_stream_writer", lambda: (lambda _ev: None))
+    node = clarify_module.make_clarify_node()
+
+    output = node(
+        {
+            "context": {
+                "clarify_missing": ["order_id"],
+                "cancellation_candidates": [],
+                "clarify_count": 3,  # 已经到上限
+            }
+        }
+    )
+
+    assert output["messages"][0].content == clarify_no_candidates_text()
+    assert output["execution_status"] == "clarifying"
+    assert output["context"]["clarify_count"] == 0
+
+
+def test_missing_arg_clarify_still_counts_toward_limit(monkeypatch):
+    """真正"缺参数"的澄清仍要计入轮次，否则会无限追问。"""
+    from ai_service_agent.graph.workflows import clarify as clarify_module
+    from ai_service_agent.graph.workflows.copy import clarify_missing_text
+
+    monkeypatch.setattr(clarify_module, "get_stream_writer", lambda: (lambda _ev: None))
+    node = clarify_module.make_clarify_node()
+
+    output = node({"context": {"clarify_missing": ["order_id"], "clarify_count": 1}})
+
+    assert output["messages"][0].content == clarify_missing_text(["order_id"])
+    assert output["context"]["clarify_count"] == 2
+
+
+def test_no_candidates_clarify_does_not_burn_clarify_budget(monkeypatch):
+    """「没有可取消的已付款订单」是有效结果，不该被轮次上限换成"我没理解"。"""
+    from ai_service_agent.graph.workflows import clarify as clarify_module
+    from ai_service_agent.graph.workflows.copy import clarify_no_candidates_text
+
+    monkeypatch.setattr(clarify_module, "get_stream_writer", lambda: (lambda _ev: None))
+    node = clarify_module.make_clarify_node()
+
+    output = node(
+        {
+            "context": {
+                "clarify_missing": ["order_id"],
+                "cancellation_candidates": [],
+                "clarify_count": 3,  # 已经到上限
+            }
+        }
+    )
+
+    assert output["messages"][0].content == clarify_no_candidates_text()
+    assert output["execution_status"] == "clarifying"
+    assert output["context"]["clarify_count"] == 0
+
+
+def test_missing_arg_clarify_still_counts_toward_limit(monkeypatch):
+    """真正"缺参数"的澄清仍要计入轮次，否则会无限追问。"""
+    from ai_service_agent.graph.workflows import clarify as clarify_module
+    from ai_service_agent.graph.workflows.copy import clarify_missing_text
+
+    monkeypatch.setattr(clarify_module, "get_stream_writer", lambda: (lambda _ev: None))
+    node = clarify_module.make_clarify_node()
+
+    output = node({"context": {"clarify_missing": ["order_id"], "clarify_count": 1}})
+
+    assert output["messages"][0].content == clarify_missing_text(["order_id"])
+    assert output["context"]["clarify_count"] == 2

@@ -30,22 +30,28 @@ from ai_service_agent.graph.workflows.copy import (
 def make_clarify_node() -> Callable[[dict], dict]:
     def clarify(state: dict) -> dict:
         ctx = state.get("context", {})
+        missing = ctx.get("clarify_missing") or []
+        candidates = ctx.get("cancellation_candidates")
+        is_cancel_selection = candidates is not None and missing == ["order_id"]
+        # 「查过了，没有可操作订单 / 有多笔可选」是有效业务结果，不是"没听懂"：
+        # 不该累加澄清轮次，也不该被轮次上限换成"我没理解您的需求"。
+        counts_toward_limit = not is_cancel_selection
+
         # 跨 route_intent / target_graph 的清零在 Policy Gate（进子图前）。
         count = int(ctx.get("clarify_count", 0))
         max_turns = get_settings().clarify_max_turns
-        if count >= max_turns:
+        if counts_toward_limit and count >= max_turns:
             return {
                 "messages": [AIMessage(content=clarify_fallback_text())],
                 "context": {**ctx, "clarify_count": count + 1},
                 "execution_status": "completed",
             }
-        if ctx.get("tier_clarify"):
+        # 缺参优先于档不匹配：两个标记都残留时（历史脏 context），客户已经说清楚
+        # 要做什么了，此时再回「无法确定要执行哪一项」等于没听懂（实测 2026-10-29）。
+        if ctx.get("tier_clarify") and not missing:
             data = {"missing": [], "reason": "tier_mismatch"}
             text = clarify_tier_text()
         else:
-            missing = ctx.get("clarify_missing") or []
-            candidates = ctx.get("cancellation_candidates")
-            is_cancel_selection = candidates is not None and missing == ["order_id"]
             data = {"missing": missing}
             if is_cancel_selection:
                 data["candidates"] = candidates
@@ -58,7 +64,10 @@ def make_clarify_node() -> Callable[[dict], dict]:
         get_stream_writer()({"type": "clarification_required", "data": data})
         return {
             "messages": [AIMessage(content=text)],
-            "context": {**ctx, "clarify_count": count + 1},
+            "context": {
+                **ctx,
+                "clarify_count": count + 1 if counts_toward_limit else 0,
+            },
             "execution_status": "clarifying",
         }
 
