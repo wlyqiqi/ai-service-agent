@@ -120,3 +120,51 @@ Copy-Item -LiteralPath $backup -Destination $db -Force
 ```
 
 恢复后再次执行 `PRAGMA integrity_check`，确认服务可用后再开放流量。
+
+## 8. 运行时 reaper（#151）
+
+第 1–7 节是**离线**流程。服务正常运行时由 FastAPI lifespan 里的 `ThreadReaper.cleanup_once`
+自动跑同一套引擎，**不需要也不应该**再手工执行本 runbook 的 apply。
+
+### 开启
+
+```bash
+# .env
+THREAD_REAPER_INTERVAL_SECONDS=1800   # 30 分钟；0 = 关闭（默认）
+THREAD_REAPER_BATCH_SIZE=50           # 每轮最多处理多少条候选
+```
+
+默认关闭是**刻意**的：`create_app()` 被 1200+ 个 TestClient 用例调用，开着会让每个用例
+都起一个后台删除任务。测试里 `tests/conftest.py` 也会把该变量钉成 `0`。
+
+### 日志
+
+```
+thread reaper enabled: interval=1800s batch=50 single-worker only
+thread reaper pass: mode=apply candidates=12 deleted=10 protected=2 failed=0
+thread reap blocked: conversation=... thread=... blockers=['blocked_by_form']
+thread reap delete failed (kept in queue): thread=... error=...
+thread reaper stopped
+```
+
+- `protected` 不是失败，不推进 `retry_count`；`blocked_by_form` 表示会话停在 Form Interrupt 上。
+- 删除失败的 thread 留在 `thread_cleanup_queue`，按 `next_retry_at`（30m → 1h → 2h → 4h 封顶）重试。
+
+### 如何确认它没在动人工会话
+
+```sql
+-- 候选里永远不会出现 human 会话；这条查询应恒为 0
+SELECT COUNT(*) FROM conversation_status
+WHERE thread_id IS NOT NULL AND mode = 'human'
+  AND COALESCE(last_ai_execution_at, created_at) < datetime('now', '-24 hours');
+```
+
+`idle_conversations(..., exclude_human=True)` 是默认值，CLI 也继承——**离线清理同样不再回收人工会话**。
+
+### 已知缺口
+
+- **Form Interrupt 永不自动过期**（24h TTL 属 #155）。以 Form 中断收尾的会话会被
+  `blocked_by_form` 永久钉住，reaper 每轮都会跳过它；这是设计取舍，不是 bug。
+- 只支持**单 worker**。`main.py` 把 app 对象传给 `uvicorn.run`，`--workers` 本就不生效；
+  不要改成 `--workers N` 后仍开 reaper（没有跨进程租约）。
+- lifespan **永不 VACUUM**：VACUUM 需要独占，只能在停机后的离线流程里做（见第 5 节）。
