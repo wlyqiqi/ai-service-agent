@@ -384,3 +384,169 @@ def test_chatwoot_seat_approve_while_human_mode_no_outbound(tmp_path):
         call for call in cw.send_bot_message.await_args_list if not call.kwargs.get("private")
     ]
     assert public_messages == []
+
+
+# --- Seam 5: 审批挂起期间客户侧不能静默 -------------------------------------
+#
+# 实测缺陷（2026-10-29，会话 283a8834）：客户提交退款后图停在 approval_pause，
+# 审批卡只发给坐席（private=True），客户侧一条消息都没有；后续「?」「你好」
+# 命中 approval_dispatch == "pending" 直接 return None —— 客户以为机器人死了，
+# 最后只能去点转人工。
+
+
+def _pending_interrupt_value(*, minutes: int = 27) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    return {
+        "type": "approval_required",
+        "approval_id": "c8b1de48-ab26-449c-883c-055c93d8e17f",
+        "summary": "退款申请 ORD-2026-10034｜退款金额 397.56",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(),
+        "x_approval": {
+            "facts": {
+                "tool": "refund_apply",
+                "action_label": "退款申请",
+                "order_id": "ORD-2026-10034",
+                "amount": 397.56,
+                "currency": "CNY",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_still_answers_customer(tmp_path):
+    """挂起期间客户再发消息必须有人回，且落 Message Store。"""
+    from ai_service_agent.harness.agent_bot import handle_agent_bot_message
+
+    db = str(tmp_path / "pending-reply.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    conv_id = status.create_session("u1")["conversation_id"]
+    mapping = ChatwootMappingStore(conn)
+    mapping.put(conv_id, 901, contact_id=1)
+    messages = MessageStore(conn)
+
+    interrupt_value = _pending_interrupt_value()
+    graph = SimpleNamespace(
+        checkpointer=object(),
+        aget_state=AsyncMock(
+            return_value=SimpleNamespace(interrupts=[SimpleNamespace(value=interrupt_value)])
+        ),
+    )
+    chatwoot = AsyncMock()
+
+    result = await handle_agent_bot_message(
+        {
+            "event": "message_created",
+            "id": "9001",
+            "message_type": "incoming",
+            "content_type": "text",
+            "content": "你好",
+            "conversation": {"id": 901},
+            "contact": {"id": 1, "identifier": "u1", "name": "customer"},
+        },
+        chatwoot,
+        graph=graph,
+        status=status,
+        messages_store=messages,
+        mapping=mapping,
+    )
+
+    assert result is not None, "挂起期间不能 return None（客户侧会完全静默）"
+    text = result["response"]
+    assert text and "审核中" in text
+    assert "退款申请" in text
+    chatwoot.send_bot_message.assert_awaited_once()
+    assert messages.list(conv_id)[-1]["content"] == text
+    conn.close()
+
+
+def test_pending_notice_copy_first_and_follow_up():
+    """首次挂起说「已受理」，后续消息说「还在审核」。"""
+    from ai_service_agent.harness.agent_bot import _approval_wait_notice
+
+    value = _pending_interrupt_value(minutes=27)
+    first = _approval_wait_notice(value, first=True)
+    assert "已收到您的退款申请" in first
+    assert "ORD-2026-10034" in first and "¥397.56" in first
+    assert "分钟内出结果" in first
+
+    later = _approval_wait_notice(value, first=False)
+    assert "还在审核中" in later
+    assert "c8b1de4" in later
+
+
+def test_pending_notice_survives_missing_facts():
+    """事件 data 只有 summary（老载荷 / 无 x_approval）也不能崩。"""
+    from ai_service_agent.harness.agent_bot import _approval_wait_notice
+
+    value = {"type": "approval_required", "approval_id": "A-1", "summary": "退款申请"}
+    assert "审核中" in _approval_wait_notice(value, first=True)
+    assert "审核中" in _approval_wait_notice(value, first=False)
+    assert "审核中" in _approval_wait_notice(None, first=True)
+
+
+def test_minutes_left_never_promises_a_deadline_for_bad_input():
+    from ai_service_agent.harness.agent_bot import _approval_minutes_left
+
+    assert _approval_minutes_left(None) is None
+    assert _approval_minutes_left("not-a-time") is None
+    assert _approval_minutes_left("2000-01-01T00:00:00+00:00") is None
+
+
+@pytest.mark.asyncio
+async def test_first_approval_interrupt_tells_customer(monkeypatch, tmp_path):
+    """图首次停在 approval_pause 时，客户必须收到「已受理」——原来这条路径完全静默。"""
+    from ai_service_agent.harness import agent_bot as agent_bot_module
+
+    async def fake_event_stream(graph, config, messages, **kwargs):
+        yield {
+            "type": "approval_required",
+            "data": {
+                "approval_id": "A-9",
+                "summary": "退款申请 ORD-2026-10034｜退款金额 397.56",
+                "expires_at": "2099-01-01T00:00:00+00:00",
+            },
+        }
+        yield {"type": "done", "data": {"final": None, "message_id": None}}
+
+    monkeypatch.setattr(agent_bot_module, "event_stream", fake_event_stream)
+
+    db = str(tmp_path / "first-interrupt.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    conv_id = status.create_session("u1")["conversation_id"]
+    mapping = ChatwootMappingStore(conn)
+    mapping.put(conv_id, 902, contact_id=1)
+    messages = MessageStore(conn)
+
+    # project() 的返回值：库里的完整载荷（含 facts），文案要靠它写出订单号与金额
+    on_approval_pending = AsyncMock(return_value=_pending_interrupt_value())
+    chatwoot = AsyncMock()
+
+    result = await agent_bot_module.handle_agent_bot_message(
+        {
+            "event": "message_created",
+            "id": "9002",
+            "message_type": "incoming",
+            "content_type": "text",
+            "content": "ORD-2026-10034",
+            "conversation": {"id": 902},
+            "contact": {"id": 1, "identifier": "u1", "name": "customer"},
+        },
+        chatwoot,
+        graph=SimpleNamespace(checkpointer=None),
+        status=status,
+        messages_store=messages,
+        mapping=mapping,
+        on_approval_pending=on_approval_pending,
+    )
+
+    on_approval_pending.assert_awaited_once()
+    text = result["response"]
+    assert "已收到您的退款申请" in text
+    assert "ORD-2026-10034" in text and "¥397.56" in text
+    chatwoot.send_bot_message.assert_awaited_once()
+    assert messages.list(conv_id)[-1]["content"] == text
+    conn.close()
