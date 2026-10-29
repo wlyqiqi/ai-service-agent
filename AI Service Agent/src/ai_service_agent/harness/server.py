@@ -6,9 +6,11 @@ import logging
 import os
 import sqlite3
 import uuid
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,6 +103,7 @@ from ai_service_agent.harness.threads import (
     ThreadResumeConflict,
 )
 from ai_service_agent.harness.thread_probes import sqlite_lifecycle_probes
+from ai_service_agent.harness.thread_reaper import ThreadReaper
 from ai_service_agent.testing import make_fake_model
 
 logger = logging.getLogger("ai_service_agent")
@@ -264,6 +267,7 @@ def create_app(
     approval_link_base_url: str | None = None,
     approval_link_secret: str | None = None,
     approval_link_cors_origins: str | None = None,
+    thread_reaper_interval_seconds: int | None = None,
 ):
     """FastAPI 只做 Transport；业务编排留在 LangGraph（AGENTS.md §4）。
 
@@ -332,7 +336,51 @@ def create_app(
             user_id=user_id or "",
         )
 
-    app = FastAPI()
+    reaper_interval = (
+        settings.thread_reaper_interval_seconds
+        if thread_reaper_interval_seconds is None
+        else thread_reaper_interval_seconds
+    )
+
+    def _build_reaper() -> ThreadReaper:
+        # 探测能力复用 #150 的 thread_probes（同一套官方 API 调用）。
+        probes = sqlite_lifecycle_probes(db_path)
+        return ThreadReaper(
+            status=status,
+            db_path=db_path,
+            lock_factory=_thread_lock,
+            interrupt_loader=probes["interrupt_loader"],
+            delete_thread=probes["delete_thread"],
+        )
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        task: asyncio.Task | None = None
+        if reaper_interval > 0:
+            logger.info(
+                "thread reaper enabled: interval=%ss batch=%s single-worker only",
+                reaper_interval,
+                settings.thread_reaper_batch_size,
+            )
+            task = asyncio.create_task(
+                _run_thread_reaper(
+                    _build_reaper(),
+                    interval_seconds=reaper_interval,
+                    batch_size=settings.thread_reaper_batch_size,
+                )
+            )
+        else:
+            logger.info("thread reaper disabled (THREAD_REAPER_INTERVAL_SECONDS=0)")
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                logger.info("thread reaper stopped")
+
+    app = FastAPI(lifespan=_lifespan)
 
     # 坐席端注入脚本（docs/ops/chatwoot/seat-approval.js）从 Chatwoot 页面 fetch 决策端点，
     # 属跨源请求，必须放行。只放行 POST/OPTIONS 且只针对配置的 origin（默认 Chatwoot 自身）。
@@ -1611,3 +1659,25 @@ async def _wrap(events):
     else:
         for e in events:
             yield e
+
+
+async def _run_thread_reaper(
+    reaper,
+    *,
+    interval_seconds: float,
+    batch_size: int = 50,
+    clock: Callable[[], datetime] | None = None,
+) -> None:
+    """周期性调用 ``cleanup_once``；``CancelledError`` 必须原样抛回，否则 shutdown 挂住。"""
+    now = clock or (lambda: datetime.now(timezone.utc))
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            report = await reaper.cleanup_once(now=now(), batch_size=batch_size)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 一轮失败不能杀死循环，否则一次瞬时错误就永久停摆。
+            logger.exception("thread reaper pass failed")
+            continue
+        logger.info("thread reaper pass: %s", report.summary())

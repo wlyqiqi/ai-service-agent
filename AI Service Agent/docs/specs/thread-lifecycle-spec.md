@@ -1,7 +1,7 @@
 # Demo Thread 生命周期规格
 
 - 日期：2026-10-29
-- 状态：Demo 范围定稿，替代 Issue #148 原完整生命周期方案。已实现：#149 懒创建、复用、有界 hydration、消息索引与离线清理；#150 安全边界上的自动轮换（30 轮 / 24 小时、会话级计数跨代保留、best-effort 删除）。仍明确延后：#151 后台 idle reaper 与生产调度、Form Interrupt 的 24 小时自动过期、14 天最大年龄规则。
+- 状态：Demo 范围定稿。#149 懒创建 / 复用 / 有界 hydration / 消息索引 / 离线清理、#150 安全边界轮换、#151 运行时 idle reaper（共享引擎 + 双锁 + 退避重试 + lifespan 调度）均已实现。仍明确延后：Form Interrupt 的 24 小时自动过期（尚未开单）、14 天最大年龄规则、多 worker 租约。
 - 关联：`architecture.md`、`handoff-spec.md`、`approval-spec.md`、`state-spec.md`、`mutation-form-interrupt-spec.md`
 - 环境基线：LangGraph 1.2.14、langgraph-checkpoint 4.2.0、langgraph-checkpoint-sqlite 3.1.1
 
@@ -117,8 +117,19 @@
 - 判定纯函数 `harness/threads.decide_rotation`（`turn_limit` 优先于 `idle_timeout`）；保护判定单点 `harness/thread_guard.collect_blockers`，与离线清理共用。
 - 「会话级计数跨代保留」用**读旧 checkpoint 的 `context` + 白名单键注入新 thread 初始 state** 实现，不引入计数表、不改 clarify / fallback 节点。白名单见 `threads.PRESERVED_CONTEXT_KEYS`。
 - 探测能力（`interrupt_loader`）未注入时 **fail closed**：无法证明无挂起就不轮换。
-- 旧 thread 在轮换点**立即 best-effort 删除**；失败只 `retry_count` / `last_error` 记账，队列留待 #151 的调度器重试，不影响本轮用户请求。
-- 后台 idle reaper、`cleanup_once(now)` 运行时入口与周期调度属 #151，本切片不实现。
+- 旧 thread 在轮换点**立即 best-effort 删除**；失败只 `retry_count` / `last_error` / `next_retry_at` 记账，由 #151 的 reaper 按指数退避重试。
+- 运行时 reaper 与离线 CLI 共用 `harness/thread_reaper.py`；CLI 保留 dry-run / `--vacuum`，lifespan 永不 VACUUM。
+
+### Background cleanup (#151)
+
+- `cleanup_once(now, apply, batch_size)` is the single maintenance entry point; the offline CLI and the FastAPI lifespan both delegate to it.
+- Candidates are conversations whose `last_ai_execution_at` is at least 24 hours old **and whose mode is not `human`**, plus rows already in `thread_cleanup_queue` whose `next_retry_at` has passed.
+- Per candidate the reaper acquires `conversation:{conversation_id}` and then the thread lock keyed by the **raw `thread_id`** — the same keys used by `/chat`, AgentBot, `/actions/confirm`, handoff resolve, seat takeover and the seat approval `decide()` endpoint.
+- After both locks are held it re-reads the conversation pointer, re-verifies the idle predicate (`is_idle_candidate`, so a conversation that became active between scan and lock is skipped as `no_longer_idle`), and re-runs `collect_blockers`; the pre-lock snapshot is never used for the final decision.
+- Pointer clearing and queue insertion share one SQLite transaction; deletion calls only `AsyncSqliteSaver.adelete_thread()`.
+- Failed deletions are retried with exponential backoff (30 min → 1 h → 2 h → 4 h cap) recorded in `next_retry_at`. A protected candidate is **not** a failure and does not advance the retry counter.
+- Form Interrupts pin their thread indefinitely: their 24-hour TTL is not implemented yet (no tracking issue opened), so a conversation that ended on a Form Interrupt is never reclaimed by this stage. Reports label it `blocked_by_form`.
+- The scheduler runs in a single FastAPI lifespan task, is disabled by default (`THREAD_REAPER_INTERVAL_SECONDS=0`), and only supports one worker. `main.py` passes an app object to `uvicorn.run`, so `--workers` cannot take effect anyway.
 - **idle 轮换的实际覆盖面比字面窄**：任何 checkpoint 中断都会钉住 thread，而 Form Interrupt 的 24 小时自动过期本切片未实现，所以「以 Form 中断收尾」的会话（mutation 流程的常见终态）永远不会因空闲而轮换。idle 轮换实际只对以纯聊天收尾的会话生效。
 
 ### Conversation-level concurrency
@@ -152,10 +163,11 @@
 - A single `cleanup_once(now, batch_size)` behavior is the testable cleanup seam.
 - The FastAPI lifespan runner invokes it every 30-60 minutes in single-worker mode and cancels it on shutdown.
 - Cleanup scans conversations idle beyond 24 hours and pending entries in `thread_cleanup_queue`.
-- Before queueing or deleting, it acquires the conversation lock and re-reads the current pointer, in-flight state, checkpoint interrupts, approvals, and handoffs.
+- Before queueing or deleting, it acquires the conversation lock and re-reads the current pointer, re-verifies the idle predicate, checkpoint interrupts, approvals, and handoffs.
+- Queue rows get a reserved share of each batch (half when idle candidates exist): permanently protected idle conversations (`blocked_by_form`) never leave the idle set and would otherwise fill the batch and starve the queue forever.
 - For an idle conversation with no pending work, cleanup clears the current thread pointer and enqueues the old thread in the same SQLite transaction.
 - Cleanup calls `adelete_thread()` only for threads no longer referenced by the conversation and with no valid pending task.
-- On successful deletion, the queue row is removed. On failure, `retry_count` and `last_error` are updated and the row remains for retry.
+- On successful deletion, the queue row is removed. On failure, `retry_count`, `last_error` and `next_retry_at` are updated and the row remains for retry.
 - Queue failures do not block creation of a new thread.
 - Thread deletion must not delete conversation messages, Store data, approvals, handoffs, Chatwoot mappings, or users.
 

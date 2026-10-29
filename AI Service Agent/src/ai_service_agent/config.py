@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     db_path: str = "data/ai_service.db"
     # 模拟电商库（order_lookup 等 read 工具的真实数据源替代品；工具对外接口不变）
     mock_ecommerce_db_path: str = "data/mock_ecommerce.db"
+    # #151 后台 idle reaper：0 = 关闭（默认）。生产显式设 1800（30 分钟）。
+    # 默认关闭是为了不让 TestClient 用例被动启动后台删除任务。
+    thread_reaper_interval_seconds: int = Field(
+        default=0, ge=0, validation_alias="THREAD_REAPER_INTERVAL_SECONDS"
+    )
+    thread_reaper_batch_size: int = Field(
+        default=50, ge=1, validation_alias="THREAD_REAPER_BATCH_SIZE"
+    )
     fake_model: bool = False
     jev_enabled: bool = Field(default=False, validation_alias="JEV_ENABLED")
     jev_api_key: str | None = Field(default=None, validation_alias="TYPESAFE_API_KEY")

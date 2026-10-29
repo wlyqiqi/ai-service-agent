@@ -10,7 +10,7 @@ from ai_service_agent.harness.auth import UserStore
 from ai_service_agent.harness.chatwoot import ChatwootMappingStore
 from ai_service_agent.harness.handoff import HandoffService
 from ai_service_agent.harness.messages import MessageStore
-from ai_service_agent.harness.session import ConversationStatusStore
+from ai_service_agent.harness.session import ConversationStatusStore, retry_backoff
 from ai_service_agent.ops.thread_cleanup import ThreadCleanupService
 
 
@@ -281,6 +281,105 @@ async def test_vacuum_rehearsal_reduces_copy_and_preserves_protected_thread(tmp_
     assert protected_thread in report.protected
     assert _count(db, "checkpoints", "thread_id = ?", (protected_thread,)) == 20
     assert after_size < before_size
+
+
+# --- #151：队列退避 ---------------------------------------------------------
+
+
+def test_retry_backoff_doubles_then_caps():
+    assert retry_backoff(1) == timedelta(minutes=30)
+    assert retry_backoff(2) == timedelta(hours=1)
+    assert retry_backoff(3) == timedelta(hours=2)
+    assert retry_backoff(4) == timedelta(hours=4)
+    assert retry_backoff(9) == timedelta(hours=4)
+
+
+def test_record_cleanup_failure_sets_next_retry_at(tmp_path):
+    db = str(tmp_path / "backoff.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    now = datetime.now(timezone.utc)
+    status.enqueue_thread("t1", "c1", "idle_timeout", at=now)
+
+    status.record_cleanup_failure("t1", "disk busy", at=now)
+
+    row = status.list_cleanup_queue()[0]
+    assert row["retry_count"] == 1
+    assert row["last_error"] == "disk busy"
+    assert row["next_retry_at"] == (now + timedelta(minutes=30)).isoformat()
+
+    status.record_cleanup_failure("t1", "disk busy", at=now)
+    row = status.list_cleanup_queue()[0]
+    assert row["retry_count"] == 2
+    assert row["next_retry_at"] == (now + timedelta(hours=1)).isoformat()
+    conn.close()
+
+
+def test_list_cleanup_queue_respects_next_retry_at(tmp_path):
+    db = str(tmp_path / "backoff-filter.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    now = datetime.now(timezone.utc)
+    status.enqueue_thread("t-due", "c1", "idle_timeout", at=now - timedelta(hours=2))
+    status.enqueue_thread("t-wait", "c2", "idle_timeout", at=now)
+    status.record_cleanup_failure("t-wait", "boom", at=now)  # 30 分钟后才该重试
+
+    due = [row["thread_id"] for row in status.list_cleanup_queue(now=now)]
+    everything = [row["thread_id"] for row in status.list_cleanup_queue()]
+
+    assert due == ["t-due"]
+    assert everything == ["t-due", "t-wait"]  # 不给 now 时保持旧行为（CLI 报告要看全部）
+    conn.close()
+
+
+# --- #151：候选范围与 Form 标记 ---------------------------------------------
+
+
+def test_idle_conversations_excludes_human_mode_by_default(tmp_path):
+    db = str(tmp_path / "human.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=48)
+
+    ai_cid = status.create_session("u1")["conversation_id"]
+    ai_tid, _ = status.ensure_thread(ai_cid)
+    status.mark_ai_execution(ai_cid, ai_tid, at=old)
+
+    human_cid = status.create_session("u2")["conversation_id"]
+    human_tid, _ = status.ensure_thread(human_cid)
+    status.mark_ai_execution(human_cid, human_tid, at=old)
+    status.set_mode(human_cid, "human")
+
+    default_ids = [
+        row["conversation_id"]
+        for row in status.idle_conversations(now=now, idle_after_seconds=3600)
+    ]
+    with_human = [
+        row["conversation_id"]
+        for row in status.idle_conversations(
+            now=now, idle_after_seconds=3600, exclude_human=False
+        )
+    ]
+
+    assert default_ids == [ai_cid]
+    assert set(with_human) == {ai_cid, human_cid}
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_form_interrupt_is_labelled_blocked_by_form():
+    from ai_service_agent.harness.thread_guard import interrupt_protection
+
+    value = {
+        "tool": "cancel_order",
+        "order_candidates": [{"order_id": "ORD-1"}],
+        "form_session_id": "fs-1",
+        "summary": "确认取消",
+    }
+    now = datetime.now(timezone.utc)
+
+    assert interrupt_protection(value, [], now) == "blocked_by_form"
 
 
 def _count(db: str, table: str, where: str, params: tuple) -> int:
