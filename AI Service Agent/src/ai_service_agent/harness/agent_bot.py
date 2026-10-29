@@ -15,6 +15,8 @@ from ai_service_agent.graph.workflows.copy import (
     handoff_request_private_note_text,
 )
 from ai_service_agent.harness.approval_side_channel import (
+    approval_minutes_left,
+    approval_wait_notice,
     parse_approval_form_submission,
     send_approval_card,
 )
@@ -64,6 +66,16 @@ async def _clear_agent_typing(chatwoot, conversation_id: str) -> None:
         await clear(conversation_id)
     except Exception:
         logger.exception("chatwoot clear typing failed: conv=%s", conversation_id)
+
+
+def _approval_minutes_left(expires_at: Any) -> int | None:
+    """审批剩余分钟数（实现在 approval_side_channel，两个 Transport 共用）。"""
+    return approval_minutes_left(expires_at)
+
+
+def _approval_wait_notice(value: dict | None, *, first: bool) -> str:
+    """审批挂起期间给客户的可见提示（见 approval_side_channel.approval_wait_notice）。"""
+    return approval_wait_notice(value, first=first)
 
 
 # Mutation Form Chatwoot projection (items / title / address fields / send)
@@ -368,9 +380,23 @@ async def _handle_locked_agent_bot_message(
                 interrupt_value = state.interrupts[0].value
                 approval_state = approval_dispatch(interrupt_value)
                 if approval_state == "pending":
+                    # 挂起期间不能静默：客户看不到审批卡（private），原来这里直接
+                    # return None，客户连发几条都像对着空气说话。
+                    payload = None
                     if on_approval_pending is not None:
-                        await on_approval_pending(interrupt_value)
-                    return None
+                        payload = await on_approval_pending(interrupt_value)
+                    await _clear_agent_typing(chatwoot, conversation_id)
+                    notice = _approval_wait_notice(
+                        payload or interrupt_value, first=False
+                    )
+                    await chatwoot.send_bot_message(conversation_id, notice)
+                    if messages_store is not None:
+                        messages_store.append(conversation_id, "assistant", notice)
+                    return {
+                        "conversation_id": conversation_id,
+                        "chatwoot_conversation_id": cw_conv_id,
+                        "response": notice,
+                    }
                 if approval_state == "expired":
                     resume_payload = {"result": "expired"}
                 elif is_form_interrupt(interrupt_value):
@@ -571,10 +597,18 @@ async def _handle_locked_agent_bot_message(
     if approval_form_data is not None:
         # 投影入口单点：生产接线走注入回调（→ ApprovalSideChannel.project），
         # 未注入时退回模块内的薄包装（同一实现，见 approval_side_channel）。
+        payload = None
         if on_approval_pending is not None:
-            await on_approval_pending(approval_form_data)
+            payload = await on_approval_pending(approval_form_data)
         else:
             await send_approval_card(chatwoot, conversation_id, approval_form_data)
+        # 审批卡是坐席私有的，客户侧否则一片空白：必须说一句「已受理、在审核」。
+        notice = _approval_wait_notice(payload or approval_form_data, first=True)
+        await _clear_agent_typing(chatwoot, conversation_id)
+        await chatwoot.send_bot_message(conversation_id, notice)
+        if messages_store is not None:
+            messages_store.append(conversation_id, "assistant", notice)
+        final_text = notice
 
     return {
         "conversation_id": conversation_id,

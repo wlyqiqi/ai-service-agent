@@ -50,6 +50,7 @@ from ai_service_agent.harness.approval_side_channel import (
     SeatActor,
     SeatAuthError,
     approval_facts_from_payload,
+    approval_wait_notice,
 )
 from ai_service_agent.harness.outbound_gate import TurnOrigin, decide_delivery
 from ai_service_agent.harness.chatwoot import (
@@ -187,23 +188,29 @@ def _agent_bot_callbacks_factory(handoff, seat, chatwoot, messages_store):
                     "chatwoot handoff-request prompt failed: conv=%s", conv_id
                 )
 
-        async def send_approval_pending(value: dict) -> None:
-            # Seat-facing private form (#64); do not push Approve/Reject to Widget.
-            await seat.project(conv_id, value)
+        async def send_approval_pending(value: dict) -> dict | None:
+            # Seat-facing private card (#64); do not push Approve/Reject to Widget.
+            # 返回值是库里的完整载荷，调用方据此给客户写「已受理 / 仍在审核」提示。
+            return await seat.project(conv_id, value)
 
         return cb, on_handoff_requested, send_approval_pending
 
     return make_callbacks
 
 
-async def _approval_pending_events(it: dict):
-    """OQ-4 hold：审批挂起提示事件（event-spec §2 approval_required data 形状）。"""
+async def _approval_pending_events(it: dict, notice: str):
+    """OQ-4 hold：审批挂起提示事件（event-spec §2 approval_required data 形状）。
+
+    先给客户一句「还在审核」再报挂起态：审批卡只发坐席（private），原来这里
+    只发 approval_required + done(final=None)，客户侧看不到任何文字，对话像死机。
+    """
+    yield {"type": "token", "data": {"text": notice}}
     yield {"type": "approval_required", "data": {
         "approval_id": it.get("approval_id", ""),
         "summary": it.get("summary", ""),
         "expires_at": it.get("expires_at", ""),
     }}
-    yield {"type": "done", "data": {"final": None, "message_id": None}}
+    yield {"type": "done", "data": {"final": notice, "message_id": None}}
 
 
 def _approval_link_cors_origins(
@@ -916,8 +923,12 @@ def create_app(
                                 # simulate_approval（approval-spec §5）：自动构造 approve 动作，走同一 resume 路径
                                 resume_payload = {"action": "approve"}
                             else:
-                                # OQ-4：审批挂起 -> 不 resume、不新起 run（用户消息已落 Message Store），保持挂起
-                                async for ev in _approval_pending_events(it):
+                                # OQ-4：审批挂起 -> 不 resume、不新起 run（用户消息已落
+                                # Message Store），保持挂起。客户侧必须收到一句「还在
+                                # 审核」：审批卡只发坐席，否则这轮完全静默。
+                                notice = approval_wait_notice(it, first=False)
+                                messages_store.append(conv_id, "assistant", notice)
+                                async for ev in _approval_pending_events(it, notice):
                                     yield ev
                                 return
                         elif approval_state == "expired":

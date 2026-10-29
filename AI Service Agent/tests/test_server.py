@@ -1179,11 +1179,14 @@ def test_chat_holds_when_approval_pending(tmp_path):
         text2 = "".join(r.iter_text())
     assert '"approval_required"' in text2
     assert '"error"' not in text2
+    # 挂起期间客户必须收到一句「还在审核」，否则这轮完全静默（实测客户以为死机）
+    assert "审核中" in text2
 
     conn = sqlite3.connect(db)
     rows = MessageStore(conn).list(session_id)
     conn.close()
-    assert rows[-1]["role"] == "user" and rows[-1]["content"] == "好了吗"
+    assert rows[-2]["role"] == "user" and rows[-2]["content"] == "好了吗"
+    assert rows[-1]["role"] == "assistant" and "审核中" in rows[-1]["content"]
 
 
 def test_resolve_with_pending_approval_still_completes(tmp_path):

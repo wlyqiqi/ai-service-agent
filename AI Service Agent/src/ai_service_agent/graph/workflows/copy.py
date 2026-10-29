@@ -735,6 +735,49 @@ def handoff_returned_to_bot_text() -> str:
     """交回 Bot（status pending / Resolve）时客户与坐席都可见的短提示。"""
     return "已交回AI客服助手"
 
+def _approval_amount_text(facts: dict) -> str:
+    amount = facts.get("amount")
+    if amount is None:
+        return ""
+    try:
+        value = float(amount)
+    except (TypeError, ValueError):
+        return ""
+    currency = str(facts.get("currency") or "CNY")
+    return f"¥{value:.2f}" if currency == "CNY" else f"{currency} {value:.2f}"
+
+
+def approval_pending_text(facts: dict | None, *, minutes: int | None = None) -> str:
+    """审批挂起首次提示。
+
+    审批卡是**坐席私有**的，客户侧在挂起期间看不到任何东西；没有这句话客户会
+    以为机器人死了（实测：客户连发「?」「你好」全无回应，最后去转人工）。
+    """
+    facts = facts if isinstance(facts, dict) else {}
+    tool = str(facts.get("tool") or "")
+    label = _label(tool) if tool else "申请"
+    order_id = str(facts.get("order_id") or "").strip()
+    amount = _approval_amount_text(facts)
+    detail = "，".join(
+        part for part in (f"订单 {order_id}" if order_id else "", amount) if part
+    )
+    head = f"已收到您的{label}" + (f"（{detail}）" if detail else "")
+    window = f"通常 {minutes} 分钟内出结果" if minutes else "我们会尽快处理"
+    return f"{head}，正在人工审核中，{window}。有进展我会立刻告诉您。"
+
+
+def approval_still_pending_text(
+    facts: dict | None, *, reference: str = "", minutes: int | None = None
+) -> str:
+    """挂起期间客户又发消息：告诉他还在审，别让对话看起来像死机。"""
+    facts = facts if isinstance(facts, dict) else {}
+    tool = str(facts.get("tool") or "")
+    label = _label(tool) if tool else "申请"
+    ref = f"（单号 {reference}）" if reference else ""
+    window = f"通常 {minutes} 分钟内出结果" if minutes else "请再稍等一会儿"
+    return f"您的{label}还在审核中{ref}，{window}，审核完成后我会立即通知您。"
+
+
 def approval_approved_text(tool: str) -> str:
     # 资金类结果要交代到账时效：否则客户下一秒就来问"钱什么时候到"（与审批卡结果句一致）。
     if tool in ("refund_apply", "cancel_order"):

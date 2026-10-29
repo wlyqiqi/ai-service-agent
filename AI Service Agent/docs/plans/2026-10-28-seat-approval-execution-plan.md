@@ -330,3 +330,36 @@ pytest tests --ignore=tests/evals
 **注意**：`FormBubble`/消息行的 class 随 Chatwoot 版本变化（新版是
 `div.message-bubble-container[data-message-id]`，没有 `.chat-bubble`）。选择器写在 JS 顶部常量里，
 升级后若隐藏失效，先查这里。
+
+### 9.2 追加：挂起期间客户侧不再静默（2026-10-29，用户报障）
+
+用户报障：取消订单后客户说「我要退款」→ 提供订单号 → **对话再无任何 AI 回应**，
+只剩一个转圈的 typing 气泡。
+
+**根因（实测会话 283a8834，审批 c8b1de48）**：两处静默叠加。
+
+1. 图停在 `approval_pause` 的 `interrupt()` 时，`event_stream` 只产出 `approval_required`
+   事件；投影把它变成**坐席私有**卡片（`private=True`），客户侧一条消息都没有。
+2. 客户后续消息命中 `approval_dispatch == "pending"`，`agent_bot` 直接 `return None`
+   （`/chat` 只发 `approval_required` + `done(final=None)`）—— 连"在等审批"都不说。
+   只能等 30 分钟 `expires_at` 过后，客户再发一条才收到「已过期」。
+
+**修法**：文案单点 `harness/approval_side_channel.approval_wait_notice(value, first=)`，
+两个 Transport 共用：
+
+| 场景 | 文案 |
+|---|---|
+| 首次挂起 | 已收到您的退款申请（订单 ORD-2026-10034，¥397.56），正在人工审核中，通常 29 分钟内出结果。有进展我会立刻告诉您。 |
+| 挂起期间再发消息 | 您的退款申请还在审核中（单号 2722ec3），通常 29 分钟内出结果，审核完成后我会立即通知您。 |
+
+- 剩余分钟由 `expires_at` 现算（`approval_minutes_left`），过期或解析失败就不承诺时间。
+- `ApprovalSideChannel.project()` 改为**返回库里的完整载荷**（含 `x_approval.facts`），
+  调用方据此写出订单号与金额；事件 data 只有 summary，画不出可读文案。
+- `agent_bot`：pending 分支不再 `return None`，改为发提示 + 落 Message Store + 返回文案；
+  首次挂起（`approval_form_data`）同样补一条客户可见提示。
+- `/chat`：`_approval_pending_events(it, notice)` 先发 `token`，`done.final` 也带文案。
+
+**真机验证**（Chatwoot widget，u0034，会话 283a8834）：首次挂起与后续消息两条提示都出现在
+客户侧；此前「你好」完全无回应，现在正常回复。截图 `docs/ops/chatwoot/approval-{pending,still-pending}-notice.png`。
+
+**规格**：`approval-spec.md` §4.1 新增「挂起期间的客户可见性（硬要求）」。

@@ -18,13 +18,16 @@ import hmac
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from ai_service_agent.config import get_settings
 from ai_service_agent.graph.workflows.copy import (
     approval_failure_reference,
+    approval_pending_text,
     approval_seat_decision_note,
+    approval_still_pending_text,
 )
 from ai_service_agent.harness.approval_card import (
     default_base_url,
@@ -218,6 +221,44 @@ async def send_approval_card(
     )
 
 
+def approval_minutes_left(expires_at: Any, *, now: datetime | None = None) -> int | None:
+    """审批剩余分钟数（向下取整，最小 1）；解析不了就不对客户承诺时间。"""
+    if not expires_at:
+        return None
+    try:
+        expires = datetime.fromisoformat(str(expires_at))
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    left = (expires - (now or datetime.now(timezone.utc))).total_seconds()
+    if left <= 0:
+        return None
+    return max(1, int(left // 60))
+
+
+def approval_wait_notice(
+    value: dict | None, *, first: bool, now: datetime | None = None
+) -> str:
+    """审批挂起期间给客户的可见提示（两个 Transport 共用）。
+
+    审批卡只发给坐席（``private=True``），客户侧在挂起期间原本**完全静默**：
+    实测客户发「?」「你好」「卧槽」全部无回应，最后只能自己去点转人工。
+    ``value`` 传 interrupt 载荷或库里的 payload 都行（都含 ``x_approval.facts``）；
+    拿不到 facts 时退化成不含订单号的通用句，绝不抛错。
+    """
+    value = value if isinstance(value, dict) else {}
+    x_approval = value.get("x_approval")
+    facts = x_approval.get("facts") if isinstance(x_approval, dict) else None
+    facts = facts if isinstance(facts, dict) else {}
+    minutes = approval_minutes_left(value.get("expires_at"), now=now)
+    if first:
+        return approval_pending_text(facts, minutes=minutes)
+    return approval_still_pending_text(
+        facts, reference=str(value.get("approval_id") or "")[:7], minutes=minutes
+    )
+
+
 def make_approval_interrupt_callback(
     store: ApprovalService,
     conversation_id: str,
@@ -309,23 +350,27 @@ class ApprovalSideChannel:
 
     # --- 投影 ---
 
-    async def project(self, conversation_id: str, interrupt_value: dict) -> None:
+    async def project(self, conversation_id: str, interrupt_value: dict) -> dict | None:
         """把 ``approval_required`` 投影为坐席私有卡片（无 Chatwoot 时静默跳过）。
 
-        幂等：``projected_at`` 已写就跳过。同一审批被 interrupt / follow-on 中断
+        幂等：``projected_at`` 已写就跳过发送。同一审批被 interrupt / follow-on 中断
         多次回调时只发一条（修掉实测的同一 approval 连发 3 条）。
+
+        返回值是**库里的完整载荷**（含 ``x_approval.facts``），供调用方给客户写
+        「已受理 / 仍在审核」的提示——事件 data 只有 summary，画不出可读文案。
+        已投影过的审批也照样返回载荷（只是不重发卡片），挂起期间的后续消息要靠它。
         """
         if self._chatwoot is None:
-            return
+            return None
         data = interrupt_value if isinstance(interrupt_value, dict) else {}
         approval_id = str(data.get("approval_id") or "")
         if approval_id:
             record = self._store.get(approval_id)
             if record is not None:
-                if record.get("projected_at"):
-                    return
                 # 库里存的原始载荷比事件 data 完整（事件里只有 summary/expires_at）。
                 data = _load_payload(record.get("payload_json")) or data
+                if record.get("projected_at"):
+                    return data
         await send_approval_card(
             self._chatwoot,
             conversation_id,
@@ -335,6 +380,7 @@ class ApprovalSideChannel:
         )
         if approval_id:
             self._store.mark_projected(approval_id)
+        return data
 
     def interrupt_callback(self, conversation_id: str, thread_id: str):
         return make_approval_interrupt_callback(

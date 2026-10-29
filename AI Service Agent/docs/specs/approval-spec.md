@@ -81,6 +81,19 @@
 - 图内不轮询：下个 turn 进入时若已过期，**入口层 resume 调度**（`aget_state()`）以 `Command(resume={"result":"expired"})` 恢复（schema 见 `graph-spec.md` §3），HighRiskGraph 按过期分支收尾。无图内 ResumeHandler 节点。
 - 过期审批在服务侧标记 `expired`，人工端不再展示可操作项（惰性机械落库，见 §3.1，不构成业务决策）。
 
+### 4.1 挂起期间的客户可见性（硬要求）
+
+审批卡只投影到坐席（`private=True`，见 §5），**客户 Widget 看不到审批的存在**。因此：
+
+- **首次挂起**必须给客户一句可见提示：已受理 + 动作 + 订单/金额 + 预计时长。
+- **挂起期间的每条客户消息都必须有回应**（「还在审核中」），**禁止静默吞掉**。
+  两个 Transport（`/chat` SSE、AgentBot webhook）共用同一文案函数（`approval_wait_notice`），
+  不得各写一份。
+- 提示只是投影：不 resume、不新起 run；挂起态仍以 checkpointer 的 `__interrupt__` 为准。
+
+> 反例（2026-10-29 实测）：客户提交退款后图停在 `approval_pause`，客户侧零消息；后续
+> 「?」「你好」「卧槽」全部无回应，客户以为机器人死了，最后只能点「转人工」。
+
 ## 5. 人工端（v1）
 
 - **产品主路径**：Chatwoot 坐席端 **private** 表单/卡片投影 `approval_required`（摘要 + 批准/拒绝）→ 验签后的 `/webhooks/chatwoot` 适配器调用与 §3.2.1 **同一**工牌决策入口（配置口令 + `sender.id` → `decided_by=seat:{id}`）。不得把 Approve/Reject 投到客户 Widget（ADR-0001）。
