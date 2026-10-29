@@ -65,7 +65,7 @@ Runtime 上的 Transport：把 Graph/`__interrupt__` 与事件投影适配为 Ch
 _Avoid_: 把 AgentBot 当成业务编排层；表单提交改写成自然语言再进 Router
 
 **Contact-first Binding**:
-Website Channel 会话为入口；以登录 `user_id` + Identity HMAC 标识 contact，AgentBot 首次触达时懒建 Runtime `conversation_id`/`thread_id` 并写入 mapping。
+Website Channel 会话为入口；以登录 `user_id` + Identity HMAC 标识 contact，AgentBot 首次触达时懒建 Runtime `conversation_id` 并写入 mapping；`thread_id` 仅在首次进入 AI Graph 前分配。
 _Avoid_: 强制先调自建 `/sessions` 再建 Widget；匿名与登录会话无规则合并
 
 **Requester**:

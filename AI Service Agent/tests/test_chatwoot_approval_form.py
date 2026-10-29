@@ -305,7 +305,7 @@ async def test_agent_bot_contact_approval_form_submit_does_not_decide(tmp_path):
     status = ConversationStatusStore(conn)
     session = status.create_session("u1")
     conv_id = session["conversation_id"]
-    thread_id = session["thread_id"]
+    thread_id, _ = status.ensure_thread(conv_id)
     ApprovalService(conn).insert_if_absent(
         "A-widget",
         conv_id,

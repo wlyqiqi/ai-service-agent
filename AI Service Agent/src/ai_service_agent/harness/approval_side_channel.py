@@ -82,6 +82,10 @@ class ApprovalExpiredError(Exception):
     """已过期 → 410。"""
 
 
+class ApprovalThreadConflict(Exception):
+    """审批记录的 thread 与当前 conversation 指针不一致 → 409。"""
+
+
 @dataclass(frozen=True)
 class SeatActor:
     """工牌校验通过的坐席身份；``decided_by`` 唯一命名空间（ADR-0002）。"""
@@ -414,13 +418,30 @@ class ApprovalSideChannel:
 
         lock = await self._lock_factory(thread_id)
         async with lock:
+            get_current_thread = getattr(self._status, "get_thread_id", None)
+            if get_current_thread is not None:
+                current_thread = get_current_thread(conversation_id)
+                if current_thread != thread_id:
+                    raise ApprovalThreadConflict(
+                        f"approval thread mismatch: {thread_id} != {current_thread}"
+                    )
             self._precheck(approval_id)  # 锁内权威预检：并发双 approve 只过一个
             # mark_decided 在图执行前（T6 裁定）：执行中崩溃也不会重试重复执行。
             self._store.mark_decided(approval_id, decided, decided_by=actor.decided_by)
-            spec, final, message_id = await self._run(
-                thread_id, conversation_id, resume_payload
-            )
-            await self._deliver(conversation_id, spec, final, message_id)
+            if action is SeatAction.APPROVE:
+                self._store.mark_execution_started(approval_id)
+            try:
+                spec, final, message_id = await self._run(
+                    thread_id, conversation_id, resume_payload
+                )
+                await self._deliver(conversation_id, spec, final, message_id)
+            except Exception:
+                if action is SeatAction.APPROVE:
+                    self._store.mark_execution_finished(approval_id, "failed")
+                raise
+            else:
+                if action is SeatAction.APPROVE:
+                    self._store.mark_execution_finished(approval_id, "succeeded")
         # 锁外发留痕：发消息不该占着会话锁。
         await self._note_decision(conversation_id, decided, actor=actor, note=note, final=final)
         return {"approval_id": approval_id, "status": decided}

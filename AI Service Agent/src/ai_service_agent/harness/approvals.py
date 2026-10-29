@@ -12,6 +12,8 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 
+APPROVAL_EXECUTION_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "uncertain"})
+
 APPROVAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS approval_record (
     approval_id TEXT PRIMARY KEY,
@@ -25,7 +27,8 @@ CREATE TABLE IF NOT EXISTS approval_record (
     decided_by TEXT,
     created_at TEXT,
     expires_at TEXT NOT NULL,
-    decided_at TEXT
+    decided_at TEXT,
+    execution_status TEXT NOT NULL DEFAULT 'not_started'
 );
 """
 
@@ -34,13 +37,14 @@ CREATE TABLE IF NOT EXISTS approval_record (
 APPROVAL_ADDED_COLUMNS = {
     "payload_json": "TEXT",   # 原始 interrupt 载荷：投影卡片、确认页都要用
     "projected_at": "TEXT",   # 坐席侧已投影时间：同一审批只发一次
+    "execution_status": "TEXT NOT NULL DEFAULT 'not_started'",
 }
 
 #: 显式列名（不写 ``SELECT *``：加列不会打乱索引，回滚也不会读错位）。
 _COLUMNS = (
     "approval_id, conversation_id, thread_id, type, summary, requester_user_id, "
     "status, decision, decided_by, created_at, expires_at, decided_at, "
-    "payload_json, projected_at"
+    "payload_json, projected_at, execution_status"
 )
 
 
@@ -122,6 +126,32 @@ class ApprovalService:
     def mark_decided(self, approval_id: str, status: str, decided_by: str) -> None:
         """幂等：仅 pending 可写（approval-spec §2，重复 decision 不覆盖）。"""
         self._set_status(approval_id, status, decided_by)
+        if status != "approved":
+            with self.lock, self.conn:
+                self.conn.execute(
+                    "UPDATE approval_record SET execution_status = 'succeeded' "
+                    "WHERE approval_id = ? AND status = ?",
+                    (approval_id, status),
+                )
+
+    def mark_execution_started(self, approval_id: str) -> None:
+        with self.lock, self.conn:
+            self.conn.execute(
+                "UPDATE approval_record SET execution_status = 'running' "
+                "WHERE approval_id = ? AND status = 'approved' "
+                "AND execution_status IN ('not_started', 'failed', 'uncertain')",
+                (approval_id,),
+            )
+
+    def mark_execution_finished(self, approval_id: str, status: str) -> None:
+        if status not in APPROVAL_EXECUTION_TERMINAL_STATUSES:
+            raise ValueError(f"invalid approval execution status: {status}")
+        with self.lock, self.conn:
+            self.conn.execute(
+                "UPDATE approval_record SET execution_status = ? "
+                "WHERE approval_id = ? AND status = 'approved'",
+                (status, approval_id),
+            )
 
     def mark_projected(self, approval_id: str) -> None:
         """记录坐席侧已投影。只有第一次写入生效（重复投影不再刷新时间）。"""
@@ -175,5 +205,5 @@ class ApprovalService:
             "approval_id": row[0], "conversation_id": row[1], "thread_id": row[2], "type": row[3],
             "summary": row[4], "requester_user_id": row[5], "status": row[6], "decision": row[7],
             "decided_by": row[8], "created_at": row[9], "expires_at": row[10], "decided_at": row[11],
-            "payload_json": row[12], "projected_at": row[13],
+            "payload_json": row[12], "projected_at": row[13], "execution_status": row[14],
         }

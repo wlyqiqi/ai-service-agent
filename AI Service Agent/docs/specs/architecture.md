@@ -69,13 +69,15 @@ Final Response (写回 messages, 统一出口 + 归一化事件)
 
 ## 4. 会话与持久化（横切）
 
-- **会话标识定案**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 为 LangGraph checkpoint 内部标识，与 `conversation_id` 一对一映射但**不是同一字段**（见 `handoff-spec.md` §5.1）。SQLite checkpoint（异步 `AsyncSqliteSaver`）按 `thread_id` 持久化每次运行的完整状态。
-- `thread_id` 在会话创建时生成（如 uuid）并持久化 `conversation_id ↔ thread_id` 映射；同一业务会话需重置图执行状态时可更换 `thread_id` 而保留 `conversation_id`。
+- **会话标识定案**：`conversation_id == session_id`（业务 / 契约层会话标识，面向用户与坐席）；`thread_id` 为 LangGraph checkpoint 内部标识，**不是同一字段**。一个 conversation 可先后拥有多个 thread，但任一时刻只有一个当前指针（见 `handoff-spec.md` §5.1）。SQLite checkpoint（异步 `AsyncSqliteSaver`）按 `thread_id` 持久化每次运行的完整状态。
+- **懒创建**：`POST /sessions` 只创建 conversation draft，`thread_id = NULL`，不创建 checkpoint/write。只有第一次真正进入 AI Graph 前，入口层才原子分配 `thread_id` 并先提交 `conversation_status.thread_id`；Human-only 消息、显式 Handoff Request 与 transport-only 动作不分配 thread。后续 AI turn 复用当前指针。
+- **恢复保护**：Form Resume / approval resume / Handoff Resolve 使用独立 resume 路径；当前 thread 指针缺失、过期或与任务记录不一致时返回显式 409/410，绝不静默创建替代 thread。新 thread 只水合当前消息与有界近期上下文，不复制完整会话历史进 checkpoint。
 - **resume 调度（P1 定案）**：有挂起中断时由入口层（harness）经 `aget_state()` 检测并以 `Command(resume=...)` 恢复（LangGraph 1.2.11 实测：图内节点读不到 `__interrupt__`，见 `graph-spec.md` §3 / 决策记录）；`state.messages` 每次图调用以 Store 水合历史（稳定 id）经 `add_messages` 对账（见 `handoff-spec.md` §5.2）。
-- **轻量 `conversation_status` 存储（新增）**：独立于完整 checkpointer 状态（独立表或 Redis key），只存 `conversation_id → conversation_mode`（`ai` / `human` 两态）。`conversation_mode` 判断**禁止**走 `checkpointer.aget()` 读完整 State，必须读该轻量存储。
+- **轻量 `conversation_status` 存储（新增）**：独立于完整 checkpointer 状态（独立表或 Redis key），存 `conversation_mode`（`ai` / `human` 两态）、可空当前 `thread_id`、最近 AI 执行时间与 cleanup queue 所需元数据。`conversation_mode` 判断**禁止**走 `checkpointer.aget()` 读完整 State，必须读该轻量存储。
 - `POST /sessions` 创建会话时**显式写入 `conversation_mode = "ai"`**，不依赖存储层隐式默认值；入口判断为两态：`mode == "human" ? 进入人工车道 : 进入 AI 路径`。
 - 长连接（SSE / WebSocket）场景可将 `conversation_mode` 缓存在连接级内存，仅在 `handoff_created` / `handoff_resolved` 事件发生时主动更新，不要求每条用户消息重新查库（见 `handoff-spec.md` §2）。
-- **Message Store 唯一真相源（2026-09-14 定案）**：会话 user / assistant 轮次以 `conversation_message` 表为权威；入口层（Conversation Runtime）每个 AI turn 先持久化用户消息、再从 Store 水合 `state.messages` 工作视图输入图，正常发送（发送前复检 `mode==ai`）后才持久化 assistant 回复；人工车道只写 Store。工具 / Router 内部消息不入 Store（见 `handoff-spec.md` §5.2、`docs/decisions/2026-09-14-message-store-truth-source.md`）。
+- **Message Store 唯一真相源（2026-09-14 定案）**：会话 user / assistant 轮次以 `conversation_message` 表为权威；入口层（Conversation Runtime）每个 AI turn 先持久化用户消息、再从 Store 水合 `state.messages` 工作视图输入图，正常发送（发送前复检 `mode==ai`）后才持久化 assistant 回复；人工车道只写 Store。新 thread 使用有界近期上下文；`(conversation_id, id)` 复合索引服务会话内历史定位。工具 / Router 内部消息不入 Store（见 `handoff-spec.md` §5.2、`docs/decisions/2026-09-14-message-store-truth-source.md`）。
+- **Checkpoint 清理**：Demo 仅提供离线、默认 dry-run 的 `python -m ai_service_agent.ops.thread_cleanup`；apply 前先清空当前指针并入队，删除只调用官方 `AsyncSqliteSaver.adelete_thread()`。pending interrupt、当前指针、awaiting/active handoff、未过期 approval 与 approved-but-not-terminal 执行均受保护。操作步骤见 `docs/ops/thread-checkpoint-cleanup.md`。
 - 会话管理：创建 / 续期 / 历史查询（`get_state` / `aget_state`）。
 - Store（用户记忆）：`InMemoryStore` 起步，命名空间 `("users", user_id)`，接口按 `BaseStore` 抽象。
 - **传输契约（输入侧）**：`POST /chat { user_id, session_id?, message, meta? }` → 事件流；`POST /sessions { user_id }` → `{ session_id }`。FastAPI 仅做传输与会话映射，不含业务编排（输出侧契约见 `event-spec.md`）。

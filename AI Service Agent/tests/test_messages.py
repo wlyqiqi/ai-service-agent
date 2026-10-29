@@ -18,6 +18,27 @@ def test_append_and_list_roundtrip(tmp_path):
     conn.close()
 
 
+def test_composite_conversation_message_index_avoids_table_scan(tmp_path):
+    store, conn = _store(tmp_path)
+    row_id = store.append("c1", "user", "hello")
+
+    assert store.get("c1", row_id)["content"] == "hello"
+    plan = " ".join(
+        row[3]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id, content FROM conversation_message "
+            "WHERE conversation_id = ? AND id = ?",
+            ("c1", row_id),
+        )
+    )
+    indexes = {
+        row[1] for row in conn.execute("PRAGMA index_list(conversation_message)")
+    }
+    assert "ix_conversation_message_conversation_id_id" in indexes
+    assert "SCAN conversation_message" not in plan
+    conn.close()
+
+
 def test_hydrate_returns_langchain_messages_in_order(tmp_path):
     store, conn = _store(tmp_path)
     store.append("c1", "user", "u1")
