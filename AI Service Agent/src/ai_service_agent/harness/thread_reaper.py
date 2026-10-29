@@ -108,14 +108,19 @@ class ThreadReaper:
             return _NullLock()
         return await self._lock_factory(key)
 
-    def _scan(self, now: datetime, batch_size: int) -> list[dict]:
-        """同步 sqlite 扫描：只读、不加锁（候选随时可能失效，锁后要重查）。"""
+    def _scan(
+        self, now: datetime, batch_size: int, *, respect_backoff: bool = True
+    ) -> list[dict]:
+        """同步 sqlite 扫描：只读、不加锁（候选随时可能失效，锁后要重查）。
+
+        ``respect_backoff=False`` 给离线 CLI 用：人工重试不该被 30 分钟退避挡住。
+        """
         idle = self.status.idle_conversations(
             now=now,
             idle_after_seconds=self.idle_after.total_seconds(),
             exclude_human=True,
         )
-        queue = self.status.list_cleanup_queue(now=now)
+        queue = self.status.list_cleanup_queue(now=now if respect_backoff else None)
         merged: dict[str, dict] = {}
         for row in idle:
             merged[row["thread_id"]] = {**row, "reason": "idle_timeout", "queued": False}
@@ -140,11 +145,12 @@ class ThreadReaper:
         now: datetime | None = None,
         apply: bool = True,
         batch_size: int = DEFAULT_REAP_BATCH_SIZE,
+        respect_backoff: bool = True,
     ) -> ReapReport:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        candidates = self._scan(moment, batch_size)
+        candidates = self._scan(moment, batch_size, respect_backoff=respect_backoff)
         report = ReapReport(mode="apply" if apply else "dry-run", candidates=[])
         for candidate in candidates:
             item = await self._process(candidate, now=moment, apply=apply)
