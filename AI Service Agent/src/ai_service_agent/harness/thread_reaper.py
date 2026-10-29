@@ -7,7 +7,8 @@
 - 每条候选先取 ``conversation:{conversation_id}`` 锁、再取**裸** ``thread_id`` 锁
   （``server._thread_lock`` 的既有 key 约定），与 ``/chat``、AgentBot、
   ``/actions/confirm``、handoff resolve、seat takeover、坐席 ``decide()`` 全部互斥。
-- 两把锁都拿到后**重读指针并重跑** ``collect_blockers``；加锁前的快照一律不用于最终判断。
+- 两把锁都拿到后**重读指针、重跑** ``collect_blockers``、**重验空闲谓词**；
+  加锁前的快照一律不用于最终判断。
 - 摘指针与入队在同一个 SQLite 事务；删除只调用官方 ``adelete_thread()``。
 """
 
@@ -121,12 +122,21 @@ class ThreadReaper:
             exclude_human=True,
         )
         queue = self.status.list_cleanup_queue(now=now if respect_backoff else None)
-        merged: dict[str, dict] = {}
+        # 队列行是「已知需要处理」的积压工作，必须保证每轮有配额。
+        # 被永久保护的 idle 会话（如 blocked_by_form）时间戳最旧且永不退出 idle 集合，
+        # 若让 idle 先占满 batch，队列行会被永久饿死，checkpoint 只涨不消。
+        # 反向不会饿死 idle：队列行要么成功出队，要么按 next_retry_at 退避。
+        queue_quota = batch_size if not idle else max(1, batch_size // 2)
+        picked: dict[str, dict] = {}
+        for row in queue[:queue_quota]:
+            picked[row["thread_id"]] = {**row, "queued": True}
         for row in idle:
-            merged[row["thread_id"]] = {**row, "reason": "idle_timeout", "queued": False}
-        for row in queue:
-            merged[row["thread_id"]] = {**row, "queued": True}
-        return list(merged.values())[:batch_size]
+            if len(picked) >= batch_size:
+                break
+            picked.setdefault(
+                row["thread_id"], {**row, "reason": "idle_timeout", "queued": False}
+            )
+        return list(picked.values())
 
     async def _blockers(self, thread_id: str, conversation_id: str, now: datetime) -> list[str]:
         return await collect_blockers(
@@ -190,8 +200,30 @@ class ThreadReaper:
         thread_id = candidate["thread_id"]
         conversation_id = candidate["conversation_id"]
 
-        # 锁后重查：指针与保护判定都不复用加锁前的快照。
+        # 锁后重查：指针、空闲谓词、保护判定都不复用加锁前的快照。
         pointer = self.status.get_thread_id(conversation_id)
+        if (
+            pointer == thread_id
+            and not candidate["queued"]
+            and not self.status.is_idle_candidate(
+                conversation_id,
+                thread_id,
+                now=now,
+                idle_after_seconds=self.idle_after.total_seconds(),
+                exclude_human=True,
+            )
+        ):
+            # 扫描到拿锁之间会话又活跃了（例如用户刚发完一条消息）：放弃回收。
+            # 只在「指针仍指向本 thread」时才有意义——指针已被轮换走的话，
+            # 本 thread 已是孤儿，必须照常删掉。
+            item.status = "protected"
+            item.protected_by = ["no_longer_idle"]
+            logger.info(
+                "thread reap skipped (no longer idle): conversation=%s thread=%s",
+                conversation_id,
+                thread_id,
+            )
+            return item
         blockers = await self._blockers(thread_id, conversation_id, now)
         if candidate["queued"] and pointer == thread_id:
             blockers.append("current_thread_pointer")

@@ -125,7 +125,7 @@
 - `cleanup_once(now, apply, batch_size)` is the single maintenance entry point; the offline CLI and the FastAPI lifespan both delegate to it.
 - Candidates are conversations whose `last_ai_execution_at` is at least 24 hours old **and whose mode is not `human`**, plus rows already in `thread_cleanup_queue` whose `next_retry_at` has passed.
 - Per candidate the reaper acquires `conversation:{conversation_id}` and then the thread lock keyed by the **raw `thread_id`** — the same keys used by `/chat`, AgentBot, `/actions/confirm`, handoff resolve, seat takeover and the seat approval `decide()` endpoint.
-- After both locks are held it re-reads the conversation pointer and re-runs `collect_blockers`; the pre-lock snapshot is never used for the final decision.
+- After both locks are held it re-reads the conversation pointer, re-verifies the idle predicate (`is_idle_candidate`, so a conversation that became active between scan and lock is skipped as `no_longer_idle`), and re-runs `collect_blockers`; the pre-lock snapshot is never used for the final decision.
 - Pointer clearing and queue insertion share one SQLite transaction; deletion calls only `AsyncSqliteSaver.adelete_thread()`.
 - Failed deletions are retried with exponential backoff (30 min → 1 h → 2 h → 4 h cap) recorded in `next_retry_at`. A protected candidate is **not** a failure and does not advance the retry counter.
 - Form Interrupts pin their thread indefinitely: their 24-hour TTL is not implemented yet (no tracking issue opened), so a conversation that ended on a Form Interrupt is never reclaimed by this stage. Reports label it `blocked_by_form`.
@@ -163,7 +163,8 @@
 - A single `cleanup_once(now, batch_size)` behavior is the testable cleanup seam.
 - The FastAPI lifespan runner invokes it every 30-60 minutes in single-worker mode and cancels it on shutdown.
 - Cleanup scans conversations idle beyond 24 hours and pending entries in `thread_cleanup_queue`.
-- Before queueing or deleting, it acquires the conversation lock and re-reads the current pointer, in-flight state, checkpoint interrupts, approvals, and handoffs.
+- Before queueing or deleting, it acquires the conversation lock and re-reads the current pointer, re-verifies the idle predicate, checkpoint interrupts, approvals, and handoffs.
+- Queue rows get a reserved share of each batch (half when idle candidates exist): permanently protected idle conversations (`blocked_by_form`) never leave the idle set and would otherwise fill the batch and starve the queue forever.
 - For an idle conversation with no pending work, cleanup clears the current thread pointer and enqueues the old thread in the same SQLite transaction.
 - Cleanup calls `adelete_thread()` only for threads no longer referenced by the conversation and with no valid pending task.
 - On successful deletion, the queue row is removed. On failure, `retry_count`, `last_error` and `next_retry_at` are updated and the row remains for retry.

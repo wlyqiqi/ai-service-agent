@@ -169,6 +169,78 @@ async def test_cleanup_once_rechecks_blockers_after_locks(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cleanup_once_protects_when_conversation_became_active(tmp_path):
+    """扫描时已空闲 48h；拿到锁之前又跑了一轮 -> 空闲谓词必须重验，不能删。"""
+    db = str(tmp_path / "active-again.db")
+    conversation_id, thread_id = await _seed(db)
+    injected = False
+
+    async def factory(key):
+        nonlocal injected
+        if key.startswith("conversation:") and not injected:
+            injected = True
+            conn = sqlite3.connect(db)
+            # 模拟 /chat 刚跑完一轮：last_ai_execution_at 被刷新到 NOW。
+            ConversationStatusStore(conn).mark_ai_execution(conversation_id, thread_id, at=NOW)
+            conn.close()
+        return asyncio.Lock()
+
+    report = await _reaper(db, lock_factory=factory).cleanup_once(now=NOW)
+
+    assert report.deleted == []
+    assert report.candidates[0].status == "protected"
+    assert "no_longer_idle" in report.candidates[0].protected_by
+    assert _checkpoints(db, thread_id) == 1
+    assert _pointer(db, conversation_id) == thread_id
+
+
+@pytest.mark.asyncio
+async def test_cleanup_once_deletes_orphan_when_pointer_rotated_before_lock(tmp_path):
+    """扫描到拿锁之间指针被轮换走：旧 thread 已是孤儿，必须照常删除。"""
+    db = str(tmp_path / "rotated.db")
+    conversation_id, thread_id = await _seed(db)
+    rotated = False
+
+    async def factory(key):
+        nonlocal rotated
+        if key.startswith("conversation:") and not rotated:
+            rotated = True
+            conn = sqlite3.connect(db)
+            ConversationStatusStore(conn).rotate_thread(
+                conversation_id, expected_thread_id=thread_id, reason="turn_limit", at=NOW
+            )
+            conn.close()
+        return asyncio.Lock()
+
+    report = await _reaper(db, lock_factory=factory).cleanup_once(now=NOW)
+
+    assert report.deleted == [thread_id]
+    assert _checkpoints(db, thread_id) == 0
+    # 新指针不受影响，仍是轮换后的 thread。
+    assert _pointer(db, conversation_id) not in (None, thread_id)
+
+
+def test_scan_reserves_batch_quota_for_queue_rows(tmp_path):
+    """被永久保护的 idle 会话占满 batch 时，队列行不能饿死。"""
+    db = str(tmp_path / "quota.db")
+    for _ in range(5):
+        _seed_sync(db)
+
+    # 另造一条「已摘指针、只在队列里」的 thread（轮换失败/删除失败的样子）。
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    queued_conversation = status.create_session("u2")["conversation_id"]
+    queued_thread, _ = status.ensure_thread(queued_conversation, at=NOW - timedelta(hours=48))
+    status.detach_thread_and_enqueue(queued_conversation, queued_thread, "rotation", at=NOW)
+    conn.close()
+
+    candidates = _reaper(db)._scan(NOW, 2)
+
+    assert len(candidates) <= 2
+    assert any(c["thread_id"] == queued_thread and c["queued"] for c in candidates)
+
+
+@pytest.mark.asyncio
 async def test_delete_failure_keeps_queue_row_with_retry_metadata(tmp_path):
     db = str(tmp_path / "fail.db")
     conversation_id, thread_id = await _seed(db)
@@ -337,3 +409,61 @@ async def test_lifespan_cancels_reaper_cleanly(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await task
     conn.close()
+
+
+def test_lifespan_wires_server_thread_lock(tmp_path):
+    """reaper 必须拿到 server 那把锁；换成别的 factory 会让保护归零而测试全绿。"""
+    from fastapi.testclient import TestClient
+
+    import ai_service_agent.harness.server as server
+
+    captured: dict = {}
+    real = server.ThreadReaper
+
+    class Spy(real):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            super().__init__(**kwargs)
+
+    db = str(tmp_path / "wiring.db")
+    _seed_sync(db)
+    original = server.ThreadReaper
+    server.ThreadReaper = Spy
+    try:
+        app = server.create_app(db, model="fake", thread_reaper_interval_seconds=1)
+        with TestClient(app):
+            pass
+    finally:
+        server.ThreadReaper = original
+
+    assert captured["lock_factory"] is server._thread_lock
+    assert captured["status"] is not None
+    assert callable(captured["delete_thread"])
+    assert callable(captured["interrupt_loader"])
+
+
+@pytest.mark.asyncio
+async def test_reaper_loop_survives_a_failed_pass():
+    """单轮抛异常不能打死循环，否则一次瞬时错误就永久停摆。"""
+    from types import SimpleNamespace
+
+    from ai_service_agent.harness.server import _run_thread_reaper
+
+    calls: list[int] = []
+
+    class Flaky:
+        async def cleanup_once(self, **_kwargs):
+            calls.append(len(calls))
+            if len(calls) == 1:
+                raise RuntimeError("transient")
+            return SimpleNamespace(summary=lambda: "ok")
+
+    task = asyncio.create_task(_run_thread_reaper(Flaky(), interval_seconds=0.01))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if len(calls) >= 2:
+            break
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(calls) >= 2

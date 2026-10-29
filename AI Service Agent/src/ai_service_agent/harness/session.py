@@ -485,6 +485,34 @@ class ConversationStatusStore:
                 )
         return result
 
+    def is_idle_candidate(
+        self,
+        conversation_id: str,
+        thread_id: str,
+        *,
+        now: datetime,
+        idle_after_seconds: float,
+        exclude_human: bool = True,
+    ) -> bool:
+        """单条候选的空闲复核，供加锁后使用（``idle_conversations`` 的单行版本）。
+
+        扫描快照不能用于最终判断：扫描到拿到锁之间可能有一次 ``/chat`` 跑完，
+        ``last_ai_execution_at`` 被刷新，此时这条候选已经不是空闲会话了。
+        """
+        row = self.conn.execute(
+            "SELECT thread_id, mode, last_ai_execution_at, created_at "
+            "FROM conversation_status WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None or row[0] != thread_id:
+            return False
+        if exclude_human and row[1] == "human":
+            return False
+        last_seen = parse_utc_timestamp(row[2]) or parse_utc_timestamp(row[3])
+        if last_seen is None:
+            return False
+        return (now - last_seen).total_seconds() >= idle_after_seconds
+
     def active_mode_for_user(self, user_id: str) -> str:
         """该用户最近有消息的会话 mode；没有消息时用最新会话。没有会话则 ai。"""
         try:
