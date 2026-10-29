@@ -152,14 +152,20 @@ thread reaper stopped
 
 ### 如何确认它没在动人工会话
 
+`idle_conversations(..., exclude_human=True)` 是默认值，CLI 也继承——**离线清理同样不再回收人工会话**。
+所以 human 会话的指针应当**一直保留**（回收的唯一动作就是摘指针，删 checkpoint 前必先摘指针）：
+
 ```sql
--- 候选里永远不会出现 human 会话；这条查询应恒为 0
-SELECT COUNT(*) FROM conversation_status
-WHERE thread_id IS NOT NULL AND mode = 'human'
-  AND COALESCE(last_ai_execution_at, created_at) < datetime('now', '-24 hours');
+-- 应为 0：human 会话的 thread 指针不该被回收摘掉
+SELECT COUNT(*) FROM conversation_status WHERE mode = 'human' AND thread_id IS NULL;
 ```
 
-`idle_conversations(..., exclude_human=True)` 是默认值，CLI 也继承——**离线清理同样不再回收人工会话**。
+再对照日志：不该出现 `thread reap ... conversation=<某个 human 会话>` 的 `deleted` / `delete failed`。
+`blocked_by_form` 与 `handoff_awaiting_or_active` 这两类 `protected` 是正常的。
+
+> 注意不要用 `datetime('now','-24 hours')` 去数「空闲的 human 会话」——那批人本来就存在，
+> 数出来必然 > 0；而且该表达式产出 `YYYY-MM-DD HH:MM:SS`（空格分隔、无时区），
+> 与 `isoformat()` 的 `T` / `+00:00` 做字符串比较在边界那天会判错。
 
 ### 已知缺口
 
