@@ -297,3 +297,43 @@ def test_next_ai_message_after_cleanup_creates_new_thread(tmp_path):
 
     assert new_thread is not None and new_thread != old_thread
     assert messages >= 2  # 旧历史 + 本轮，不随 thread 回收丢失
+
+
+# --- lifespan 接线 ----------------------------------------------------------
+
+
+def test_lifespan_does_not_start_reaper_by_default(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from ai_service_agent.harness.server import create_app
+
+    db = str(tmp_path / "no-reaper.db")
+    conversation_id, thread_id = _seed_sync(db)  # 先 seed 再启动 app，避免两个事件循环同时写库
+    app = create_app(db, model="fake")
+    with TestClient(app):
+        time.sleep(0.05)
+        # 默认 interval=0：没有后台任务，空闲会话不会被删。
+        assert _checkpoints(db, thread_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_lifespan_cancels_reaper_cleanly(tmp_path):
+    from ai_service_agent.harness.server import _run_thread_reaper
+
+    db = str(tmp_path / "cancel.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    reaper = ThreadReaper(
+        status=status,
+        db_path=db,
+        interrupt_loader=lambda _tid: [],
+        delete_thread=_make_delete(db),
+    )
+    task = asyncio.create_task(
+        _run_thread_reaper(reaper, interval_seconds=3600, clock=lambda: NOW)
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    conn.close()

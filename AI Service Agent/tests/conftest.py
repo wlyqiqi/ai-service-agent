@@ -21,6 +21,7 @@ def pytest_configure(config):
     os.environ["LANGSMITH_TRACING"] = "false"
     os.environ["TYPESAFE_API_KEY"] = ""
     os.environ["JWT_SECRET"] = ""
+    os.environ["THREAD_REAPER_INTERVAL_SECONDS"] = "0"
 
 
 def ainvoke_graph(graph, *args, **kwargs):
