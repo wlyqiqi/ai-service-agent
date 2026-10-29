@@ -163,7 +163,7 @@ WHERE thread_id IS NOT NULL AND mode = 'human'
 
 ### 已知缺口
 
-- **Form Interrupt 永不自动过期**（24h TTL 属 #155）。以 Form 中断收尾的会话会被
+- **Form Interrupt 永不自动过期**（24h TTL 尚未开单）。以 Form 中断收尾的会话会被
   `blocked_by_form` 永久钉住，reaper 每轮都会跳过它；这是设计取舍，不是 bug。
 - 只支持**单 worker**。`main.py` 把 app 对象传给 `uvicorn.run`，`--workers` 本就不生效；
   不要改成 `--workers N` 后仍开 reaper（没有跨进程租约）。

@@ -1,7 +1,7 @@
 # Demo Thread 生命周期规格
 
 - 日期：2026-10-29
-- 状态：Demo 范围定稿。#149 懒创建 / 复用 / 有界 hydration / 消息索引 / 离线清理、#150 安全边界轮换、#151 运行时 idle reaper（共享引擎 + 双锁 + 退避重试 + lifespan 调度）均已实现。仍明确延后：Form Interrupt 的 24 小时自动过期（#155）、14 天最大年龄规则、多 worker 租约。
+- 状态：Demo 范围定稿。#149 懒创建 / 复用 / 有界 hydration / 消息索引 / 离线清理、#150 安全边界轮换、#151 运行时 idle reaper（共享引擎 + 双锁 + 退避重试 + lifespan 调度）均已实现。仍明确延后：Form Interrupt 的 24 小时自动过期（尚未开单）、14 天最大年龄规则、多 worker 租约。
 - 关联：`architecture.md`、`handoff-spec.md`、`approval-spec.md`、`state-spec.md`、`mutation-form-interrupt-spec.md`
 - 环境基线：LangGraph 1.2.14、langgraph-checkpoint 4.2.0、langgraph-checkpoint-sqlite 3.1.1
 
@@ -128,7 +128,7 @@
 - After both locks are held it re-reads the conversation pointer and re-runs `collect_blockers`; the pre-lock snapshot is never used for the final decision.
 - Pointer clearing and queue insertion share one SQLite transaction; deletion calls only `AsyncSqliteSaver.adelete_thread()`.
 - Failed deletions are retried with exponential backoff (30 min → 1 h → 2 h → 4 h cap) recorded in `next_retry_at`. A protected candidate is **not** a failure and does not advance the retry counter.
-- Form Interrupts pin their thread indefinitely: their 24-hour TTL is issue #155, so a conversation that ended on a Form Interrupt is never reclaimed by this stage. Reports label it `blocked_by_form`.
+- Form Interrupts pin their thread indefinitely: their 24-hour TTL is not implemented yet (no tracking issue opened), so a conversation that ended on a Form Interrupt is never reclaimed by this stage. Reports label it `blocked_by_form`.
 - The scheduler runs in a single FastAPI lifespan task, is disabled by default (`THREAD_REAPER_INTERVAL_SECONDS=0`), and only supports one worker. `main.py` passes an app object to `uvicorn.run`, so `--workers` cannot take effect anyway.
 - **idle 轮换的实际覆盖面比字面窄**：任何 checkpoint 中断都会钉住 thread，而 Form Interrupt 的 24 小时自动过期本切片未实现，所以「以 Form 中断收尾」的会话（mutation 流程的常见终态）永远不会因空闲而轮换。idle 轮换实际只对以纯聊天收尾的会话生效。
 

@@ -1509,5 +1509,6 @@ human 模式且空闲 >24h 的会话 2 条：已被排除，未被删除
 
 ### 已知缺口（不在本单）
 
-- Form Interrupt 的 24 小时自动过期 → **#155**；在此之前 `blocked_by_form` 的会话永不回收。
+- Form Interrupt 的 24 小时自动过期：计划里写作「留给 #155」，但 **PR 编号与 issue 共用空间**，
+  本单的 PR 恰好拿到 #155，该编号已被占用；Form TTL 尚未开单。在此之前 `blocked_by_form` 的会话永不回收。
 - 多 worker 租约、checkpoint 部分 pruning、单 worker 运行时探测。

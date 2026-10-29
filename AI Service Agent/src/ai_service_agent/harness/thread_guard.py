@@ -112,7 +112,7 @@ def interrupt_protection(
         return "approval_pending_expired" if block_expired_approvals else None
     if is_form_interrupt(value):
         # Mutation / HighRisk 的 Form Interrupt：确认表单还没提交。
-        # 这类挂起目前**永不自动过期**（24h TTL 属 #155），所以会一直钉住 thread。
+        # 这类挂起目前**永不自动过期**（24h TTL 尚未实现），所以会一直钉住 thread。
         return "blocked_by_form"
     return "checkpoint_interrupt"
 
