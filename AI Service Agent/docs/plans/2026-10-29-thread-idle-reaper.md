@@ -1491,8 +1491,12 @@ git commit -m "docs: document runtime thread reaper scope and known Form-interru
   `test_approval_execution_gap_blocks_rotation` / `test_expired_pending_approval_still_blocks_rotation` /
   `test_unexpired_pending_approval_blocks_rotation`。根因是该文件把 `NOW` 写死为
   `2026-10-29 12:00 UTC`，而审批的惰性过期用真实墙钟；日期一过就必然失败（干净树上同样 3 红）。
+- **CI 因此红过一次**（`3 failed, 1218 passed, 4 skipped`），为了拿到绿 CI，在本 PR 内补了
+  test-only 修复：`tests/test_thread_rotation.py` 的锚点改为 `datetime.now(timezone.utc) + 1h`
+  （必须在真实时间**之后**，否则「插入时 pending、判定时已过期」的用例会提前变 expired）。
+  修后该文件 31 passed。
 - 相邻回归（`test_server` / `test_agent_bot` / `test_chatwoot_webhook` / `test_thread_rotation`）：
-  95 passed / 3 failed（同上 3 例）。
+  修复前 95 passed / 3 failed（同上 3 例）。
 
 ### 副本演练（主库 215 MB 快照，`sqlite3.Connection.backup()`）
 

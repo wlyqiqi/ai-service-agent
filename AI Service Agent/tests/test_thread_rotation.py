@@ -20,7 +20,10 @@ from ai_service_agent.harness.threads import (
     decide_rotation,
 )
 
-NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
+# 注入时钟的锚点必须**在真实时间之后**：`ApprovalService.get()` 的惰性过期用真实墙钟，
+# 写死过去的时间会让「插入时 pending、判定时已过期」的用例提前变成 expired（见
+# test_expired_pending_approval_still_blocks_rotation）。其余用例只用 NOW 做相对比较，平移锚点无影响。
+NOW = datetime.now(timezone.utc) + timedelta(hours=1)
 
 
 def _store(tmp_path):
