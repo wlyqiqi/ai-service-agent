@@ -454,12 +454,21 @@ class ConversationStatusStore:
         *,
         now: datetime,
         idle_after_seconds: float,
+        exclude_human: bool = True,
     ) -> list[dict]:
-        rows = self.conn.execute(
+        """空闲会话候选。
+
+        ``exclude_human=True``（默认）跳过人工接管中的会话：``last_ai_execution_at``
+        在 human 模式下不再更新，不排除会让「坐席还在服务」的会话被 AI 空闲计时器回收。
+        """
+        sql = (
             "SELECT conversation_id, thread_id, last_ai_execution_at, created_at "
             "FROM conversation_status WHERE thread_id IS NOT NULL "
-            "ORDER BY COALESCE(last_ai_execution_at, created_at), conversation_id"
-        ).fetchall()
+        )
+        if exclude_human:
+            sql += "AND COALESCE(mode, 'ai') != 'human' "
+        sql += "ORDER BY COALESCE(last_ai_execution_at, created_at), conversation_id"
+        rows = self.conn.execute(sql).fetchall()
         result: list[dict] = []
         for row in rows:
             last_seen = parse_utc_timestamp(row[2]) or parse_utc_timestamp(row[3])

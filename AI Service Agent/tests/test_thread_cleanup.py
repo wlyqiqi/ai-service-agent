@@ -332,6 +332,56 @@ def test_list_cleanup_queue_respects_next_retry_at(tmp_path):
     conn.close()
 
 
+# --- #151：候选范围与 Form 标记 ---------------------------------------------
+
+
+def test_idle_conversations_excludes_human_mode_by_default(tmp_path):
+    db = str(tmp_path / "human.db")
+    conn = sqlite3.connect(db)
+    status = ConversationStatusStore(conn)
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=48)
+
+    ai_cid = status.create_session("u1")["conversation_id"]
+    ai_tid, _ = status.ensure_thread(ai_cid)
+    status.mark_ai_execution(ai_cid, ai_tid, at=old)
+
+    human_cid = status.create_session("u2")["conversation_id"]
+    human_tid, _ = status.ensure_thread(human_cid)
+    status.mark_ai_execution(human_cid, human_tid, at=old)
+    status.set_mode(human_cid, "human")
+
+    default_ids = [
+        row["conversation_id"]
+        for row in status.idle_conversations(now=now, idle_after_seconds=3600)
+    ]
+    with_human = [
+        row["conversation_id"]
+        for row in status.idle_conversations(
+            now=now, idle_after_seconds=3600, exclude_human=False
+        )
+    ]
+
+    assert default_ids == [ai_cid]
+    assert set(with_human) == {ai_cid, human_cid}
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_form_interrupt_is_labelled_blocked_by_form():
+    from ai_service_agent.harness.thread_guard import interrupt_protection
+
+    value = {
+        "tool": "cancel_order",
+        "order_candidates": [{"order_id": "ORD-1"}],
+        "form_session_id": "fs-1",
+        "summary": "确认取消",
+    }
+    now = datetime.now(timezone.utc)
+
+    assert interrupt_protection(value, [], now) == "blocked_by_form"
+
+
 def _count(db: str, table: str, where: str, params: tuple) -> int:
     conn = sqlite3.connect(db)
     try:

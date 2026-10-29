@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from ai_service_agent.harness.approvals import APPROVAL_EXECUTION_TERMINAL_STATUSES
+from ai_service_agent.harness.form_events import is_form_interrupt
 from ai_service_agent.harness.session import parse_utc_timestamp
 
 #: checkpoint 检查能力缺失/抛错时的保护标记（fail closed）。
@@ -89,23 +90,31 @@ def interrupt_protection(
     """
     if not isinstance(value, dict):
         return "checkpoint_interrupt"
-    if value.get("type") != "approval_required":
-        return "checkpoint_interrupt"
-    approval_id = str(value.get("approval_id") or "")
-    record = next(
-        (row for row in approvals if row.get("approval_id") == approval_id), None
-    )
-    if record is not None:
-        reason = approval_protection(record, now)
-        if reason is None and block_expired_approvals and record.get("status") == "pending":
-            return "approval_pending_expired"
-        return reason
-    expires = parse_utc_timestamp(value.get("expires_at"))
-    if expires is None:
-        return "approval_interrupt_unexpired_or_unknown"
-    if now < expires:
-        return "approval_pending"
-    return "approval_pending_expired" if block_expired_approvals else None
+    if value.get("type") == "approval_required":
+        approval_id = str(value.get("approval_id") or "")
+        record = next(
+            (row for row in approvals if row.get("approval_id") == approval_id), None
+        )
+        if record is not None:
+            reason = approval_protection(record, now)
+            if (
+                reason is None
+                and block_expired_approvals
+                and record.get("status") == "pending"
+            ):
+                return "approval_pending_expired"
+            return reason
+        expires = parse_utc_timestamp(value.get("expires_at"))
+        if expires is None:
+            return "approval_interrupt_unexpired_or_unknown"
+        if now < expires:
+            return "approval_pending"
+        return "approval_pending_expired" if block_expired_approvals else None
+    if is_form_interrupt(value):
+        # Mutation / HighRisk 的 Form Interrupt：确认表单还没提交。
+        # 这类挂起目前**永不自动过期**（24h TTL 属 #155），所以会一直钉住 thread。
+        return "blocked_by_form"
+    return "checkpoint_interrupt"
 
 
 async def collect_blockers(
