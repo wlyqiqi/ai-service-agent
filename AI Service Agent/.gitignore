@@ -10,3 +10,22 @@ graphify-out/
 .pytest-acc/
 .pytest-tmp*/
 .worktrees/
+
+# Temp & cache
+tmp/
+.deepeval/
+.workbuddy-ai/
+
+# Compiled
+*.pyc
+*.pyo
+
+# Env backups
+.env.env.bak*
+
+# Root-level diagnostic scripts
+_diag_*.py
+
+# Root-level dev artifacts
+high-risk-select-node.bundle
+high-risk-select-node.patch
