@@ -713,6 +713,44 @@ def test_bot_error_activity_does_not_enter_human(tmp_path):
     cw.set_conversation_status.assert_awaited_once_with(sid, "pending")
 
 
+def test_unassigned_open_with_handoff_label_waits_for_assignment(tmp_path):
+    """handoff-request open 是预期排队态，不能按 AgentBot 超时拉回 pending。"""
+    db = str(tmp_path / "s.db")
+    cw = _fake_chatwoot()
+    client = TestClient(
+        create_app(
+            db,
+            model="fake",
+            chatwoot=cw,
+            chatwoot_webhook_secret="sec",
+            chatwoot_bot_error_open_grace_seconds=0,
+        )
+    )
+    sid = client.post("/sessions", json={"user_id": "u1"}).json()["session_id"]
+    ChatwootMappingStore(sqlite3.connect(db)).put(sid, 555)
+
+    opened = _post_webhook(
+        client,
+        {
+            "event": "conversation_status_changed",
+            "id": 555,
+            "status": "open",
+            "labels": ["handoff-request"],
+            "meta": {"assignee_type": "AgentBot"},
+        },
+    )
+    assert opened.status_code == 200
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "ai"
+    cw.set_conversation_status.assert_not_awaited()
+
+    takeover = _human_open(555)
+    takeover["labels"] = ["handoff-request"]
+    assigned = _post_webhook(client, takeover)
+    assert assigned.status_code == 200
+    assert assigned.json()["event"]["type"] == "handoff_created"
+    assert ConversationStatusStore(sqlite3.connect(db)).get_mode(sid) == "human"
+
+
 def test_unassigned_open_reverts_when_grace_is_zero(tmp_path):
     db = str(tmp_path / "s.db")
     cw = _fake_chatwoot()

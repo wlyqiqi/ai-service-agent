@@ -162,6 +162,18 @@ async def _thread_lock(thread_id: str) -> asyncio.Lock:
         return _locks[thread_id]
 
 
+def _has_handoff_request_label(data: dict) -> bool:
+    """Chatwoot 已进入人工排队（handoff label）时，open 不是 AgentBot 失败。"""
+    labels = data.get("labels")
+    if labels is None:
+        conversation = data.get("conversation")
+        if isinstance(conversation, dict):
+            labels = conversation.get("labels")
+    if isinstance(labels, str):
+        labels = [item.strip() for item in labels.split(",")]
+    return isinstance(labels, list) and "handoff-request" in labels
+
+
 def _combined_interrupt_callback(handoff_cb, approval_cb):
     """handoff / approval 两类 interrupt 的统一 on_interrupt 分发（approval-spec §3.1）。"""
 
@@ -1477,6 +1489,13 @@ def create_app(
                 # as Chatwoot's Agent Bot timeout fallback (activity arrives later).
                 if human_takeover_signal(data):
                     return await _enter_human(conv_id)
+                # Handoff Request opens via AgentBot bot_handoff, then Chatwoot
+                # assignment policy selects an online seat. Keep the conversation
+                # open while that assignment is pending instead of treating it as
+                # an AgentBot read-timeout and reverting to pending.
+                if _has_handoff_request_label(data):
+                    logger.info("handoff-request open waiting for auto-assignment conv=%s", conv_id)
+                    return {"ok": True}
                 immediate = is_bot_error_signal(data) or float(bot_error_open_grace_seconds) <= 0
                 await _arm_bot_error_revert(conv_id, immediate=immediate)
                 logger.info(

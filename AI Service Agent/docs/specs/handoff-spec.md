@@ -1,8 +1,8 @@
 # Handoff 规格（handoff-spec.md）
 
-- 日期：2026-09-14（Seat-gated 修订：2026-10-15）
+- 日期：2026-09-14（Seat-gated 修订：2026-10-15；自动轮询修订：2026-11-03）
 - 状态：权威定义（`conversation_mode` 状态机 + Seat-gated Handoff 生命周期 + 轻量判断）
-- 决策：[ADR-0003](../adr/0003-seat-gated-handoff.md)（Seat-gated handoff：申请挂起 ≠ human 车道）
+- 决策：[ADR-0003](../adr/0003-seat-gated-handoff.md)（Seat-gated handoff）· [ADR-0007](../adr/0007-handoff-auto-round-robin.md)（请求人工后自动进入在线坐席轮询队列）
 - 术语：根目录 `CONTEXT.md`（Conversation Mode / Handoff Request / Seat Takeover / Handoff Resolve / Handoff Cancel / Handoff Joined Notice）
 - 关联：`architecture.md`（入口层 / 持久化）· `graph-spec.md`（子图 `interrupt(handoff_request)`）· `event-spec.md`（`handoff_requested` / `handoff_created` / `handoff_resolved`）· `safety-spec.md`（转人工触发规则）· `state-spec.md`（`execution_status=waiting_handoff`）· `docs/ops/chatwoot-widget-agentbot-setup.md`（Account Webhook）
 
@@ -26,7 +26,7 @@
 - **Seat Takeover** 时：将挂起的 Handoff Request 转为接入中（或无申请时懒创建 active handoff），并与切 `conversation_mode=human` **绑定为同一数据库事务**，不允许分两步先后执行。
 - 触发来源（权威）：Account Webhook 上能确认是坐席接手的 `open`。见 §3.1 / ops runbook。信号是 `meta.assignee_type=User`（或 `changed_attributes.assignee_id`），或 status 仍为 `open` 时的 self-assign / `Assigned to` activity，或 `conversation_updated` 带人工 assignee。
 - **不是 Take over**：没有人工 assignee 的 `open`。Agent Bot webhook 读超时后，Chatwoot 会把 pending 会话标成 open，并写 activity「Conversation was marked open by system due to an error with the agent bot」。这条不发 Joined Notice、不切 `human`。默认 `toggle_status(pending)` 拉回 Bot（`CHATWOOT_REVERT_BOT_ERROR_OPEN`，默认 true）。裸 open 先等 `CHATWOOT_BOT_ERROR_OPEN_GRACE_SECONDS`（默认 2），以便官方 Take over「先 open、再 self-assign」落到人工信号上。
-- **不得**在 `request_handoff` / 创建挂起 Record / 发 `handoff_requested` 时切 `mode=human`。Bot 与客户路径不得调用 `toggle_status(open)`。
+- **不得**在 `request_handoff` / 创建挂起 Record / 发 `handoff_requested` 时切 `mode=human`。启用 ADR-0007 的 Chatwoot 部署可在写入 `handoff-request` 后由 **AgentBot** 调用官方 `bot_handoff`（pending→open）；该 Chatwoot status 变更不等同于 Runtime 切 `human`，仍需收到 `User assignee` 才进入人工车道。
 - 无事先 Handoff Request 时，坐席主动 Take over **仍**切 `human`（允许懒建 active handoff）。
 - 成功后发出 `handoff_created`（真正进入 human 车道），并由 Bot 发送 **Handoff Joined Notice**（短提示：人工已接入；与挂起确认文案区分）。
 - **未提交的 Mutation Form**：进入 human 之前，若该会话线程上仍有 Form Interrupt，Runtime 在同一 thread lock 内以 `Command(resume={"action":"cancel"})` 清掉（不写库）。客户可见提示「尚未提交的修改已取消」；可选坐席 private note。审批 interrupt（HighRisk）不在此取消。清掉之后，迟到的 Form Resume（`/actions/confirm` 或 AgentBot 表单提交）不得写库。客户自己的 Implicit Cancel / 表单确认路径不变。
@@ -68,7 +68,9 @@
 
 ### 2.1 Chatwoot 强提示（Handoff Request）
 
-- 申请时：Chatwoot **private note** + label slug **`handoff-request`**；**不**改 Chatwoot conversation status（保持 `pending`，Bot 仍可回复）。
+- 申请时：Chatwoot **private note** + label slug **`handoff-request`**。
+- 启用 ADR-0007 自动轮询时：Automation 先将会话加入人工团队；Runtime 再用 **AgentBot token** 调用官方 `toggle_status(open)` 触发 `bot_handoff!` 清除 AgentBot，由收件箱 assignment policy 在在线团队成员中 round robin。分配完成前 Runtime `mode` 仍为 `ai`。
+- 未启用自动轮询时：保持 `pending`，Bot 仍可回复。
 - 不做自定义坐席 Accept / 同意卡；坐席用官方 Take over / Resolve UI。
 
 ## 3. 子图中途触发 Handoff（与显式申请同一门控）
@@ -111,7 +113,7 @@
   > **Superseded by [ADR-0002](../adr/0002-seat-approver-side-channel.md)**（与 §1.3 归宿段同口径）。以下为历史 MVP 原文，仅供追溯。
   >
   > 继续挂起，等 AI 重新接管后经入口层 resume 调度自然恢复（见 §1.3 / `graph-spec.md` §3）。
-- **Seat-gated handoff（申请 ≠ human）**：见 [ADR-0003](../adr/0003-seat-gated-handoff.md)；术语见 `CONTEXT.md`。
+- **Seat-gated handoff（申请 ≠ human）**：见 [ADR-0003](../adr/0003-seat-gated-handoff.md)；自动进入人工队列与在线轮询见 [ADR-0007](../adr/0007-handoff-auto-round-robin.md)；术语见 `CONTEXT.md`。
 
 ### 5.2 已定案（消息真相源，2026-09-14）
 

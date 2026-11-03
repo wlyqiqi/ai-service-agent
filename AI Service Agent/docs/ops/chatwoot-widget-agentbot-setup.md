@@ -214,6 +214,34 @@ uv run --no-sync python scripts/check_seat_gated_webhooks.py
 
 术语：`CONTEXT.md`（Seat Takeover / Handoff Resolve）；规格：`docs/specs/handoff-spec.md` §3.1。
 
+## 4.2 Handoff 自动轮询（ADR-0007）
+
+适用目标：AI 阶段坐席可在“全部会话/待处理 Bot”查看；仅客户请求人工后进入人工队列，并在在线坐席之间 round robin。
+
+1. Chatwoot → Settings → Inboxes → 当前 Inbox → Collaborators：
+   - 开启 Auto assignment
+   - 创建并绑定 Assignment Policy：`round_robin` + `longest_waiting` + 在线成员过滤
+2. Chatwoot → Settings → Automation：
+   - Event：`conversation_updated`
+   - Conditions：`labels = handoff-request`、`inbox_id = 当前 Inbox`、`status = pending`
+   - Action：`assign_team = 人工接管队列`
+3. Runtime 的 `ChatwootClient.prompt_handoff_request()` 在写 label 后使用 **AgentBot token** 调用 `toggle_status(open)`：
+   - Chatwoot 执行 `Conversation#bot_handoff!`
+   - 清除 `assignee_agent_bot_id`
+   - Assignment Policy 从在线团队成员中选择坐席
+4. 坐席通知：
+   - 开启 Browser Push：会话分配、已分配会话新消息、参与会话新消息、提及
+   - 浏览器站点权限允许通知；首次订阅后 `notification_subscriptions` 必须出现 `browser_push`
+   - 自托管需要可用的 VAPID keys（Chatwoot 会生成并持久化 `VAPID_KEYS`）
+5. 验收：
+   - AI pending 会话：出现在“全部会话”，不会被个人分配
+   - 请求人工：label + team 先写入，AgentBot 打开会话并清除 Bot 占用
+   - 在线坐席被 round robin 分配，Runtime 收到 `open + User assignee` 后切 `mode=human`
+   - 无在线坐席：保持 `open + unassigned`，periodic assignment 在坐席上线后继续分配
+   - `open + handoff-request + 无 assignee` 不得被当作 AgentBot 超时拉回 pending
+
+规格：[handoff-spec.md](../specs/handoff-spec.md) §2.1；决策：[ADR-0007](../adr/0007-handoff-auto-round-robin.md)。
+
 ## 5. `.env` 清单（与 `Settings` 1:1）
 
 ```env
