@@ -225,6 +225,42 @@ async def test_set_conversation_status_uses_toggle_status(tmp_path):
     assert len(calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_prompt_handoff_request_labels_then_bot_handoff(tmp_path):
+    """Handoff label 写入后必须用 AgentBot token 触发官方 bot_handoff。"""
+    import json
+
+    calls: list[dict] = []
+
+    async def handler(request):
+        calls.append({
+            "method": request.method,
+            "path": request.url.path,
+            "token": request.headers.get("api_access_token"),
+            "body": json.loads(request.content) if request.content else None,
+        })
+        if request.method == "GET" and request.url.path.endswith("/labels"):
+            return Response(200, json={"payload": []})
+        return Response(200, json={"id": 901, "payload": {"success": True}})
+
+    conn = sqlite3.connect(tmp_path / "m.db")
+    mapping = ChatwootMappingStore(conn)
+    mapping.put("c1", 555)
+    http = AsyncClient(transport=MockTransport(handler))
+    cw = ChatwootClient(
+        "http://cw.test", 3, 4, "seat-tok", mapping, client=http, bot_api_token="bot-tok"
+    )
+
+    await cw.prompt_handoff_request("c1", "需要人工")
+
+    assert calls[-2]["path"].endswith("/conversations/555/labels")
+    assert calls[-2]["body"] == {"labels": ["handoff-request"]}
+    assert calls[-1]["method"] == "POST"
+    assert calls[-1]["path"].endswith("/conversations/555/toggle_status")
+    assert calls[-1]["token"] == "bot-tok"
+    assert calls[-1]["body"] == {"status": "open"}
+
+
 def test_agent_message_contract():
     from ai_service_agent.harness.chatwoot import is_agent_message
 

@@ -240,6 +240,24 @@ class ChatwootClient:
         )
         r.raise_for_status()
 
+    async def bot_handoff(self, conversation_id: str) -> None:
+        """以 AgentBot 身份执行官方 bot_handoff：清除 AgentBot 并打开会话。
+
+        Chatwoot 仅在 ``Current.user`` 是 AgentBot 且 pending→open 时调用
+        ``Conversation#bot_handoff!``。该路径会清除 ``assignee_agent_bot_id``，
+        随后收件箱绑定的 assignment policy 才能对在线坐席执行 round robin。
+        """
+        rec = self.mapping.get(conversation_id)
+        if rec is None:
+            return
+        cw_id = rec["chatwoot_conversation_id"]
+        r = await self.client.post(
+            f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{cw_id}/toggle_status",
+            headers=self._bot_headers(),
+            json={"status": "open"},
+        )
+        r.raise_for_status()
+
     async def get_conversation_labels(self, conversation_id: str) -> list[str]:
         rec = self.mapping.get(conversation_id)
         if rec is None:
@@ -274,9 +292,15 @@ class ChatwootClient:
         r.raise_for_status()
 
     async def prompt_handoff_request(self, conversation_id: str, note: str) -> None:
-        """Handoff Request 强提示：private note + label handoff-request；不改 status。"""
+        """Handoff Request：private note + label，然后交给 Chatwoot 自动分配。
+
+        label 会触发 Chatwoot Automation 将会话加入人工队列；随后 AgentBot 调用
+        官方 ``bot_handoff!`` 打开会话并清除 AgentBot。收件箱 assignment policy
+        再从在线队列成员中 round robin 分配。
+        """
         await self.send_bot_message(conversation_id, note, private=True)
         await self.add_conversation_label(conversation_id, "handoff-request")
+        await self.bot_handoff(conversation_id)
 
     async def clear_typing(self, conversation_id: str) -> None:
         """关掉 Agent Bot 自动打出的输入中。坐席输入用 Chatwoot 自己的 typing 事件。"""
